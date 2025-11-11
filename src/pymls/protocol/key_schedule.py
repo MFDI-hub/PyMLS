@@ -31,6 +31,14 @@ class KeySchedule:
     def exporter_secret(self) -> bytes:
         return self._derive_secret(b"exporter", 32)
 
+    def export(self, label: bytes, context: bytes, length: int) -> bytes:
+        """
+        Minimal exporter interface backed by exporter_secret.
+        Not RFC-accurate but sufficient for DAVE sender-key derivation placeholder.
+        """
+        info = label + b"|" + context
+        return self._crypto_provider.kdf_expand(self.exporter_secret, info, length)
+
     @property
     def confirmation_key(self) -> bytes:
         return self._derive_secret(b"confirm", 32)

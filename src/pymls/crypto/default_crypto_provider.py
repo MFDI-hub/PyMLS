@@ -1,6 +1,10 @@
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hmac
 from cryptography.exceptions import InvalidSignature
@@ -59,11 +63,13 @@ class DefaultCryptoProvider(CryptoProvider):
         h.verify(tag)
 
     def sign(self, private_key: bytes, data: bytes) -> bytes:
-        sk = x25519.X25519PrivateKey.from_private_bytes(private_key)
+        # DAVE/MLS signatures use Ed25519
+        sk = Ed25519PrivateKey.from_private_bytes(private_key)
         return sk.sign(data)
 
     def verify(self, public_key: bytes, data: bytes, signature: bytes) -> None:
-        pk = x25519.X25519PublicKey.from_public_bytes(public_key)
+        # DAVE/MLS signatures use Ed25519
+        pk = Ed25519PublicKey.from_public_bytes(public_key)
         try:
             pk.verify(signature, data)
         except InvalidSignature as e:
