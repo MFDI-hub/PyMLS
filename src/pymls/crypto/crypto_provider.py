@@ -1,13 +1,24 @@
 from abc import ABC, abstractmethod
-from typing import NamedTuple, Protocol
-
-from .hpke import KEM, AEAD, KDF
+from .hpke import KEM, AEAD, KDF  # noqa: F401 (referenced in type hints and implementors)
+from .ciphersuites import MlsCiphersuite
 
 
 class CryptoProvider(ABC):
     @property
     @abstractmethod
     def supported_ciphersuites(self):
+        pass
+
+    @property
+    @abstractmethod
+    def active_ciphersuite(self) -> MlsCiphersuite:
+        pass
+
+    @abstractmethod
+    def set_ciphersuite(self, suite_id: int) -> None:
+        """
+        Select the active MLS ciphersuite by its RFC suite id (see RFC 9420 §16.3).
+        """
         pass
 
     @abstractmethod
@@ -61,3 +72,17 @@ class CryptoProvider(ABC):
     @abstractmethod
     def kem_pk_size(self) -> int:
         pass 
+
+    @abstractmethod
+    def aead_key_size(self) -> int:
+        """
+        Return the key size in bytes for the active AEAD.
+        """
+        pass
+
+    @abstractmethod
+    def aead_nonce_size(self) -> int:
+        """
+        Return the nonce size in bytes for the active AEAD.
+        """
+        pass

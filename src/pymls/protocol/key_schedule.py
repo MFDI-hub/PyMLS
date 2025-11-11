@@ -23,6 +23,19 @@ class KeySchedule:
     def sender_data_secret(self) -> bytes:
         return self._derive_secret(b"sender data", 32)
 
+    def sender_data_key(self) -> bytes:
+        return self._crypto_provider.kdf_expand(
+            self.sender_data_secret, b"sender data key", self._crypto_provider.aead_key_size()
+        )
+
+    def sender_data_nonce(self, reuse_guard: bytes) -> bytes:
+        # Base nonce derived from sender_data_secret and XORed with a reuse guard (left-padded with zeros)
+        base = self._crypto_provider.kdf_expand(
+            self.sender_data_secret, b"sender data nonce", self._crypto_provider.aead_nonce_size()
+        )
+        rg = reuse_guard.rjust(self._crypto_provider.aead_nonce_size(), b"\x00")
+        return bytes(a ^ b for a, b in zip(base, rg))
+
     @property
     def encryption_secret(self) -> bytes:
         return self._derive_secret(b"encryption", 32)

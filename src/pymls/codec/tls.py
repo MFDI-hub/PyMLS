@@ -28,6 +28,10 @@ def write_uint32(x: int) -> bytes:
     return x.to_bytes(4, "big")
 
 
+def write_uint64(x: int) -> bytes:
+    return x.to_bytes(8, "big")
+
+
 def read_uint8(buf: bytes, offset: int = 0) -> tuple[int, int]:
     _require_length(buf[offset:], 1)
     return buf[offset], offset + 1
@@ -47,6 +51,11 @@ def read_uint24(buf: bytes, offset: int = 0) -> tuple[int, int]:
 def read_uint32(buf: bytes, offset: int = 0) -> tuple[int, int]:
     _require_length(buf[offset:], 4)
     return int.from_bytes(buf[offset:offset + 4], "big"), offset + 4
+
+
+def read_uint64(buf: bytes, offset: int = 0) -> tuple[int, int]:
+    _require_length(buf[offset:], 8)
+    return int.from_bytes(buf[offset:offset + 8], "big"), offset + 8
 
 
 def write_vector(data: bytes, length_bytes: int) -> bytes:

@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import List, Tuple
+
+from ..codec.tls import (
+    write_uint8,
+    read_uint8,
+    write_opaque16,
+    read_opaque16,
+)
+from ..crypto.ciphersuites import SignatureScheme
+
+
+class CredentialType(IntEnum):
+    BASIC = 1
+    X509 = 2
+
+
+def _encode_signature_scheme(s: SignatureScheme) -> bytes:
+    """
+    Compact on-the-wire encoding for signature scheme identifiers.
+    Stable mapping for interop within this library.
+    """
+    mapping = {
+        SignatureScheme.ED25519: 0x01,
+        SignatureScheme.ED448: 0x02,
+        SignatureScheme.ECDSA_SECP256R1_SHA256: 0x11,
+        SignatureScheme.ECDSA_SECP521R1_SHA512: 0x12,
+    }
+    return write_uint8(mapping[s])
+
+
+def _decode_signature_scheme(b: int) -> SignatureScheme:
+    reverse = {
+        0x01: SignatureScheme.ED25519,
+        0x02: SignatureScheme.ED448,
+        0x11: SignatureScheme.ECDSA_SECP256R1_SHA256,
+        0x12: SignatureScheme.ECDSA_SECP521R1_SHA512,
+    }
+    if b not in reverse:
+        raise ValueError(f"Unknown signature scheme code: {b}")
+    return reverse[b]
+
+
+@dataclass(frozen=True)
+class BasicCredential:
+    identity: bytes
+    public_key: bytes
+    signature_scheme: SignatureScheme
+
+    def serialize(self) -> bytes:
+        return (
+            write_uint8(int(CredentialType.BASIC))
+            + write_opaque16(self.identity)
+            + write_opaque16(self.public_key)
+            + _encode_signature_scheme(self.signature_scheme)
+        )
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "BasicCredential":
+        off = 0
+        cred_type, off = read_uint8(data, off)
+        if CredentialType(cred_type) != CredentialType.BASIC:
+            raise ValueError("Not a Basic credential")
+        identity, off = read_opaque16(data, off)
+        public_key, off = read_opaque16(data, off)
+        sig_code, off = read_uint8(data, off)
+        return cls(identity, public_key, _decode_signature_scheme(sig_code))
+
+
+@dataclass(frozen=True)
+class X509Credential:
+    """
+    Minimal X.509 credential carrying a certificate chain.
+    Signature scheme can be inferred from the end-entity cert if desired;
+    we carry it explicitly here for simplicity.
+    """
+
+    cert_chain: List[bytes]
+    signature_scheme: SignatureScheme
+
+    def serialize(self) -> bytes:
+        out = write_uint8(int(CredentialType.X509))
+        out += write_uint8(len(self.cert_chain))
+        for cert in self.cert_chain:
+            out += write_opaque16(cert)
+        out += _encode_signature_scheme(self.signature_scheme)
+        return out
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "X509Credential":
+        off = 0
+        cred_type, off = read_uint8(data, off)
+        if CredentialType(cred_type) != CredentialType.X509:
+            raise ValueError("Not an X.509 credential")
+        num, off = read_uint8(data, off)
+        chain: List[bytes] = []
+        for _ in range(num):
+            cert, off = read_opaque16(data, off)
+            chain.append(cert)
+        sig_code, off = read_uint8(data, off)
+        return cls(chain, _decode_signature_scheme(sig_code))
+
+
+
