@@ -284,3 +284,6 @@ class DefaultCryptoProvider(CryptoProvider):
     def aead_nonce_size(self) -> int:
         # All RFC-defined AEADs use 96-bit nonces
         return 12
+
+    def kdf_hash_len(self) -> int:
+        return self._hash_algo().digest_size

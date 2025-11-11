@@ -63,6 +63,23 @@ class RatchetTree:
         node.leaf_node = leaf_node
         self._recalculate_hashes_from(node_index)
 
+    def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes:
+        """
+        Simplified parent hash: use the current tree hash at the parent of the leaf.
+        This is not the full RFC parent-hash construction, but serves as a consistency
+        check and placeholder until the extensions framework is implemented.
+        """
+        if self.n_leaves == 0:
+            return b""
+        leaf_node_index = leaf_index * 2
+        # Root leaf has no parent
+        try:
+            p_idx = tree_math.parent(leaf_node_index, self.n_leaves)
+        except Exception:
+            return b""
+        p = self.get_node(p_idx)
+        return p.hash or b""
+
     def _recalculate_hashes_from(self, start_node_index: int):
         # Recalculate hash for the node itself
         self._hash_node(start_node_index)
@@ -101,23 +118,47 @@ class RatchetTree:
             path_secrets[node_index] = self._crypto_provider.kdf_extract(b"", priv_key)
 
         # Encrypt path secrets for the copath
-        encrypted_path_secrets = {}
+        encrypted_path_secrets: dict[int, list[bytes]] = {}
         copath = tree_math.copath(committer_index * 2, self.n_leaves)
         for node_index, secret in path_secrets.items():
             copath_node_index = tree_math.sibling(node_index, self.n_leaves)
             if copath_node_index in copath:
-                copath_node = self.get_node(copath_node_index)
-                if copath_node.public_key:
-                    enc, ct = self._crypto_provider.hpke_seal(copath_node.public_key, b"", b"", secret)
-                    encrypted_path_secrets[copath_node_index] = enc + ct
+                # Collect recipient public keys under the copath subtree
+                recipients = self._collect_subtree_recipients(copath_node_index)
+                blobs: list[bytes] = []
+                for pk in recipients:
+                    enc, ct = self._crypto_provider.hpke_seal(pk, b"", b"", secret)
+                    # Store as opaque16(enc) || opaque16(ct)
+                    from .data_structures import serialize_bytes
+                    blobs.append(serialize_bytes(enc) + serialize_bytes(ct))
+                if blobs:
+                    encrypted_path_secrets[copath_node_index] = blobs
 
-        update_path = UpdatePath(new_leaf_node.serialize(), encrypted_path_secrets)
+        # Attach a simplified parent hash to the new leaf node
+        parent_hash = self._compute_parent_hash_for_leaf(committer_index)
+        leaf_for_path = LeafNode(
+            encryption_key=new_leaf_node.encryption_key,
+            signature_key=new_leaf_node.signature_key,
+            credential=new_leaf_node.credential,
+            capabilities=new_leaf_node.capabilities,
+            parent_hash=parent_hash,
+        )
+
+        update_path = UpdatePath(leaf_for_path.serialize(), encrypted_path_secrets)
         commit_secret = self._crypto_provider.kdf_extract(b"", b"".join(path_secrets.values()))
         return update_path, commit_secret
 
     def merge_update_path(self, update_path: UpdatePath, committer_index: int) -> bytes:
         # Update leaf node
-        self.update_leaf(committer_index, LeafNode.deserialize(update_path.leaf_node))
+        provided_leaf = LeafNode.deserialize(update_path.leaf_node)
+        # Verify simplified parent hash if present
+        if provided_leaf.parent_hash:
+            # Ensure current hashes are up to date before computing expected parent hash
+            self._recalculate_hashes_from(committer_index * 2)
+            expected = self._compute_parent_hash_for_leaf(committer_index)
+            if expected != provided_leaf.parent_hash:
+                raise ValueError("parent_hash mismatch for provided leaf node")
+        self.update_leaf(committer_index, provided_leaf)
 
         # Decrypt path secrets
         path_secrets = {}
@@ -129,12 +170,17 @@ class RatchetTree:
             if sibling_index in update_path.nodes:
                 node = self.get_node(node_index)
                 if node.private_key:
-                    enc_and_ct = update_path.nodes[sibling_index]
-                    pk_size = self._crypto_provider.kem_pk_size()
-                    enc = enc_and_ct[:pk_size]
-                    ct = enc_and_ct[pk_size:]
-                    secret = self._crypto_provider.hpke_open(node.private_key, enc, b"", b"", ct)
-                    path_secrets[node_index] = secret
+                    # Try each recipient blob until decryption succeeds
+                    from .data_structures import deserialize_bytes
+                    for blob in update_path.nodes[sibling_index]:
+                        try:
+                            enc, rest = deserialize_bytes(blob)
+                            ct, _ = deserialize_bytes(rest)
+                            secret = self._crypto_provider.hpke_open(node.private_key, enc, b"", b"", ct)
+                            path_secrets[node_index] = secret
+                            break
+                        except Exception:
+                            continue
 
         # Update nodes with new public keys from path secrets
         for node_index, secret in path_secrets.items():
@@ -146,3 +192,29 @@ class RatchetTree:
 
         commit_secret = self._crypto_provider.kdf_extract(b"", b"".join(path_secrets.values()))
         return commit_secret
+
+    def _collect_subtree_recipients(self, node_index: int) -> list[bytes]:
+        """
+        Gather recipient public keys under a subtree rooted at node_index.
+        Only includes leaves with non-empty public keys.
+        """
+        recipients: list[bytes] = []
+        max_index = tree_math.node_width(self.n_leaves) - 1
+
+        def visit(idx: int):
+            if idx < 0 or idx > max_index:
+                return
+            node = self.get_node(idx)
+            if node.is_leaf:
+                if node.public_key:
+                    recipients.append(node.public_key)
+                return
+            # internal node
+            try:
+                visit(tree_math.left(idx))
+                visit(tree_math.right(idx, self.n_leaves))
+            except Exception:
+                return
+
+        visit(node_index)
+        return recipients

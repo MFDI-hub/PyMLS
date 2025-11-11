@@ -86,3 +86,10 @@ class CryptoProvider(ABC):
         Return the nonce size in bytes for the active AEAD.
         """
         pass
+
+    @abstractmethod
+    def kdf_hash_len(self) -> int:
+        """
+        Return the underlying hash length (bytes) for the active KDF.
+        """
+        pass

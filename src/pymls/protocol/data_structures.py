@@ -80,6 +80,10 @@ class ProposalType(IntEnum):
     ADD = 1
     UPDATE = 2
     REMOVE = 3
+    PRE_SHARED_KEY = 4
+    REINIT = 5
+    EXTERNAL_INIT = 6
+    GROUP_CONTEXT_EXTENSIONS = 7
 
 
 class Proposal(ABC):
@@ -106,6 +110,14 @@ class Proposal(ABC):
             return UpdateProposal.deserialize(content)
         if proposal_type == ProposalType.REMOVE:
             return RemoveProposal.deserialize(content)
+        if proposal_type == ProposalType.PRE_SHARED_KEY:
+            return PreSharedKeyProposal.deserialize(content)
+        if proposal_type == ProposalType.REINIT:
+            return ReInitProposal.deserialize(content)
+        if proposal_type == ProposalType.EXTERNAL_INIT:
+            return ExternalInitProposal.deserialize(content)
+        if proposal_type == ProposalType.GROUP_CONTEXT_EXTENSIONS:
+            return GroupContextExtensionsProposal.deserialize(content)
 
         raise ValueError(f"Unknown proposal type: {proposal_type}")
 
@@ -158,17 +170,90 @@ class RemoveProposal(Proposal):
         removed, = struct.unpack("!I", data)
         return cls(removed)
 
+
+@dataclass(frozen=True)
+class PreSharedKeyProposal(Proposal):
+    psk_id: bytes
+
+    @property
+    def proposal_type(self) -> ProposalType:
+        return ProposalType.PRE_SHARED_KEY
+
+    def _serialize_content(self) -> bytes:
+        return serialize_bytes(self.psk_id)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "PreSharedKeyProposal":
+        psk_id, _ = deserialize_bytes(data)
+        return cls(psk_id)
+
+
+@dataclass(frozen=True)
+class ReInitProposal(Proposal):
+    new_group_id: bytes
+
+    @property
+    def proposal_type(self) -> ProposalType:
+        return ProposalType.REINIT
+
+    def _serialize_content(self) -> bytes:
+        return serialize_bytes(self.new_group_id)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "ReInitProposal":
+        gid, _ = deserialize_bytes(data)
+        return cls(gid)
+
+
+@dataclass(frozen=True)
+class ExternalInitProposal(Proposal):
+    kem_public_key: bytes
+
+    @property
+    def proposal_type(self) -> ProposalType:
+        return ProposalType.EXTERNAL_INIT
+
+    def _serialize_content(self) -> bytes:
+        return serialize_bytes(self.kem_public_key)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "ExternalInitProposal":
+        pk, _ = deserialize_bytes(data)
+        return cls(pk)
+
+
+@dataclass(frozen=True)
+class GroupContextExtensionsProposal(Proposal):
+    extensions: bytes
+
+    @property
+    def proposal_type(self) -> ProposalType:
+        return ProposalType.GROUP_CONTEXT_EXTENSIONS
+
+    def _serialize_content(self) -> bytes:
+        return serialize_bytes(self.extensions)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "GroupContextExtensionsProposal":
+        ext, _ = deserialize_bytes(data)
+        return cls(ext)
+
 @dataclass(frozen=True)
 class UpdatePath:
     leaf_node: bytes
-    nodes: dict[int, bytes]
+    # Map of copath node index -> list of per-recipient HPKE blobs,
+    # where each blob encodes opaque16(enc) || opaque16(ct).
+    nodes: dict[int, list[bytes]]
 
     def serialize(self) -> bytes:
         data = serialize_bytes(self.leaf_node)
         data += struct.pack("!H", len(self.nodes))
         for key, value in self.nodes.items():
             data += struct.pack("!I", key)
-            data += serialize_bytes(value)
+            # number of recipients
+            data += struct.pack("!H", len(value))
+            for blob in value:
+                data += serialize_bytes(blob)
         return data
 
     @classmethod
@@ -180,8 +265,13 @@ class UpdatePath:
         for _ in range(num_nodes):
             key, = struct.unpack("!I", rest[:4])
             rest = rest[4:]
-            value, rest = deserialize_bytes(rest)
-            nodes[key] = value
+            num_recips, = struct.unpack("!H", rest[:2])
+            rest = rest[2:]
+            recips: list[bytes] = []
+            for __ in range(num_recips):
+                blob, rest = deserialize_bytes(rest)
+                recips.append(blob)
+            nodes[key] = recips
         return cls(leaf_node, nodes)
 
 @dataclass(frozen=True)

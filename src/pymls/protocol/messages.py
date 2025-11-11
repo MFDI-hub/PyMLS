@@ -202,3 +202,29 @@ def decrypt_sender_data(
     nonce = key_schedule.sender_data_nonce(reuse_guard)
     ptxt = crypto.aead_decrypt(key, nonce, enc, aad)
     return SenderData.deserialize(ptxt)
+
+
+# AAD and padding helpers
+def compute_ciphertext_aad(group_id: bytes, epoch: int, content_type: ContentType, authenticated_data: bytes) -> bytes:
+    """
+    RFC-style AAD for MLSCiphertext content encryption.
+    """
+    out = write_opaque16(group_id)
+    out += write_uint32(epoch)
+    out += write_uint8(int(content_type))
+    out += write_opaque16(authenticated_data)
+    return out
+
+
+def add_zero_padding(data: bytes, pad_to: int) -> bytes:
+    if pad_to <= 0:
+        return data
+    rem = len(data) % pad_to
+    need = (pad_to - rem) % pad_to
+    if need == 0:
+        return data
+    return data + (b"\x00" * need)
+
+
+def strip_trailing_zeros(data: bytes) -> bytes:
+    return data.rstrip(b"\x00")

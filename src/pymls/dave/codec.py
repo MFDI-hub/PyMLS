@@ -22,6 +22,9 @@ from ..codec.mls import (
 from ..protocol.key_packages import KeyPackage
 from ..protocol.data_structures import Proposal, Commit, Welcome
 
+# Adapters stay compatible with legacy minimal MLSMessage framing used by DAVE.
+# New RFC framing (MLSPlaintext/MLSCiphertext) is available in protocol.messages.
+
 
 # DAVE Voice Gateway opcodes used by the DAVE MLS layer
 OP_DAVE_PROTOCOL_PREPARE_TRANSITION = 21  # JSON
