@@ -20,7 +20,6 @@ classifiers = [
 ]
 dependencies = [
   "cryptography>=42",
-  "hpke>=0.3.2,<0.4",
   "certifi>=2024.7.4",
 ]
 
