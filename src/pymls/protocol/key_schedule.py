@@ -51,6 +51,27 @@ class KeySchedule:
         self._external_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"external")
         self._sender_data_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"sender data")
 
+    @classmethod
+    def from_epoch_secret(cls, epoch_secret: bytes, group_context: GroupContext, crypto_provider: CryptoProvider) -> "KeySchedule":
+        """
+        Construct a KeySchedule when the epoch_secret is already known (e.g., from Welcome).
+        Derives all branch secrets from the provided epoch_secret and group_context.
+        """
+        ks = cls.__new__(cls)  # type: ignore[misc]
+        ks._init_secret = b""
+        ks._commit_secret = b""
+        ks._group_context = group_context
+        ks._psk_secret = None
+        ks._crypto_provider = crypto_provider
+        ks._wiped = False
+        ks._epoch_secret = epoch_secret
+        # Derive key schedule branches using labeled derivations
+        ks._handshake_secret = crypto_provider.derive_secret(epoch_secret, b"handshake")
+        ks._application_secret = crypto_provider.derive_secret(epoch_secret, b"application")
+        ks._exporter_secret = crypto_provider.derive_secret(epoch_secret, b"exporter")
+        ks._external_secret = crypto_provider.derive_secret(epoch_secret, b"external")
+        ks._sender_data_secret = crypto_provider.derive_secret(epoch_secret, b"sender data")
+        return ks
     @property
     def sender_data_secret(self) -> bytes:
         """Base secret for deriving sender-data keys and nonces."""

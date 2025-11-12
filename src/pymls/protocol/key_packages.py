@@ -19,7 +19,7 @@ class LeafNode:
     """
     encryption_key: bytes
     signature_key: bytes
-    credential: Credential
+    credential: Credential | None
     capabilities: bytes
     parent_hash: bytes = b""
 
@@ -27,7 +27,8 @@ class LeafNode:
         """Encode fields as len-delimited blobs in a fixed order."""
         data = serialize_bytes(self.encryption_key)
         data += serialize_bytes(self.signature_key)
-        data += serialize_bytes(self.credential.serialize())
+        cred_bytes = self.credential.serialize() if self.credential is not None else b""
+        data += serialize_bytes(cred_bytes)
         data += serialize_bytes(self.capabilities)
         data += serialize_bytes(self.parent_hash)
         return data
@@ -43,7 +44,7 @@ class LeafNode:
         enc_key, rest = deserialize_bytes(data)
         sig_key, rest = deserialize_bytes(rest)
         cred_bytes, rest = deserialize_bytes(rest)
-        credential = Credential.deserialize(cred_bytes)
+        credential = Credential.deserialize(cred_bytes) if cred_bytes else None
         caps, rest = deserialize_bytes(rest)
         parent_hash = b""
         try:

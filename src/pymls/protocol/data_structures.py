@@ -159,7 +159,13 @@ class AddProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "AddProposal":
-        """Construct from raw KeyPackage bytes."""
+        """Construct from raw KeyPackage bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        # If a type byte is present, strip it
+        if data and data[0] == ProposalType.ADD:
+            data = data[1:]
         return cls(data)
 
 
@@ -179,7 +185,12 @@ class UpdateProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "UpdateProposal":
-        """Construct from raw LeafNode bytes."""
+        """Construct from raw LeafNode bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.UPDATE:
+            data = data[1:]
         return cls(data)
 
 
@@ -199,7 +210,12 @@ class RemoveProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "RemoveProposal":
-        """Parse removed leaf index from uint32."""
+        """Parse removed leaf index from uint32.
+
+        Accepts either raw content (4 bytes) or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.REMOVE:
+            data = data[1:]
         removed, = struct.unpack("!I", data)
         return cls(removed)
 
@@ -220,7 +236,12 @@ class PreSharedKeyProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "PreSharedKeyProposal":
-        """Parse PSK identifier from len-delimited bytes."""
+        """Parse PSK identifier from len-delimited bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.PRE_SHARED_KEY:
+            data = data[1:]
         psk_id, _ = deserialize_bytes(data)
         return cls(psk_id)
 
@@ -241,7 +262,12 @@ class ReInitProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "ReInitProposal":
-        """Parse new group_id from len-delimited bytes."""
+        """Parse new group_id from len-delimited bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.REINIT:
+            data = data[1:]
         gid, _ = deserialize_bytes(data)
         return cls(gid)
 
@@ -262,7 +288,12 @@ class ExternalInitProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "ExternalInitProposal":
-        """Parse HPKE public key from len-delimited bytes."""
+        """Parse HPKE public key from len-delimited bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.EXTERNAL_INIT:
+            data = data[1:]
         pk, _ = deserialize_bytes(data)
         return cls(pk)
 
@@ -283,7 +314,12 @@ class GroupContextExtensionsProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupContextExtensionsProposal":
-        """Parse extensions from len-delimited bytes."""
+        """Parse extensions from len-delimited bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.GROUP_CONTEXT_EXTENSIONS:
+            data = data[1:]
         ext, _ = deserialize_bytes(data)
         return cls(ext)
 

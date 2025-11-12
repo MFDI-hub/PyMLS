@@ -165,7 +165,11 @@ class RatchetTree:
         encrypted_path_secrets: dict[int, list[bytes]] = {}
         copath = tree_math.copath(committer_index * 2, self.n_leaves)
         for node_index, secret in path_secrets.items():
-            copath_node_index = tree_math.sibling(node_index, self.n_leaves)
+            # Skip root (has no sibling/parent)
+            try:
+                copath_node_index = tree_math.sibling(node_index, self.n_leaves)
+            except Exception:
+                continue
             if copath_node_index in copath:
                 # Collect recipient public keys under the copath subtree
                 recipients = self._collect_subtree_recipients(copath_node_index)
@@ -216,7 +220,13 @@ class RatchetTree:
         for node_index in direct_path:
             # We can only decrypt secrets for nodes on our direct path's copath.
             # The update_path.nodes are indexed by the copath node index.
-            sibling_index = tree_math.sibling(node_index, self.n_leaves)
+            # Skip root, which has no sibling/parent.
+            try:
+                if node_index == tree_math.root(self.n_leaves):
+                    continue
+                sibling_index = tree_math.sibling(node_index, self.n_leaves)
+            except Exception:
+                continue
             if sibling_index in update_path.nodes:
                 node = self.get_node(node_index)
                 if node.private_key:

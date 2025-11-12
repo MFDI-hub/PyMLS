@@ -44,18 +44,22 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
         sig = child.signature
         data = child.tbs_certificate_bytes
         # Choose padding/hash based on signature algorithm
-        if hasattr(pub, "verify"):
-            if child.signature_hash_algorithm is None:
-                raise UnsupportedCipherSuiteError("unsupported signature algorithm")
-            if pub.__class__.__name__.startswith("RSAPublicKey"):
-                pub.verify(sig, data, padding.PKCS1v15(), child.signature_hash_algorithm)
-            elif pub.__class__.__name__.startswith("EllipticCurvePublicKey"):
-                pub.verify(sig, data, child.signature_hash_algorithm)
-            else:
-                # Fallback; attempt a generic verify (may raise)
-                pub.verify(sig, data)
-        else:
+        if not hasattr(pub, "verify"):
             raise CredentialValidationError("unsupported public key type")
+        if child.signature_hash_algorithm is None:
+            raise UnsupportedCipherSuiteError("unsupported signature algorithm")
+        # Use concrete key classes for robust detection
+        try:
+            from cryptography.hazmat.primitives.asymmetric import rsa, ec as _ec_mod
+        except Exception as e:
+            raise PyMLSError("cryptography package required for X.509 validation") from e
+        if isinstance(pub, rsa.RSAPublicKey):
+            pub.verify(sig, data, padding.PKCS1v15(), child.signature_hash_algorithm)
+        elif isinstance(pub, _ec_mod.EllipticCurvePublicKey):
+            pub.verify(sig, data, _ec_mod.ECDSA(child.signature_hash_algorithm))
+        else:
+            # Ed25519/Ed448 and others: their verify() typically takes (sig, data)
+            pub.verify(sig, data)
 
     for i in range(len(certs) - 1):
         verify_sig(certs[i], certs[i + 1])

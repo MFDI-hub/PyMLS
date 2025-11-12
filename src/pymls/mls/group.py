@@ -6,6 +6,7 @@ from ..protocol.key_packages import KeyPackage, LeafNode
 from ..protocol.data_structures import Sender
 from ..protocol.messages import MLSPlaintext, MLSCiphertext
 from ..protocol.data_structures import Welcome
+from ..mls.exceptions import CommitValidationError
 
 
 class Group:
@@ -52,7 +53,11 @@ class Group:
 
     def apply_commit(self, message: MLSPlaintext, sender_leaf_index: int) -> None:
         """Verify and apply a Commit from sender_leaf_index."""
-        return self._inner.process_commit(message, sender_leaf_index)
+        try:
+            return self._inner.process_commit(message, sender_leaf_index)
+        except CommitValidationError as e:
+            # Convert to ValueError for compatibility with tests expecting ValueError
+            raise ValueError(str(e)) from e
 
     def protect(self, application_data: bytes) -> MLSCiphertext:
         """Encrypt application_data as MLSCiphertext for this group."""

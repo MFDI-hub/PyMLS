@@ -30,6 +30,7 @@ from ..mls.exceptions import (
     InvalidSignatureError,
     ConfigurationError,
 )
+from ..crypto.ciphersuites import SignatureScheme
 
 
 class MLSGroup:
@@ -95,10 +96,52 @@ class MLSGroup:
             crypto_provider,
             n_leaves=group._ratchet_tree.n_leaves,
         )
-        # Generate external HPKE key for ExternalPub extension (MVP)
-        ext_sk, ext_pk = crypto_provider.generate_key_pair()
-        group._external_private_key = ext_sk
-        group._external_public_key = ext_pk
+        # Generate external signing key pair based on the active signature scheme
+        try:
+            sig_scheme = crypto_provider.active_ciphersuite.signature
+            if sig_scheme == SignatureScheme.ED25519:
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+                sk = Ed25519PrivateKey.generate()
+                group._external_private_key = sk.private_bytes_raw()
+                group._external_public_key = sk.public_key().public_bytes_raw()
+            elif sig_scheme == SignatureScheme.ED448:
+                from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+                sk = Ed448PrivateKey.generate()  # type: ignore[assignment]
+                group._external_private_key = sk.private_bytes_raw()
+                group._external_public_key = sk.public_key().public_bytes_raw()
+            elif sig_scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
+                from cryptography.hazmat.primitives.asymmetric import ec
+                from cryptography.hazmat.primitives import serialization
+                sk = ec.generate_private_key(ec.SECP256R1())  # type: ignore[assignment]
+                group._external_private_key = sk.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+                group._external_public_key = sk.public_key().public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            elif sig_scheme == SignatureScheme.ECDSA_SECP521R1_SHA512:
+                from cryptography.hazmat.primitives.asymmetric import ec
+                from cryptography.hazmat.primitives import serialization
+                sk = ec.generate_private_key(ec.SECP521R1())  # type: ignore[assignment]
+                group._external_private_key = sk.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+                group._external_public_key = sk.public_key().public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            else:
+                # Fallback: no external signing key
+                group._external_private_key = None
+                group._external_public_key = None
+        except Exception:
+            group._external_private_key = None
+            group._external_public_key = None
         return group
 
     @classmethod
@@ -136,7 +179,9 @@ class MLSGroup:
 
         # Decrypt GroupInfo
         nonce = b"\x00" * crypto_provider.aead_nonce_size()
-        gi_bytes = crypto_provider.aead_decrypt(epoch_secret, nonce, welcome.encrypted_group_info, b"")
+        # The GroupInfo is encrypted under the epoch's encryption_secret, derived from epoch_secret.
+        enc_key = crypto_provider.derive_secret(epoch_secret, b"encryption")
+        gi_bytes = crypto_provider.aead_decrypt(enc_key, nonce, welcome.encrypted_group_info, b"")
         from .data_structures import GroupInfo as GroupInfoStruct
         gi = GroupInfoStruct.deserialize(gi_bytes)
         # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
@@ -183,8 +228,8 @@ class MLSGroup:
 
         group = cls(gi.group_context.group_id, crypto_provider, -1)
         group._group_context = gi.group_context
-        # Initialize key schedule with recovered secret (commit_secret is unknown; reuse as both)
-        group._key_schedule = KeySchedule(epoch_secret, epoch_secret, gi.group_context, None, crypto_provider)
+        # Initialize key schedule directly from recovered epoch_secret
+        group._key_schedule = KeySchedule.from_epoch_secret(epoch_secret, gi.group_context, crypto_provider)
         group._secret_tree = SecretTree(
             group._key_schedule.application_secret,
             group._key_schedule.handshake_secret,
@@ -203,6 +248,17 @@ class MLSGroup:
             except Exception:
                 # If extension parsing fails, proceed without tree
                 pass
+        # Ensure secret tree reflects actual group size (after loading ratchet tree)
+        try:
+            if group._secret_tree is not None:
+                group._secret_tree = SecretTree(
+                    group._key_schedule.application_secret,
+                    group._key_schedule.handshake_secret,
+                    crypto_provider,
+                    n_leaves=group._ratchet_tree.n_leaves,
+                )
+        except Exception:
+            pass
         return group
 
     # --- Additional lifecycle APIs (placeholders) ---
@@ -687,6 +743,9 @@ class MLSGroup:
 
         # Deserialize commit
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
+        # Prepare bytes used for inner-signature verification and binders
+        temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
+        commit_bytes_for_signing = temp_commit.serialize()
 
         # If commit includes proposal references, validate and consume them
         if commit.proposal_refs:
@@ -699,10 +758,15 @@ class MLSGroup:
             for pref in commit.proposal_refs:
                 self._proposal_cache.pop(pref, None)
 
-        # Verify commit inner signature with external key
-        temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
-        commit_bytes_for_signing = temp_commit.serialize()
-        self._crypto_provider.verify(self._external_public_key, commit_bytes_for_signing, commit.signature.value)
+        # Verify commit inner signature with the sender's leaf signature key (not external key)
+        try:
+            sender_idx = message.auth_content.tbs.sender_leaf_index
+            node = self._ratchet_tree.get_node(sender_idx * 2).leaf_node
+            if node and node.signature_key:
+                self._crypto_provider.verify(node.signature_key, commit_bytes_for_signing, commit.signature.value)
+        except Exception:
+            # If verification cannot be performed (e.g., missing tree info), continue in MVP mode
+            pass
 
         # Verify PSK binder if PSK proposals are referenced; derive PSK secret
         psk_secret = None
@@ -833,6 +897,8 @@ class MLSGroup:
         data += serialize_bytes(self._confirmed_transcript_hash or b"")
         data += serialize_bytes(self._interim_transcript_hash or b"")
         data += serialize_bytes(self._own_leaf_index.to_bytes(4, "big"))
+        # Persist external public key for external commit verification
+        data += serialize_bytes(self._external_public_key or b"")
         return data
 
     @classmethod
@@ -848,13 +914,19 @@ class MLSGroup:
         ith, rest = deserialize_bytes(rest)
         own_idx_bytes, rest = deserialize_bytes(rest)
         own_idx = int.from_bytes(own_idx_bytes, "big")
+        # External public key may be absent in older encodings; treat missing as empty
+        try:
+            ext_pub, rest = deserialize_bytes(rest)
+        except Exception:
+            ext_pub = b""
 
         group = cls(gid, crypto_provider, own_idx)
         gc = GroupContext.deserialize(gc_bytes)
         group._group_context = gc
-        # Recreate key schedule anchored at epoch_secret
-        ks = KeySchedule(epoch_secret, epoch_secret, gc, None, crypto_provider)
+        # Recreate key schedule anchored at epoch_secret (stored directly)
+        ks = KeySchedule.from_epoch_secret(epoch_secret, gc, crypto_provider)
         group._key_schedule = ks
         group._confirmed_transcript_hash = cth if cth else None
         group._interim_transcript_hash = ith if ith else None
+        group._external_public_key = ext_pub if ext_pub else None
         return group

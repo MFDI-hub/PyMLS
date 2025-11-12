@@ -15,14 +15,26 @@ class CommitValidationError(Exception):
 
 
 def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
-    """Get a stable user ID string from a serialized KeyPackage's credential identity."""
-    kp = KeyPackage.deserialize(kp_bytes)
-    identity = kp.leaf_node.credential.identity
+    """Get a stable user ID string from a serialized KeyPackage's credential identity.
+
+    Be lenient: if bytes are not a full KeyPackage, fall back to treating the
+    input as the identity blob directly.
+    """
     try:
-        return identity.decode("utf-8")
+        kp = KeyPackage.deserialize(kp_bytes)
+        cred = kp.leaf_node.credential
+        if cred is not None:
+            identity = cred.identity
+            try:
+                return identity.decode("utf-8")
+            except Exception:
+                return identity.hex()
     except Exception:
-        # Fallback to hex if identity is not valid UTF-8
-        return identity.hex()
+        # Not a full KeyPackage; treat kp_bytes as identity
+        try:
+            return kp_bytes.decode("utf-8")
+        except Exception:
+            return kp_bytes.hex()
 
 
 def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:
