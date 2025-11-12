@@ -16,7 +16,20 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidSignature
-from hpke import HPKE, KEM_ID, KDF_ID, AEAD_ID  # type: ignore[import-untyped]
+# hpke package API can differ by version/distribution; try top-level first, then submodules.
+try:  # type: ignore[misc]
+    from hpke import HPKE, KEM_ID, KDF_ID, AEAD_ID  # type: ignore[import-untyped]
+except Exception:  # pragma: no cover - fallback path for alternative API layouts
+    try:
+        from hpke.hpke import HPKE  # type: ignore[import-untyped,attr-defined]
+        from hpke.kems import KEM_ID  # type: ignore[import-untyped,attr-defined]
+        from hpke.kdfs import KDF_ID  # type: ignore[import-untyped,attr-defined]
+        from hpke.aeads import AEAD_ID  # type: ignore[import-untyped,attr-defined]
+    except Exception as e:  # Re-raise with clearer guidance
+        raise ImportError(
+            "Incompatible 'hpke' package: expected symbols HPKE, KEM_ID, KDF_ID, AEAD_ID. "
+            "Ensure a compatible hpke (e.g., >=0.3.2,<0.4) is installed."
+        ) from e
 
 from .crypto_provider import CryptoProvider
 from .hpke import KEM, KDF as KDFEnum, AEAD
