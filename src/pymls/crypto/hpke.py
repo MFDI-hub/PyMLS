@@ -144,11 +144,11 @@ class HPKE:
     def open(self, skR, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
         # Recover ephemeral public key and derive shared secret
         if self._kem_id == KEM_ID.DHKEM_X25519_HKDF_SHA256:
-            pkE_x = x25519.X25519PublicKey.from_public_bytes(kem_output)
-            dh = skR.exchange(pkE_x)
+            pkE_x25519 = x25519.X25519PublicKey.from_public_bytes(kem_output)
+            dh = skR.exchange(pkE_x25519)
         elif self._kem_id == KEM_ID.DHKEM_X448_HKDF_SHA512:
-            pkE_x = x448.X448PublicKey.from_public_bytes(kem_output)
-            dh = skR.exchange(pkE_x)
+            pkE_x448 = x448.X448PublicKey.from_public_bytes(kem_output)
+            dh = skR.exchange(pkE_x448)
         elif self._kem_id == KEM_ID.DHKEM_P256_HKDF_SHA256:
             from typing import cast
             from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
