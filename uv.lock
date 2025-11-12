@@ -148,18 +148,6 @@ wheels = [
 ]
 
 [[package]]
-name = "hpke"
-version = "0.3.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cryptography" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/24/73/0f1b7518caf0d8c4264d4ff0e2aa2a1bd692fff524d900f5f024a731f2b2/hpke-0.3.2.tar.gz", hash = "sha256:f2bbda993c62649a5a75051dbceca3dd0b3059b61a7c21a868b9daa0ef5a3cdd", size = 8633, upload-time = "2024-10-26T09:12:22.742Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/83/4f5c5bd9b823f64b7dee8894bc6567af1742fa7b0ad2083261dd7035c51f/hpke-0.3.2-py3-none-any.whl", hash = "sha256:e4303e700691407b3c089ba8cede99bc81fe419fde57d08c5260c99d20951fe9", size = 9269, upload-time = "2024-10-26T09:12:20.588Z" },
-]
-
-[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -274,7 +262,6 @@ source = { editable = "." }
 dependencies = [
     { name = "certifi" },
     { name = "cryptography" },
-    { name = "hpke" },
 ]
 
 [package.optional-dependencies]
@@ -295,7 +282,6 @@ dev = [
 requires-dist = [
     { name = "certifi", specifier = ">=2024.7.4" },
     { name = "cryptography", specifier = ">=42" },
-    { name = "hpke", specifier = ">=0.3.2,<0.4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
