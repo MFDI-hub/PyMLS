@@ -56,7 +56,7 @@ class KeySchedule:
     def export(self, label: bytes, context: bytes, length: int) -> bytes:
         """
         Minimal exporter interface backed by exporter_secret.
-        Not RFC-accurate but sufficient for DAVE sender-key derivation placeholder.
+        Uses label|context as info; may evolve to RFC 9420 labeled extract/expand conventions.
         """
         info = label + b"|" + context
         return self._crypto_provider.kdf_expand(self.exporter_secret, info, length)

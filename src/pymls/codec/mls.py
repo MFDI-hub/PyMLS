@@ -27,7 +27,7 @@ class MLSMessage:
     signature: bytes
 
     def serialize(self) -> bytes:
-        # Minimal wire format for internal use and DAVE opcode packing:
+        # Minimal internal wire format (will be superseded by standard MLS wire types):
         #  uint8 content_type
         #  opaque24 body
         #  opaque16 signature

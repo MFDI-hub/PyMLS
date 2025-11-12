@@ -1,7 +1,8 @@
 from .key_packages import KeyPackage, LeafNode
-from .data_structures import UpdatePath
+from .data_structures import UpdatePath, Signature
 from . import tree_math
 from ..crypto.crypto_provider import CryptoProvider
+from ..codec.tls import write_uint16, write_opaque16, read_uint16, read_opaque16
 
 
 class RatchetTreeNode:
@@ -65,20 +66,23 @@ class RatchetTree:
 
     def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes:
         """
-        Simplified parent hash: use the current tree hash at the parent of the leaf.
-        This is not the full RFC parent-hash construction, but serves as a consistency
-        check and placeholder until the extensions framework is implemented.
+        RFC-inspired parent hash binding (MVP):
+        Derive a digest over the sequence of (parent_index || parent_hash) along the
+        direct path from the leaf to the root. This binds the leaf to the current
+        parent public keys/hashes and detects path tampering.
         """
         if self.n_leaves == 0:
             return b""
         leaf_node_index = leaf_index * 2
-        # Root leaf has no parent
-        try:
-            p_idx = tree_math.parent(leaf_node_index, self.n_leaves)
-        except Exception:
-            return b""
-        p = self.get_node(p_idx)
-        return p.hash or b""
+        # Ensure hashes are current
+        self._recalculate_hashes_from(leaf_node_index)
+        acc = b"parent-hash|"
+        for p_idx in tree_math.direct_path(leaf_node_index, self.n_leaves):
+            p = self.get_node(p_idx)
+            ph = p.hash or b""
+            acc += p_idx.to_bytes(4, "big") + ph
+        # Finalize with a KDF extract for fixed-length output tied to KDF hash len
+        return self._crypto_provider.kdf_extract(b"parent-hash", acc)
 
     def _recalculate_hashes_from(self, start_node_index: int):
         # Recalculate hash for the node itself
@@ -218,3 +222,40 @@ class RatchetTree:
 
         visit(node_index)
         return recipients
+
+    # --- Welcome ratchet_tree extension helpers (MVP: leaves only) ---
+    def serialize_tree_for_welcome(self) -> bytes:
+        """
+        Serialize leaves needed for a new member to reconstruct the tree view.
+        Format:
+          uint16 n_leaves
+          repeated opaque16 leaf_node (empty for blank leaves)
+        """
+        out = write_uint16(self.n_leaves)
+        for leaf in range(self.n_leaves):
+            node = self.get_node(leaf * 2)
+            if node.leaf_node:
+                out += write_opaque16(node.leaf_node.serialize())
+            else:
+                out += write_opaque16(b"")
+        return out
+
+    def load_tree_from_welcome_bytes(self, data: bytes) -> None:
+        """
+        Load leaves from a ratchet_tree extension as serialized by serialize_tree_for_welcome().
+        """
+        off = 0
+        n, off = read_uint16(data, off)
+        self._n_leaves = 0
+        self._nodes.clear()
+        for i in range(n):
+            blob, off = read_opaque16(data, off)
+            if blob:
+                leaf = LeafNode.deserialize(blob)
+                self.add_leaf(KeyPackage(leaf, signature=Signature(b"")))  # signature not validated here
+            else:
+                # Even if blank, we need to advance the leaf count
+                self._n_leaves += 1
+        # Re-hash tree
+        if self.n_leaves > 0:
+            self._recalculate_hashes_from(0)

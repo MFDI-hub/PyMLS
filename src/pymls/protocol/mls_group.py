@@ -1,8 +1,20 @@
-from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, Sender, Signature, Commit
+from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo
 from .key_packages import KeyPackage, LeafNode
-from .messages import PublicMessage, PrivateMessage
+from .messages import (
+    MLSPlaintext,
+    MLSCiphertext,
+    ContentType,
+    sign_authenticated_content,
+    attach_membership_tag,
+    verify_plaintext,
+    protect_content_application,
+    unprotect_content_application,
+)
 from .ratchet_tree import RatchetTree
 from .key_schedule import KeySchedule
+from .secret_tree import SecretTree
+from ..extensions.extensions import Extension, ExtensionType, serialize_extensions, deserialize_extensions
+from .validations import validate_proposals_client_rules
 from ..crypto.crypto_provider import CryptoProvider
 
 
@@ -13,6 +25,7 @@ class MLSGroup:
         self._ratchet_tree = RatchetTree(crypto_provider)
         self._group_context: GroupContext | None = None
         self._key_schedule: KeySchedule | None = None
+        self._secret_tree: SecretTree | None = None
         self._interim_transcript_hash: bytes | None = None
         self._confirmed_transcript_hash: bytes | None = None
         self._pending_proposals: list[Proposal] = []
@@ -27,6 +40,7 @@ class MLSGroup:
         commit_secret = crypto_provider.kdf_extract(b"", b"")
         group._group_context = GroupContext(group_id, 0, group._ratchet_tree.calculate_tree_hash(), b"")
         group._key_schedule = KeySchedule(init_secret, commit_secret, group._group_context, None, crypto_provider)
+        group._secret_tree = SecretTree(group._key_schedule.application_secret, group._key_schedule.handshake_secret, crypto_provider)
         return group
 
     @classmethod
@@ -69,7 +83,18 @@ class MLSGroup:
         group._group_context = gi.group_context
         # Initialize key schedule with recovered secret (commit_secret is unknown; reuse as both)
         group._key_schedule = KeySchedule(epoch_secret, epoch_secret, gi.group_context, None, crypto_provider)
-        # Ratchet tree would be provided via extension; omitted here
+        group._secret_tree = SecretTree(group._key_schedule.application_secret, group._key_schedule.handshake_secret, crypto_provider)
+        # Ratchet tree via GroupInfo extension (if present)
+        if gi.extensions:
+            try:
+                exts = deserialize_extensions(gi.extensions)
+                for e in exts:
+                    if e.ext_type == ExtensionType.RATCHET_TREE:
+                        group._ratchet_tree.load_tree_from_welcome_bytes(e.data)
+                        break
+            except Exception:
+                # If extension parsing fails, proceed without tree
+                pass
         return group
 
     # --- Additional lifecycle APIs (placeholders) ---
@@ -82,43 +107,79 @@ class MLSGroup:
     def reinit_group(self):
         raise NotImplementedError("reinit_group not implemented yet")
 
-    def create_add_proposal(self, key_package: KeyPackage, signing_key: bytes) -> PublicMessage:
+    def create_add_proposal(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
         proposal = AddProposal(key_package.serialize())
         proposal_bytes = proposal.serialize()
-        signature = self._crypto_provider.sign(signing_key, proposal_bytes)
-        return PublicMessage(proposal_bytes, Signature(signature))
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.PROPOSAL,
+            content=proposal_bytes,
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
-    def create_update_proposal(self, leaf_node: LeafNode, signing_key: bytes) -> PublicMessage:
+    def create_update_proposal(self, leaf_node: LeafNode, signing_key: bytes) -> MLSPlaintext:
         proposal = UpdateProposal(leaf_node.serialize())
         proposal_bytes = proposal.serialize()
-        signature = self._crypto_provider.sign(signing_key, proposal_bytes)
-        return PublicMessage(proposal_bytes, Signature(signature))
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.PROPOSAL,
+            content=proposal_bytes,
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
-    def create_remove_proposal(self, removed_index: int, signing_key: bytes) -> PublicMessage:
+    def create_remove_proposal(self, removed_index: int, signing_key: bytes) -> MLSPlaintext:
         proposal = RemoveProposal(removed_index)
         proposal_bytes = proposal.serialize()
-        signature = self._crypto_provider.sign(signing_key, proposal_bytes)
-        return PublicMessage(proposal_bytes, Signature(signature))
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.PROPOSAL,
+            content=proposal_bytes,
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
-    def process_proposal(self, message: PublicMessage, sender: Sender) -> None:
+    def process_proposal(self, message: MLSPlaintext, sender: Sender) -> None:
         sender_leaf_node = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
         if not sender_leaf_node:
             raise ValueError(f"No leaf node found for sender index {sender.sender}")
 
-        self._crypto_provider.verify(
-            sender_leaf_node.signature_key,
-            message.content,
-            message.signature.value
-        )
+        # Verify MLSPlaintext (signature and membership tag)
+        verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
-        proposal = Proposal.deserialize(message.content)
+        proposal = Proposal.deserialize(message.auth_content.tbs.framed_content.content)
         self._pending_proposals.append(proposal)
 
-    def create_commit(self, signing_key: bytes) -> tuple[PrivateMessage, list[Welcome]]:
+    def create_commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         # This is a simplification. It handles a self-update and pending proposals.
         removes = [p.removed for p in self._pending_proposals if isinstance(p, RemoveProposal)]
         adds_kps = [KeyPackage.deserialize(p.key_package) for p in self._pending_proposals if isinstance(p, AddProposal)]
-        # This is not fully correct, as we should apply these to the tree before creating the path.
+        # Basic validations
+        validate_proposals_client_rules(self._pending_proposals, self._ratchet_tree.n_leaves)
+        # Apply removes and adds before generating the update path (MVP ordering)
+        for idx in sorted(removes, reverse=True):
+            try:
+                self._ratchet_tree.remove_leaf(idx)
+            except Exception:
+                continue
+        for kp in adds_kps:
+            try:
+                self._ratchet_tree.add_leaf(kp)
+            except Exception:
+                continue
 
         # Create an update path for the committer (ourselves)
         own_node = self._ratchet_tree.get_node(self._own_leaf_index * 2)
@@ -140,7 +201,6 @@ class MLSGroup:
         # Update transcript hashes (placeholder chaining)
         prev_i = self._interim_transcript_hash or b""
         interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
-        # confirmation tag is added below; use it to update confirmed hash
 
         # Advance epoch and derive new key schedule
         new_epoch = self._group_context.epoch + 1
@@ -148,16 +208,13 @@ class MLSGroup:
         new_group_context = GroupContext(self._group_id, new_epoch, tree_hash, b"")  # filled after confirm tag
 
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, None, self._crypto_provider)
+        self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
         self._group_context = new_group_context
         self._pending_proposals = []
 
-        # Encrypt commit message
+        # Compute confirmation tag (placeholder: HMAC over commit bytes) and update confirmed transcript hash
         commit_bytes = commit.serialize()
-        nonce = b"\x00" * self._crypto_provider.aead_nonce_size()
-        encrypted_commit = self._crypto_provider.aead_encrypt(self._key_schedule.encryption_secret, nonce, commit_bytes, b"")
-        # Compute confirmation tag (placeholder: HMAC over commit_bytes)
         confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes)[:16]
-
         confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
         self._interim_transcript_hash = interim
         self._confirmed_transcript_hash = confirmed
@@ -167,42 +224,62 @@ class MLSGroup:
         # Construct Welcome messages for any added members (placeholder encoding)
         welcomes: list[Welcome] = []
         if adds_kps:
-            group_info = GroupInfo(new_group_context, Signature(b""))
+            # Include ratchet_tree extension for new members
+            rt_bytes = self._ratchet_tree.serialize_tree_for_welcome()
+            ext_bytes = serialize_extensions([Extension(ExtensionType.RATCHET_TREE, rt_bytes)])
+            group_info = GroupInfo(new_group_context, Signature(b""), ext_bytes)
             enc_group_info = self._crypto_provider.aead_encrypt(
-                self._key_schedule.encryption_secret, nonce, group_info.serialize(), b""
+                self._key_schedule.encryption_secret, b"\x00" * self._crypto_provider.aead_nonce_size(), group_info.serialize(), b""
             )
             secrets: list[bytes] = []
             for kp in adds_kps:
                 pk = kp.leaf_node.encryption_key
-                enc, ct = self._crypto_provider.hpke_seal(pk, b"welcome secret", b"", self._key_schedule.encryption_secret)
+                enc, ct = self._crypto_provider.hpke_seal(pk, b"welcome secret", b"", self._key_schedule.epoch_secret)
                 secrets.append(enc + ct)
             welcome = Welcome(MLSVersion.MLS10, CipherSuite(self._crypto_provider.active_ciphersuite.kem, self._crypto_provider.active_ciphersuite.kdf, self._crypto_provider.active_ciphersuite.aead), secrets, enc_group_info)
             welcomes.append(welcome)
 
-        return PrivateMessage(encrypted_commit, confirm_tag), welcomes
+        # Wrap commit in MLSPlaintext (handshake). Membership tag acts as MVP confirmation.
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.COMMIT,
+            content=commit.serialize(),
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        pt = attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
+        return pt, welcomes
 
-    def process_commit(self, message: PrivateMessage, sender_index: int) -> None:
-        # Decrypt commit using the current epoch's encryption_secret
-        nonce = b"\x00" * self._crypto_provider.aead_nonce_size()
-        commit_bytes = self._crypto_provider.aead_decrypt(self._key_schedule.encryption_secret, nonce, message.ciphertext, b"")
-        commit = Commit.deserialize(commit_bytes)
-
-        # Verify signature
+    def process_commit(self, message: MLSPlaintext, sender_index: int) -> None:
+        # Verify plaintext container
         sender_leaf_node = self._ratchet_tree.get_node(sender_index * 2).leaf_node
         if not sender_leaf_node:
             raise ValueError(f"No leaf node for committer index {sender_index}")
+        verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
+        commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
+
+        # Verify commit inner signature
         temp_commit = Commit(commit.path, commit.removes, commit.adds, Signature(b""))
         commit_bytes_for_signing = temp_commit.serialize()
         self._crypto_provider.verify(sender_leaf_node.signature_key, commit_bytes_for_signing, commit.signature.value)
 
-        # Verify confirmation tag (placeholder)
-        expected_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes)[:16]
-        if expected_tag != message.auth_tag:
-            raise ValueError("invalid confirmation tag")
-
         # Apply changes and derive new key schedule
         if commit.path:
+            # Apply removals and additions before merging path (MVP)
+            for idx in sorted(commit.removes, reverse=True):
+                try:
+                    self._ratchet_tree.remove_leaf(idx)
+                except Exception:
+                    continue
+            for kp_bytes in commit.adds:
+                try:
+                    self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
+                except Exception:
+                    continue
             commit_secret = self._ratchet_tree.merge_update_path(commit.path, sender_index)
 
             # Advance epoch
@@ -211,25 +288,39 @@ class MLSGroup:
             # Update transcript hashes
             prev_i = self._interim_transcript_hash or b""
             interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
-            confirmed = self._crypto_provider.kdf_extract(interim, message.auth_tag)
+            # Derive confirmed hash using placeholder confirmation recomputation
+            commit_bytes_full = commit.serialize()
+            confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
+            confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
             new_group_context = GroupContext(self._group_id, new_epoch, tree_hash, confirmed)
 
             self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, None, self._crypto_provider)
+            self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
             self._group_context = new_group_context
             self._interim_transcript_hash = interim
             self._confirmed_transcript_hash = confirmed
         else:
             raise NotImplementedError("Processing commits without a path is not supported yet.")
 
-    def protect(self, app_data: bytes) -> PrivateMessage:
-        key, nonce = self._key_schedule.derive_sender_secrets(self._own_leaf_index)
-        ciphertext = self._crypto_provider.aead_encrypt(key, nonce, app_data, b"")
-        return PrivateMessage(ciphertext, b"")
+    def protect(self, app_data: bytes) -> MLSCiphertext:
+        return protect_content_application(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content=app_data,
+            key_schedule=self._key_schedule,
+            secret_tree=self._secret_tree,
+            crypto=self._crypto_provider,
+        )
 
-    def unprotect(self, message: PrivateMessage, sender_index: int) -> bytes:
-        # This is a simplification. We need to know the sender's leaf index.
-        key, nonce = self._key_schedule.derive_sender_secrets(sender_index)
-        return self._crypto_provider.aead_decrypt(key, nonce, message.ciphertext, b"")
+    def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:
+        return unprotect_content_application(
+            message,
+            key_schedule=self._key_schedule,
+            secret_tree=self._secret_tree,
+            crypto=self._crypto_provider,
+        )
 
     def get_epoch(self) -> int:
         return self._group_context.epoch

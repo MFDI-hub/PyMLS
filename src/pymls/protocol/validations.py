@@ -31,10 +31,17 @@ def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:
             seen.add(user_id)
 
 
-def validate_proposals_client_rules(proposals: Iterable[Proposal]) -> None:
-    # DAVE 1.1.0+: All included proposals must be proposal references.
-    # Our current model carries full proposals, so we only enforce uniqueness of Add by user ID.
+def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int) -> None:
+    """
+    Baseline client-side proposal checks:
+    - Enforce uniqueness of Add by user ID.
+    - Ensure Remove indices are within current tree size.
+    """
     validate_unique_adds_by_user_id(proposals)
+    for p in proposals:
+        if isinstance(p, RemoveProposal):
+            if p.removed < 0 or p.removed >= n_leaves:
+                raise CommitValidationError(f"remove index out of range: {p.removed} not in [0, {n_leaves})")
 
 
 def validate_commit_basic(commit: Commit) -> None:

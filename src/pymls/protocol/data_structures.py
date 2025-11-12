@@ -394,16 +394,23 @@ class GroupContext:
 class GroupInfo:
     group_context: GroupContext
     signature: Signature
+    extensions: bytes = b""  # serialized extensions (opaque); MVP keeps raw for flexibility
 
     def serialize(self) -> bytes:
-        return serialize_bytes(self.group_context.serialize()) + self.signature.serialize()
+        # Serialize as length-delimited fields for forward compatibility
+        out = serialize_bytes(self.group_context.serialize())
+        out += serialize_bytes(self.signature.serialize())
+        out += serialize_bytes(self.extensions)
+        return out
 
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupInfo":
         gc_bytes, rest = deserialize_bytes(data)
+        sig_bytes, rest = deserialize_bytes(rest)
+        ext_bytes, _ = deserialize_bytes(rest) if rest else (b"", b"")
         group_context = GroupContext.deserialize(gc_bytes)
-        signature = Signature.deserialize(rest)
-        return cls(group_context, signature)
+        signature = Signature.deserialize(sig_bytes)
+        return cls(group_context, signature, ext_bytes)
 
 
 

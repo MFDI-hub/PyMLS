@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import struct
+import os
 
 from .data_structures import Signature
 
@@ -204,6 +205,25 @@ def decrypt_sender_data(
     return SenderData.deserialize(ptxt)
 
 
+def encode_encrypted_sender_data_with_reuse_guard_prefix(
+    sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider
+) -> bytes:
+    """
+    MVP encoding: prefix encrypted sender data with opaque16(reuse_guard) to allow
+    the receiver to reconstruct the sender-data nonce for decryption.
+    """
+    enc = encrypt_sender_data(sd, key_schedule, crypto, aad=b"")
+    return write_opaque16(sd.reuse_guard) + write_opaque16(enc)
+
+
+def decode_encrypted_sender_data_with_reuse_guard_prefix(
+    data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider
+) -> SenderData:
+    rg, off = read_opaque16(data, 0)
+    enc, _ = read_opaque16(data, off)
+    return decrypt_sender_data(enc, rg, key_schedule, crypto, aad=b"")
+
+
 # AAD and padding helpers
 def compute_ciphertext_aad(group_id: bytes, epoch: int, content_type: ContentType, authenticated_data: bytes) -> bytes:
     """
@@ -228,3 +248,153 @@ def add_zero_padding(data: bytes, pad_to: int) -> bytes:
 
 def strip_trailing_zeros(data: bytes) -> bytes:
     return data.rstrip(b"\x00")
+
+
+# --- Helpers for signing and membership tags (RFC-aligned surface for MVP) ---
+def sign_authenticated_content(
+    group_id: bytes,
+    epoch: int,
+    sender_leaf_index: int,
+    authenticated_data: bytes,
+    content_type: ContentType,
+    content: bytes,
+    signing_private_key: bytes,
+    crypto: CryptoProvider,
+) -> MLSPlaintext:
+    """
+    Build MLSPlaintext by signing AuthenticatedContentTBS. Membership tag is left empty
+    for the caller to attach via attach_membership_tag(), since it depends on the group
+    membership key maintained by the group state.
+    """
+    framed = FramedContent(content_type=content_type, content=content)
+    tbs = AuthenticatedContentTBS(
+        group_id=group_id,
+        epoch=epoch,
+        sender_leaf_index=sender_leaf_index,
+        authenticated_data=authenticated_data,
+        framed_content=framed,
+    )
+    sig = crypto.sign(signing_private_key, tbs.serialize())
+    auth = AuthenticatedContent(tbs=tbs, signature=sig, membership_tag=None)
+    return MLSPlaintext(auth)
+
+
+def attach_membership_tag(plaintext: MLSPlaintext, membership_key: bytes, crypto: CryptoProvider) -> MLSPlaintext:
+    """
+    Compute membership tag as HMAC over the serialized TBS (MVP behavior).
+    """
+    tag = crypto.hmac_sign(membership_key, plaintext.auth_content.tbs.serialize())
+    return MLSPlaintext(AuthenticatedContent(tbs=plaintext.auth_content.tbs, signature=plaintext.auth_content.signature, membership_tag=tag))
+
+
+def verify_plaintext(
+    plaintext: MLSPlaintext,
+    sender_signature_key: bytes,
+    membership_key: bytes | None,
+    crypto: CryptoProvider,
+) -> None:
+    """
+    Verify signature and (if provided) membership tag of an MLSPlaintext.
+    Raises on failure.
+    """
+    tbs_ser = plaintext.auth_content.tbs.serialize()
+    crypto.verify(sender_signature_key, tbs_ser, plaintext.auth_content.signature)
+    if membership_key is not None:
+        tag = crypto.hmac_sign(membership_key, tbs_ser)
+        if plaintext.auth_content.membership_tag is None or plaintext.auth_content.membership_tag != tag:
+            raise ValueError("invalid membership tag")
+
+
+# --- High-level content protection helpers (MVP) ---
+def protect_content_handshake(
+    group_id: bytes,
+    epoch: int,
+    sender_leaf_index: int,
+    authenticated_data: bytes,
+    content: bytes,
+    key_schedule: KeySchedule,
+    secret_tree,
+    crypto: CryptoProvider,
+) -> MLSCiphertext:
+    """
+    Encrypt handshake content using the secret tree handshake branch and sender data secret.
+    Note: This MVP uses a reuse_guard embedded in SenderData and encrypts SenderData using
+    the sender data secret. The derivation matches KeySchedule.sender_data_nonce() usage.
+    """
+    # Obtain per-sender handshake key/nonce and generation
+    key, nonce, generation = secret_tree.next_handshake(sender_leaf_index)
+    # Random reuse guard to diversify sender-data nonce
+    reuse_guard = os.urandom(4)
+    sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
+    aad = compute_ciphertext_aad(group_id, epoch, ContentType.COMMIT, authenticated_data)
+    enc_sd = encode_encrypted_sender_data_with_reuse_guard_prefix(sd, key_schedule, crypto)
+    ct = crypto.aead_encrypt(key, nonce, content, aad)
+    return MLSCiphertext(
+        group_id=group_id,
+        epoch=epoch,
+        content_type=ContentType.COMMIT,
+        authenticated_data=authenticated_data,
+        encrypted_sender_data=enc_sd,
+        ciphertext=ct,
+    )
+
+
+def protect_content_application(
+    group_id: bytes,
+    epoch: int,
+    sender_leaf_index: int,
+    authenticated_data: bytes,
+    content: bytes,
+    key_schedule: KeySchedule,
+    secret_tree,
+    crypto: CryptoProvider,
+) -> MLSCiphertext:
+    """
+    Encrypt application content using the secret tree application branch and sender data secret.
+    """
+    key, nonce, generation = secret_tree.next_application(sender_leaf_index)
+    reuse_guard = os.urandom(4)
+    sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
+    aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
+    enc_sd = encode_encrypted_sender_data_with_reuse_guard_prefix(sd, key_schedule, crypto)
+    ct = crypto.aead_encrypt(key, nonce, content, aad)
+    return MLSCiphertext(
+        group_id=group_id,
+        epoch=epoch,
+        content_type=ContentType.APPLICATION,
+        authenticated_data=authenticated_data,
+        encrypted_sender_data=enc_sd,
+        ciphertext=ct,
+    )
+
+
+def unprotect_content_handshake(
+    m: MLSCiphertext,
+    key_schedule: KeySchedule,
+    secret_tree,
+    crypto: CryptoProvider,
+) -> tuple[int, bytes]:
+    """
+    Decrypt handshake content and return (sender_leaf_index, plaintext).
+    """
+    aad = compute_ciphertext_aad(m.group_id, m.epoch, m.content_type, m.authenticated_data)
+    sd = decode_encrypted_sender_data_with_reuse_guard_prefix(m.encrypted_sender_data, key_schedule, crypto)
+    key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
+    ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
+    return sd.sender, ptxt
+
+
+def unprotect_content_application(
+    m: MLSCiphertext,
+    key_schedule: KeySchedule,
+    secret_tree,
+    crypto: CryptoProvider,
+) -> tuple[int, bytes]:
+    """
+    Decrypt application content and return (sender_leaf_index, plaintext).
+    """
+    aad = compute_ciphertext_aad(m.group_id, m.epoch, m.content_type, m.authenticated_data)
+    sd = decode_encrypted_sender_data_with_reuse_guard_prefix(m.encrypted_sender_data, key_schedule, crypto)
+    key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
+    ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
+    return sd.sender, ptxt
