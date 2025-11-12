@@ -1,3 +1,10 @@
+"""
+Key schedule and labeled secret derivations.
+
+Rationale:
+- Implements RFC 9420 §9 (Secret Derivation) and §10 (Key Schedule) using
+  ExpandWithLabel/DeriveSecret helpers provided by the CryptoProvider.
+"""
 from .data_structures import GroupContext
 from ..crypto.crypto_provider import CryptoProvider
 

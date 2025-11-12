@@ -67,6 +67,20 @@ python -m src.pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
 Supported types include key_schedule, tree_math, secret_tree, message_protection, and welcome_groupinfo. A JSON summary is printed.
 - The legacy DAVE protocol and opcodes were removed. This is a pure MLS library now.
 
+## Setup with uv
+
+This project uses a pyproject.toml (PEP 621). Prefer uv for dependency management:
+
+```bash
+pipx install uv  # once
+uv sync --dev
+
+# Lint, type-check, test
+uv run ruff check .
+uv run mypy src
+uv run pytest -q
+```
+
 ## Advanced features
 - Proposal-by-reference with commit validation
 - EncryptedGroupSecrets in Welcome; ratchet_tree extension included
@@ -78,3 +92,44 @@ Supported types include key_schedule, tree_math, secret_tree, message_protection
 - Resumption PSK export via `Group.get_resumption_psk()` (through protocol)
 
 Planned next: broaden RFC vector coverage and interop CLI, full X.509 policy and revocation, extended negative/fuzz tests, and API stabilization timeline.
+
+## Interop CLI (RFC wire)
+
+The interop CLI exposes RFC-wire encode/decode helpers for handshake and application messages:
+
+```bash
+# Encode handshake (hex → base64 TLS presentation bytes)
+python -m src.pymls.interop.cli wire encode-handshake <hex_plaintext>
+
+# Decode handshake (base64 → hex)
+python -m src.pymls.interop.cli wire decode-handshake <b64_wire>
+
+# Encode application (hex → base64)
+python -m src.pymls.interop.cli wire encode-application <hex_ciphertext>
+
+# Decode application (base64 → hex)
+python -m src.pymls.interop.cli wire decode-application <b64_wire>
+```
+
+This is intended to interoperate with other MLS implementations (e.g., OpenMLS). Wire helpers use the TLS presentation bytes described in RFC 9420 (§6–§7 for handshake, §9 for application).
+
+## X.509 revocation helpers (optional)
+
+Revocation checks are pluggable. Batteries-included helpers are available:
+
+```python
+from src.pymls.crypto.x509_revocation import check_ocsp_end_entity, check_crl
+from src.pymls.crypto.x509_policy import X509Policy, RevocationConfig
+
+policy = X509Policy(
+    revocation=RevocationConfig(
+        enable_ocsp=True,
+        enable_crl=True,
+        # Use default fetchers (best-effort HTTP). For offline, provide custom fetchers.
+        ocsp_checker=lambda cert_der: check_ocsp_end_entity(cert_der, issuer_der),
+        crl_checker=lambda cert_der: check_crl(cert_der, issuer_der),
+    )
+)
+```
+
+If network is unavailable, helpers return “not revoked” by default (explicit revocation → False).

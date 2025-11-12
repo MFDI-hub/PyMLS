@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..crypto.crypto_provider import CryptoProvider
+from ..mls.exceptions import PyMLSError
 from .messages import MLSPlaintext
 
 
@@ -40,7 +41,7 @@ class TranscriptState:
         Compute confirmation tag as HMAC over the current interim transcript hash.
         """
         if self._interim is None:
-            raise ValueError("interim transcript hash is not set")
+            raise PyMLSError("interim transcript hash is not set")
         # Truncate to 16 bytes (matches existing MVP tag length)
         return self._crypto.hmac_sign(confirmation_key, self._interim)[:16]
 
@@ -49,7 +50,7 @@ class TranscriptState:
         Update confirmed transcript hash by mixing in the confirmation_tag.
         """
         if self._interim is None:
-            raise ValueError("interim transcript hash is not set")
+            raise PyMLSError("interim transcript hash is not set")
         self._confirmed = self._crypto.kdf_extract(self._interim, confirmation_tag)
         return self._confirmed
 

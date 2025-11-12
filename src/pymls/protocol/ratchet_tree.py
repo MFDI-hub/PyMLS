@@ -2,6 +2,7 @@ from .key_packages import KeyPackage, LeafNode
 from .data_structures import UpdatePath, Signature
 from . import tree_math
 from ..crypto.crypto_provider import CryptoProvider
+from ..mls.exceptions import CommitValidationError
 from ..codec.tls import write_uint16, write_opaque16, read_uint16, read_opaque16
 
 
@@ -169,7 +170,7 @@ class RatchetTree:
             self._recalculate_hashes_from(committer_index * 2)
             expected = self._compute_parent_hash_for_leaf(committer_index)
             if expected != provided_leaf.parent_hash:
-                raise ValueError("parent_hash mismatch for provided leaf node")
+                raise CommitValidationError("parent_hash mismatch for provided leaf node")
         self.update_leaf(committer_index, provided_leaf)
 
         # Decrypt path secrets

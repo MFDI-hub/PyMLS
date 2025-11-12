@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pymls"
+version = "0.1.0"
+description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "PyMLS maintainers" }]
+keywords = ["mls", "messaging layer security", "rfc9420", "cryptography", "hpke"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: Apache Software License",
+  "Development Status :: 3 - Alpha",
+  "Topic :: Security :: Cryptography",
+]
+dependencies = [
+  "cryptography>=42",
+  "hpke>=0.4",
+  "certifi>=2024.7.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[project.scripts]
+pymls-interop = "src.pymls.interop.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pymls"]
+
+[tool.uv]
+dev-dependencies = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+strict_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+

@@ -13,6 +13,7 @@ from .tls import (
     read_opaque24,
 )
 from ..protocol.data_structures import Proposal, Commit, Welcome
+from ..mls.exceptions import PyMLSError
 
 
 class MLSContentType(IntEnum):
@@ -53,7 +54,7 @@ def encode_commit_message(commit: Commit, signature: bytes) -> bytes:
 def decode_commit_message(data: bytes) -> Tuple[Commit, bytes]:
     msg = MLSMessage.deserialize(data)
     if msg.content_type != MLSContentType.COMMIT:
-        raise ValueError("Not a COMMIT MLSMessage")
+        raise PyMLSError("Not a COMMIT MLSMessage")
     return Commit.deserialize(msg.body), msg.signature
 
 
@@ -73,7 +74,7 @@ def decode_proposals_message(data: bytes) -> Tuple[List[Proposal], bytes]:
 
     msg = MLSMessage.deserialize(data)
     if msg.content_type != MLSContentType.PROPOSAL:
-        raise ValueError("Not a PROPOSAL MLSMessage")
+        raise PyMLSError("Not a PROPOSAL MLSMessage")
 
     off = 0
     num, off = read_uint16(msg.body, off)

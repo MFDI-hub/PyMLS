@@ -1,8 +1,14 @@
+"""
+RFC 9420 message framing helpers.
+- Handshake: RFC 9420 §6–§7 (AuthenticatedContent, MLSPlaintext)
+- Application: RFC 9420 §9 (MLSCiphertext, sender data)
+"""
 from dataclasses import dataclass
 import struct
 import os
 
 from .data_structures import Signature
+from ..mls.exceptions import InvalidSignatureError
 
 
 @dataclass(frozen=True)
@@ -365,7 +371,7 @@ def verify_plaintext(
     if membership_key is not None:
         tag = crypto.hmac_sign(membership_key, tbs_ser)
         if plaintext.auth_content.membership_tag is None or plaintext.auth_content.membership_tag != tag:
-            raise ValueError("invalid membership tag")
+            raise InvalidSignatureError("invalid membership tag")
 
 
 # --- High-level content protection helpers (MVP) ---

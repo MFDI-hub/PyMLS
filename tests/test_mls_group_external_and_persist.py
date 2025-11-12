@@ -33,7 +33,6 @@ class TestMLSGroupExternalAndPersist(unittest.TestCase):
         kp, kem_sk, sig_sk = member(b"A")
         g = Group.create(b"gid", kp, self.crypto)
         bts = g._inner.to_bytes()
-        g2 = Group(g.group_id, g._inner) if False else None  # placeholder
         from src.pymls.protocol.mls_group import MLSGroup
         g3 = MLSGroup.from_bytes(bts, self.crypto)
         self.assertEqual(g3.get_group_id(), g.group_id)

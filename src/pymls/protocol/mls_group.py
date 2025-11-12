@@ -1,3 +1,10 @@
+"""
+Core group state machine for MLS.
+
+Rationale:
+- Implements RFC 9420 §8 (Group operations), including commit processing,
+  external commit (MVP), and application protection (§9).
+"""
 from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets
 from .key_packages import KeyPackage, LeafNode
 from .messages import (
@@ -17,6 +24,12 @@ from .transcripts import TranscriptState
 from ..extensions.extensions import Extension, ExtensionType, serialize_extensions, deserialize_extensions
 from .validations import validate_proposals_client_rules, validate_commit_matches_referenced_proposals
 from ..crypto.crypto_provider import CryptoProvider
+from ..mls.exceptions import (
+    PyMLSError,
+    CommitValidationError,
+    InvalidSignatureError,
+    ConfigurationError,
+)
 
 
 class MLSGroup:
@@ -71,7 +84,7 @@ class MLSGroup:
             except Exception:
                 continue
         if epoch_secret is None:
-            raise ValueError("Unable to open any EncryptedGroupSecret with provided HPKE private key")
+            raise CommitValidationError("Unable to open any EncryptedGroupSecret with provided HPKE private key")
 
         # Decrypt GroupInfo
         nonce = b"\x00" * crypto_provider.aead_nonce_size()
@@ -118,7 +131,7 @@ class MLSGroup:
                 except Exception:
                     continue
             if not verified:
-                raise ValueError("invalid GroupInfo signature")
+                raise InvalidSignatureError("invalid GroupInfo signature")
 
         group = cls(gi.group_context.group_id, crypto_provider, -1)
         group._group_context = gi.group_context
@@ -164,7 +177,7 @@ class MLSGroup:
         an Add proposal, then emits a Commit without UpdatePath.
         """
         if not self._external_private_key:
-            raise ValueError("no external private key configured for this group")
+            raise ConfigurationError("no external private key configured for this group")
         # Queue proposals
         self._pending_proposals.append(ExternalInitProposal(kem_public_key))
         self._pending_proposals.append(AddProposal(key_package.serialize()))
@@ -284,7 +297,7 @@ class MLSGroup:
     def process_proposal(self, message: MLSPlaintext, sender: Sender) -> None:
         sender_leaf_node = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
         if not sender_leaf_node:
-            raise ValueError(f"No leaf node found for sender index {sender.sender}")
+            raise CommitValidationError(f"No leaf node found for sender index {sender.sender}")
 
         # Verify MLSPlaintext (signature and membership tag)
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
@@ -437,7 +450,7 @@ class MLSGroup:
         # Verify plaintext container
         sender_leaf_node = self._ratchet_tree.get_node(sender_index * 2).leaf_node
         if not sender_leaf_node:
-            raise ValueError(f"No leaf node for committer index {sender_index}")
+            raise CommitValidationError(f"No leaf node for committer index {sender_index}")
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
@@ -446,7 +459,7 @@ class MLSGroup:
         if commit.proposal_refs:
             for pref in commit.proposal_refs:
                 if pref not in self._proposal_cache:
-                    raise ValueError("missing referenced proposal")
+                    raise CommitValidationError("missing referenced proposal")
                 referenced.append(self._proposal_cache[pref])
             validate_commit_matches_referenced_proposals(commit, referenced)
             # Do not clear yet; we may need them for PSK binder computation
@@ -466,14 +479,14 @@ class MLSGroup:
                 preimage = PSKPreimage(referenced_psk_ids).serialize()
                 if binder is None:
                     if self._strict_psk_binders:
-                        raise ValueError("missing PSK binder for commit carrying PSK proposals")
+                        raise CommitValidationError("missing PSK binder for commit carrying PSK proposals")
                     # Non-strict mode: accept and derive PSK without binder
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
                 else:
                     binder_key = self._crypto_provider.kdf_extract(b"psk binder", preimage)
                     expected = self._crypto_provider.hmac_sign(binder_key, commit_bytes_for_signing)[: len(binder)]
                     if expected != binder:
-                        raise ValueError("invalid PSK binder")
+                        raise CommitValidationError("invalid PSK binder")
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
 
         # Clear referenced proposals from cache now that binder checks are done
@@ -534,7 +547,7 @@ class MLSGroup:
         tag is not required for external commits.
         """
         if not self._external_public_key:
-            raise ValueError("no external public key configured for this group")
+            raise ConfigurationError("no external public key configured for this group")
         # Verify signature only (no membership tag)
         verify_plaintext(message, self._external_public_key, None, self._crypto_provider)
 
@@ -546,7 +559,7 @@ class MLSGroup:
             referenced: list[Proposal] = []
             for pref in commit.proposal_refs:
                 if pref not in self._proposal_cache:
-                    raise ValueError("missing referenced proposal")
+                    raise CommitValidationError("missing referenced proposal")
                 referenced.append(self._proposal_cache[pref])
             validate_commit_matches_referenced_proposals(commit, referenced)
             for pref in commit.proposal_refs:
@@ -567,13 +580,13 @@ class MLSGroup:
                 preimage = PSKPreimage(referenced_psk_ids).serialize()
                 if binder is None:
                     if self._strict_psk_binders:
-                        raise ValueError("missing PSK binder for commit carrying PSK proposals")
+                        raise CommitValidationError("missing PSK binder for commit carrying PSK proposals")
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
                 else:
                     binder_key = self._crypto_provider.kdf_extract(b"psk binder", preimage)
                     expected = self._crypto_provider.hmac_sign(binder_key, commit_bytes_for_signing)[: len(binder)]
                     if expected != binder:
-                        raise ValueError("invalid PSK binder")
+                        raise CommitValidationError("invalid PSK binder")
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
 
         # Apply changes (removes/adds)
@@ -658,7 +671,7 @@ class MLSGroup:
     def to_bytes(self) -> bytes:
         from .data_structures import serialize_bytes
         if not self._group_context or not self._key_schedule:
-            raise ValueError("group not initialized")
+            raise PyMLSError("group not initialized")
         data = b""
         data += serialize_bytes(self._group_id)
         data += serialize_bytes(self._group_context.serialize())

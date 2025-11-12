@@ -11,6 +11,7 @@ from ..codec.tls import (
     read_opaque16,
 )
 from ..crypto.ciphersuites import SignatureScheme
+from ..mls.exceptions import CredentialValidationError, UnsupportedCipherSuiteError
 
 
 class CredentialType(IntEnum):
@@ -40,7 +41,7 @@ def _decode_signature_scheme(b: int) -> SignatureScheme:
         0x12: SignatureScheme.ECDSA_SECP521R1_SHA512,
     }
     if b not in reverse:
-        raise ValueError(f"Unknown signature scheme code: {b}")
+        raise UnsupportedCipherSuiteError(f"Unknown signature scheme code: {b}")
     return reverse[b]
 
 
@@ -63,7 +64,7 @@ class BasicCredential:
         off = 0
         cred_type, off = read_uint8(data, off)
         if CredentialType(cred_type) != CredentialType.BASIC:
-            raise ValueError("Not a Basic credential")
+            raise CredentialValidationError("Not a Basic credential")
         identity, off = read_opaque16(data, off)
         public_key, off = read_opaque16(data, off)
         sig_code, off = read_uint8(data, off)
@@ -94,7 +95,7 @@ class X509Credential:
         off = 0
         cred_type, off = read_uint8(data, off)
         if CredentialType(cred_type) != CredentialType.X509:
-            raise ValueError("Not an X.509 credential")
+            raise CredentialValidationError("Not an X.509 credential")
         num, off = read_uint8(data, off)
         chain: List[bytes] = []
         for _ in range(num):

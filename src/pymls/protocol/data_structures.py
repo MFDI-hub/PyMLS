@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import struct
 
 from ..crypto.hpke import KEM, KDF, AEAD
+from ..mls.exceptions import PyMLSError
 
 
 def serialize_bytes(data: bytes) -> bytes:
@@ -119,7 +120,7 @@ class Proposal(ABC):
         if proposal_type == ProposalType.GROUP_CONTEXT_EXTENSIONS:
             return GroupContextExtensionsProposal.deserialize(content)
 
-        raise ValueError(f"Unknown proposal type: {proposal_type}")
+        raise PyMLSError(f"Unknown proposal type: {proposal_type}")
 
 
 @dataclass(frozen=True)

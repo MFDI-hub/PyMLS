@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import struct
 
 from .data_structures import Credential, Signature, serialize_bytes, deserialize_bytes
+from ..mls.exceptions import InvalidSignatureError
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ class KeyPackage:
     def verify(self, crypto_provider) -> None:
         # Ensure credential public key matches the leaf signature key
         if self.leaf_node.credential.public_key != self.leaf_node.signature_key:
-            raise ValueError("credential public key does not match leaf signature key")
+            raise InvalidSignatureError("credential public key does not match leaf signature key")
         crypto_provider.verify(
             self.leaf_node.signature_key,
             self.leaf_node.serialize(),

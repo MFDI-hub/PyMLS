@@ -26,13 +26,18 @@ from .ciphersuites import (
     SignatureScheme,
     get_ciphersuite_by_id,
 )
+from ..mls.exceptions import (
+    UnsupportedCipherSuiteError,
+    InvalidSignatureError,
+    PyMLSError,
+)
 
 
 class DefaultCryptoProvider(CryptoProvider):
     def __init__(self, suite_id: int = 0x0001):
         cs = get_ciphersuite_by_id(suite_id)
         if not cs:
-            raise ValueError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
+            raise UnsupportedCipherSuiteError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
         self._suite: MlsCiphersuite = cs
 
     @property
@@ -47,7 +52,7 @@ class DefaultCryptoProvider(CryptoProvider):
     def set_ciphersuite(self, suite_id: int) -> None:
         cs = get_ciphersuite_by_id(suite_id)
         if not cs:
-            raise ValueError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
+            raise UnsupportedCipherSuiteError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
         self._suite = cs
 
     # --- Internals for algorithm selection ---
@@ -64,7 +69,7 @@ class DefaultCryptoProvider(CryptoProvider):
             return AESGCM
         if self._suite.aead == AEAD.CHACHA20_POLY1305:
             return ChaCha20Poly1305
-        raise ValueError("Unsupported AEAD")
+        raise UnsupportedCipherSuiteError("Unsupported AEAD")
 
     def _hpke_ids(self):
         kem_id = {
@@ -94,7 +99,7 @@ class DefaultCryptoProvider(CryptoProvider):
             try:
                 return serialization.load_pem_private_key(data, password=None)
             except Exception as e:
-                raise ValueError("Invalid EC private key encoding (expect DER/PEM)") from e
+                raise PyMLSError("Invalid EC private key encoding (expect DER/PEM)") from e
 
     def _load_ec_public(self, data: bytes, curve: ec.EllipticCurve):
         try:
@@ -103,7 +108,7 @@ class DefaultCryptoProvider(CryptoProvider):
             try:
                 return serialization.load_pem_public_key(data)
             except Exception as e:
-                raise ValueError("Invalid EC public key encoding (expect DER/PEM)") from e
+                raise PyMLSError("Invalid EC public key encoding (expect DER/PEM)") from e
 
     def kdf_extract(self, salt: bytes, ikm: bytes) -> bytes:
         hkdf = HKDF(
@@ -155,7 +160,7 @@ class DefaultCryptoProvider(CryptoProvider):
         if scheme == SignatureScheme.ECDSA_SECP521R1_SHA512:
             sk = self._load_ec_private(private_key, ec.SECP521R1())
             return sk.sign(data, ec.ECDSA(hashes.SHA512()))
-        raise ValueError("Unsupported signature scheme")
+        raise UnsupportedCipherSuiteError("Unsupported signature scheme")
 
     def verify(self, public_key: bytes, data: bytes, signature: bytes) -> None:
         scheme = self._suite.signature
@@ -177,8 +182,8 @@ class DefaultCryptoProvider(CryptoProvider):
                 pk.verify(signature, data, ec.ECDSA(hashes.SHA512()))
                 return
         except InvalidSignature as e:
-            raise e
-        raise ValueError("Unsupported signature scheme")
+            raise InvalidSignatureError("invalid signature") from e
+        raise UnsupportedCipherSuiteError("Unsupported signature scheme")
 
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
         kem_id, kdf_id, aead_id = self._hpke_ids()
@@ -192,7 +197,7 @@ class DefaultCryptoProvider(CryptoProvider):
         elif self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
             pkR = self._load_ec_public(public_key, ec.SECP521R1())
         else:
-            raise ValueError("Unsupported KEM")
+            raise UnsupportedCipherSuiteError("Unsupported KEM")
         enc, ct = hpke.seal(pkR, info, aad, ptxt)
         return enc, ct
 
@@ -208,7 +213,7 @@ class DefaultCryptoProvider(CryptoProvider):
         elif self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
             skR = self._load_ec_private(private_key, ec.SECP521R1())
         else:
-            raise ValueError("Unsupported KEM")
+            raise UnsupportedCipherSuiteError("Unsupported KEM")
         return hpke.open(skR, kem_output, info, aad, ctxt)
 
     def generate_key_pair(self) -> tuple[bytes, bytes]:
@@ -248,7 +253,7 @@ class DefaultCryptoProvider(CryptoProvider):
                     serialization.PublicFormat.SubjectPublicKeyInfo,
                 ),
             )
-        raise ValueError("Unsupported KEM")
+        raise UnsupportedCipherSuiteError("Unsupported KEM")
 
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
         if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
@@ -274,14 +279,14 @@ class DefaultCryptoProvider(CryptoProvider):
             raise NotImplementedError("kem_pk_size not defined for EC KEMs with DER encoding")
         if self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
             raise NotImplementedError("kem_pk_size not defined for EC KEMs with DER encoding")
-        raise ValueError("Unsupported KEM")
+        raise UnsupportedCipherSuiteError("Unsupported KEM")
 
     def aead_key_size(self) -> int:
         if self._suite.aead == AEAD.AES_128_GCM:
             return 16
         if self._suite.aead in (AEAD.AES_256_GCM, AEAD.CHACHA20_POLY1305):
             return 32
-        raise ValueError("Unsupported AEAD")
+        raise UnsupportedCipherSuiteError("Unsupported AEAD")
 
     def aead_nonce_size(self) -> int:
         # All RFC-defined AEADs use 96-bit nonces

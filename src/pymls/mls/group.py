@@ -11,6 +11,10 @@ from ..protocol.data_structures import Welcome
 class Group:
     """
     Ergonomic wrapper around the protocol MLSGroup.
+
+    Rationale:
+    - Implements RFC 9420 group lifecycle interfaces, delegating to `protocol.MLSGroup`.
+    - See RFC 9420 §8 (Group operations) and Appendix C/D (tree representations).
     """
 
     def __init__(self, inner: _ProtocolMLSGroup):

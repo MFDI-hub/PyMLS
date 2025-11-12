@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from typing import List
+from ..mls.exceptions import (
+    PyMLSError,
+    UnsupportedCipherSuiteError,
+    CredentialValidationError,
+    CredentialRevocationError,
+)
 
 def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes]) -> bytes:
     """
@@ -14,7 +20,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
         from cryptography.hazmat.primitives import serialization, hashes
         from cryptography.hazmat.primitives.asymmetric import padding
     except Exception as e:
-        raise RuntimeError("cryptography package required for X.509 validation") from e
+        raise PyMLSError("cryptography package required for X.509 validation") from e
 
     # Load certificates
     def load_cert(buf: bytes):
@@ -25,11 +31,11 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
 
     certs = [load_cert(c) for c in chain_der]
     if not certs:
-        raise ValueError("empty certificate chain")
+        raise CredentialValidationError("empty certificate chain")
 
     roots = [load_cert(r) for r in trust_roots_pem]
     if not roots:
-        raise ValueError("no trust roots provided")
+        raise CredentialValidationError("no trust roots provided")
 
     # Verify each certificate is signed by the next (leaf -> intermediates)
     def verify_sig(child, issuer):
@@ -39,7 +45,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
         # Choose padding/hash based on signature algorithm
         if hasattr(pub, "verify"):
             if child.signature_hash_algorithm is None:
-                raise ValueError("unsupported signature algorithm")
+                raise UnsupportedCipherSuiteError("unsupported signature algorithm")
             if pub.__class__.__name__.startswith("RSAPublicKey"):
                 pub.verify(sig, data, padding.PKCS1v15(), child.signature_hash_algorithm)
             elif pub.__class__.__name__.startswith("EllipticCurvePublicKey"):
@@ -48,7 +54,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
                 # Fallback; attempt a generic verify (may raise)
                 pub.verify(sig, data)
         else:
-            raise ValueError("unsupported public key type")
+            raise CredentialValidationError("unsupported public key type")
 
     for i in range(len(certs) - 1):
         verify_sig(certs[i], certs[i + 1])
@@ -63,7 +69,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
             matched = True
             break
     if not matched:
-        raise ValueError("no matching trust root for issuer")
+        raise CredentialValidationError("no matching trust root for issuer")
 
     # Return leaf public key (SPKI DER)
     leaf_pub = certs[0].public_key()
@@ -94,7 +100,7 @@ def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem
     try:
         from cryptography import x509
     except Exception as e:
-        raise RuntimeError("cryptography package required for X.509 validation") from e
+        raise PyMLSError("cryptography package required for X.509 validation") from e
 
     leaf_spki = verify_certificate_chain(chain_der, trust_roots_pem)
     if policy is None:
@@ -113,18 +119,18 @@ def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem
     import datetime as _dt
     now = _dt.datetime.utcnow()
     if leaf.not_valid_before - _dt.timedelta(seconds=policy.not_before_leeway_s) > now:
-        raise ValueError("certificate not yet valid")
+        raise CredentialValidationError("certificate not yet valid")
     if leaf.not_valid_after + _dt.timedelta(seconds=policy.not_after_leeway_s) < now:
-        raise ValueError("certificate expired")
+        raise CredentialValidationError("certificate expired")
 
     # Key Usage (require digitalSignature when requested)
     if policy.require_digital_signature_ku:
         try:
             ku = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
             if not ku.digital_signature:
-                raise ValueError("digitalSignature key usage not present")
+                raise CredentialValidationError("digitalSignature key usage not present")
         except x509.ExtensionNotFound:
-            raise ValueError("KeyUsage extension missing")
+            raise CredentialValidationError("KeyUsage extension missing")
 
     # EKU: if acceptable EKUs configured, require one to match
     if policy.acceptable_ekus:
@@ -132,16 +138,16 @@ def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem
             eku_ext = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
             eku_oids = {oid.dotted_string for oid in eku_ext}
             if not any(oid in eku_oids for oid in policy.acceptable_ekus):
-                raise ValueError("certificate EKU does not permit use for MLS policy")
+                raise CredentialValidationError("certificate EKU does not permit use for MLS policy")
         except x509.ExtensionNotFound:
-            raise ValueError("ExtendedKeyUsage extension missing")
+            raise CredentialValidationError("ExtendedKeyUsage extension missing")
 
     # Revocation: pluggable checks (no network I/O here)
     if policy.revocation.enable_crl and policy.revocation.crl_checker:
         if not policy.revocation.crl_checker(chain_der[0]):
-            raise ValueError("certificate revoked (CRL)")
+            raise CredentialRevocationError("certificate revoked (CRL)")
     if policy.revocation.enable_ocsp and policy.revocation.ocsp_checker:
         if not policy.revocation.ocsp_checker(chain_der[0]):
-            raise ValueError("certificate revoked (OCSP)")
+            raise CredentialRevocationError("certificate revoked (OCSP)")
 
     return leaf_spki

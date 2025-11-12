@@ -8,6 +8,7 @@ External interop (OpenMLS/MLS++) can be added by invoking their CLIs/FFI here.
 """
 
 from typing import Tuple, List
+import base64
 
 from ..codec.mls import (
     encode_commit_message,
@@ -20,6 +21,7 @@ from ..codec.mls import (
 from ..protocol.data_structures import Commit, Proposal, Welcome
 from ..protocol.messages import MLSPlaintext, MLSCiphertext
 from ..protocol.messages import ContentType as WireContentType
+from .wire import encode_handshake, decode_handshake, encode_application, decode_application
 
 
 
@@ -54,4 +56,20 @@ def export_ciphertext_hex(m: MLSCiphertext) -> str:
 def import_ciphertext_hex(h: str) -> MLSCiphertext:
     data = bytes.fromhex(h)
     return MLSCiphertext.deserialize(data)
+
+# --- Base64 RFC wire helpers ---
+def export_handshake_b64(m: MLSPlaintext) -> str:
+    return base64.b64encode(encode_handshake(m)).decode("ascii")
+
+
+def import_handshake_b64(s: str) -> MLSPlaintext:
+    return decode_handshake(base64.b64decode(s.encode("ascii")))
+
+
+def export_application_b64(m: MLSCiphertext) -> str:
+    return base64.b64encode(encode_application(m)).decode("ascii")
+
+
+def import_application_b64(s: str) -> MLSCiphertext:
+    return decode_application(base64.b64decode(s.encode("ascii")))
 

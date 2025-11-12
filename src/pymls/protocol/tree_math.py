@@ -37,10 +37,13 @@ def root(n: int) -> int:
     return (1 << log2(w)) - 1
 
 
+from ..mls.exceptions import PyMLSError
+
+
 def left(x: int) -> int:
     k = level(x)
     if k == 0:
-        raise ValueError("leaf node has no children")
+        raise PyMLSError("leaf node has no children")
     return x ^ (0x01 << (k - 1))
 
 
@@ -48,13 +51,13 @@ def right(x: int, _n: int) -> int:
     # Keep signature compatible; n not needed for array relationships
     k = level(x)
     if k == 0:
-        raise ValueError("leaf node has no children")
+        raise PyMLSError("leaf node has no children")
     return x ^ (0x03 << (k - 1))
 
 
 def parent(x: int, n: int) -> int:
     if x == root(n):
-        raise ValueError("root node has no parent")
+        raise PyMLSError("root node has no parent")
 
     k = level(x)
     b = (x >> (k + 1)) & 0x01
