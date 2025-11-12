@@ -1,3 +1,4 @@
+"""PyMLS: A minimal, pragmatic MLS (Messaging Layer Security) implementation for Python."""
 import warnings
 
 from .mls.group import Group  # High-level API

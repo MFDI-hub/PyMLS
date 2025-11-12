@@ -1,4 +1,6 @@
+"""Array-indexed balanced binary tree helpers (RFC 9420 Appendix C)."""
 def log2(x: int) -> int:
+    """Return floor(log2(x)) for positive integers; 0 for x == 0."""
     # Equivalent to floor(log2(x))
     if x == 0:
         return 0
@@ -24,6 +26,7 @@ def level(x: int) -> int:
 
 
 def node_width(n: int) -> int:
+    """Total number of array nodes for a tree with n leaves."""
     if n == 0:
         return 0
     else:
@@ -31,6 +34,7 @@ def node_width(n: int) -> int:
 
 
 def root(n: int) -> int:
+    """Array index of the root for a tree with n leaves (0 if n == 0)."""
     w = node_width(n)
     if w == 0:
         return 0
@@ -41,6 +45,7 @@ from ..mls.exceptions import PyMLSError
 
 
 def left(x: int) -> int:
+    """Left child index of internal node x."""
     k = level(x)
     if k == 0:
         raise PyMLSError("leaf node has no children")
@@ -49,6 +54,7 @@ def left(x: int) -> int:
 
 def right(x: int, _n: int) -> int:
     # Keep signature compatible; n not needed for array relationships
+    """Right child index of internal node x."""
     k = level(x)
     if k == 0:
         raise PyMLSError("leaf node has no children")
@@ -56,6 +62,7 @@ def right(x: int, _n: int) -> int:
 
 
 def parent(x: int, n: int) -> int:
+    """Parent index of node x for a tree with n leaves."""
     if x == root(n):
         raise PyMLSError("root node has no parent")
 
@@ -65,6 +72,7 @@ def parent(x: int, n: int) -> int:
 
 
 def sibling(x: int, n: int) -> int:
+    """Sibling index of node x for a tree with n leaves."""
     p = parent(x, n)
     if x < p:
         return right(p, n)
@@ -73,6 +81,7 @@ def sibling(x: int, n: int) -> int:
 
 
 def direct_path(x: int, n: int) -> list[int]:
+    """Indices on the path from node x up to (but excluding) the root."""
     r = root(n)
     if x == r:
         return []
@@ -85,6 +94,7 @@ def direct_path(x: int, n: int) -> list[int]:
 
 
 def copath(x: int, n: int) -> list[int]:
+    """Sequence of sibling nodes along the path from x to the root."""
     if x == root(n):
         return []
 

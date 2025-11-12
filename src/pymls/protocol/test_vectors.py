@@ -1,3 +1,4 @@
+"""Deterministic-like test vector generation helpers for protocol components."""
 from __future__ import annotations
 
 from typing import Dict, Any
@@ -8,6 +9,7 @@ from ..crypto.default_crypto_provider import DefaultCryptoProvider
 
 
 def generate_key_schedule_vector() -> Dict[str, Any]:
+    """Produce a dictionary with hex-encoded key schedule secrets for testing."""
     crypto = DefaultCryptoProvider()
     gc = GroupContext(b"group", 1, b"tree", b"cth")
     ks = KeySchedule(b"init", b"commit", gc, None, crypto)

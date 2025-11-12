@@ -13,14 +13,30 @@ from ..mls.exceptions import InvalidSignatureError
 
 @dataclass(frozen=True)
 class PublicMessage:
+    """Public, unauthenticated message container.
+
+    This minimal structure represents a message with a raw content payload and a
+    trailing signature. It is used as a simple building block in places where
+    full MLS framing is not required.
+
+    Fields
+    - content: Payload bytes.
+    - signature: Signature object appended to content.
+    """
     content: bytes
     signature: Signature
 
     def serialize(self) -> bytes:
+        """Serialize as content || signature."""
         return self.content + self.signature.serialize()
 
     @classmethod
     def deserialize(cls, data: bytes) -> "PublicMessage":
+        """Parse a PublicMessage from bytes.
+
+        Notes
+        - This simplified format assumes a fixed 64-byte signature length.
+        """
         # This is a simplification
         content = data[:-64]
         signature = Signature.deserialize(data[-64:])
@@ -29,14 +45,26 @@ class PublicMessage:
 
 @dataclass(frozen=True)
 class PrivateMessage:
+    """Private message container with AEAD-authenticated ciphertext.
+
+    Fields
+    - ciphertext: Encrypted payload bytes (AEAD).
+    - auth_tag: Authentication tag produced by the AEAD.
+    """
     ciphertext: bytes
     auth_tag: bytes
 
     def serialize(self) -> bytes:
+        """Serialize as ciphertext || auth_tag."""
         return self.ciphertext + self.auth_tag
 
     @classmethod
     def deserialize(cls, data: bytes) -> "PrivateMessage":
+        """Parse a PrivateMessage from bytes.
+
+        Notes
+        - This simplified format assumes a fixed 16-byte authentication tag.
+        """
         # This is a simplification
         ciphertext = data[:-16]
         auth_tag = data[-16:]
@@ -60,6 +88,7 @@ from ..crypto.crypto_provider import CryptoProvider
 
 
 class ContentType(IntEnum):
+    """Content type for framed MLS messages (MVP subset)."""
     APPLICATION = 1
     PROPOSAL = 2
     COMMIT = 3
@@ -72,6 +101,7 @@ class PSKPreimage:
     psk_ids: list[bytes]
 
     def serialize(self) -> bytes:
+        """Encode as uint16 num_ids || num_ids*opaque16(psk_id)."""
         out = write_uint16(len(self.psk_ids))
         for pid in self.psk_ids:
             out += write_opaque16(pid)
@@ -100,14 +130,22 @@ def decode_psk_binder(authenticated_data: bytes) -> bytes | None:
 
 @dataclass(frozen=True)
 class FramedContent:
+    """RFC-aligned framed content wrapper.
+
+    Fields
+    - content_type: Indicates how to interpret 'content'.
+    - content: Encoded content bytes (Application | Proposal | Commit).
+    """
     content_type: ContentType
     content: bytes  # RFC: ApplicationData | Proposal | Commit
 
     def serialize(self) -> bytes:
+        """Encode as uint8(content_type) || opaque16(content)."""
         return write_uint8(int(self.content_type)) + write_opaque16(self.content)
 
     @classmethod
     def deserialize(cls, data: bytes) -> "FramedContent":
+        """Parse FramedContent from bytes."""
         off = 0
         ct_val, off = read_uint8(data, off)
         body, off = read_opaque16(data, off)
@@ -116,6 +154,15 @@ class FramedContent:
 
 @dataclass(frozen=True)
 class AuthenticatedContentTBS:
+    """To-Be-Signed structure for MLSPlaintext authentication.
+
+    Fields
+    - group_id: Group identifier.
+    - epoch: Group epoch.
+    - sender_leaf_index: Sender's leaf index.
+    - authenticated_data: Opaque authenticated data associated with content.
+    - framed_content: Wrapped content and content type.
+    """
     # To-Be-Signed structure
     group_id: bytes
     epoch: int
@@ -124,6 +171,7 @@ class AuthenticatedContentTBS:
     framed_content: FramedContent
 
     def serialize(self) -> bytes:
+        """Encode fields in RFC order for signature/MAC coverage."""
         out = write_opaque16(self.group_id)
         out += write_uint32(self.epoch)
         out += write_uint16(self.sender_leaf_index)
@@ -134,11 +182,19 @@ class AuthenticatedContentTBS:
 
 @dataclass(frozen=True)
 class AuthenticatedContent:
+    """Authenticated content with signature and optional membership tag.
+
+    Fields
+    - tbs: To-Be-Signed structure.
+    - signature: Signature produced over tbs.serialize().
+    - membership_tag: Optional MAC over TBS (membership proof).
+    """
     tbs: AuthenticatedContentTBS
     signature: bytes
     membership_tag: bytes | None = None
 
     def serialize(self) -> bytes:
+        """Encode as TBS || opaque16(signature) || opaque16(membership_tag|empty)."""
         out = self.tbs.serialize()
         out += write_opaque16(self.signature)
         if self.membership_tag is not None:
@@ -149,6 +205,7 @@ class AuthenticatedContent:
 
     @classmethod
     def deserialize(cls, data: bytes) -> "AuthenticatedContent":
+        """Parse AuthenticatedContent from bytes produced by serialize()."""
         off = 0
         group_id, off = read_opaque16(data, off)
         epoch, off = read_uint32(data, off)
@@ -166,23 +223,34 @@ class AuthenticatedContent:
 
 @dataclass(frozen=True)
 class MLSPlaintext:
+    """Top-level handshake plaintext container."""
     auth_content: AuthenticatedContent
 
     def serialize(self) -> bytes:
+        """Serialize to bytes."""
         return self.auth_content.serialize()
 
     @classmethod
     def deserialize(cls, data: bytes) -> "MLSPlaintext":
+        """Parse from bytes produced by serialize()."""
         return cls(AuthenticatedContent.deserialize(data))
 
 
 @dataclass(frozen=True)
 class SenderData:
+    """SenderData protected field for application/handshake messages.
+
+    Fields
+    - sender: Sender leaf index.
+    - generation: Per-sender message generation counter (secret tree).
+    - reuse_guard: 4-byte random value XORed into sender-data nonce derivation.
+    """
     sender: int
     generation: int
     reuse_guard: bytes
 
     def serialize(self) -> bytes:
+        """Encode as uint16(sender) || uint32(generation) || opaque16(reuse_guard)."""
         out = write_uint16(self.sender)
         out += write_uint32(self.generation)
         out += write_opaque16(self.reuse_guard)
@@ -190,6 +258,7 @@ class SenderData:
 
     @classmethod
     def deserialize(cls, data: bytes) -> "SenderData":
+        """Parse a SenderData from bytes."""
         off = 0
         s, off = read_uint16(data, off)
         g, off = read_uint32(data, off)
@@ -199,6 +268,16 @@ class SenderData:
 
 @dataclass(frozen=True)
 class MLSCiphertext:
+    """Encrypted MLS content container (handshake or application).
+
+    Fields
+    - group_id: Group identifier.
+    - epoch: Group epoch.
+    - content_type: APPLICATION or COMMIT (MVP subset).
+    - authenticated_data: Opaque AAD field fed into AEAD.
+    - encrypted_sender_data: Encoded SenderData (with reuse guard).
+    - ciphertext: AEAD-encrypted content.
+    """
     group_id: bytes
     epoch: int
     content_type: ContentType
@@ -207,6 +286,7 @@ class MLSCiphertext:
     ciphertext: bytes
 
     def serialize(self) -> bytes:
+        """Encode fields in RFC order with TLS-like length prefixes."""
         out = write_opaque16(self.group_id)
         out += write_uint32(self.epoch)
         out += write_uint8(int(self.content_type))
@@ -217,6 +297,7 @@ class MLSCiphertext:
 
     @classmethod
     def deserialize(cls, data: bytes) -> "MLSCiphertext":
+        """Parse MLSCiphertext from bytes produced by serialize()."""
         off = 0
         gid, off = read_opaque16(data, off)
         epoch, off = read_uint32(data, off)
@@ -230,6 +311,17 @@ class MLSCiphertext:
 def encrypt_sender_data(
     sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider, aad: bytes = b""
 ) -> bytes:
+    """Encrypt SenderData using sender data key/nonce derived from KeySchedule.
+
+    Parameters
+    - sd: SenderData to encrypt.
+    - key_schedule: Key schedule instance.
+    - crypto: Crypto provider for AEAD.
+    - aad: Optional additional authenticated data.
+
+    Returns
+    - AEAD ciphertext bytes.
+    """
     key = key_schedule.sender_data_key()
     nonce = key_schedule.sender_data_nonce(sd.reuse_guard)
     return crypto.aead_encrypt(key, nonce, sd.serialize(), aad)
@@ -238,6 +330,7 @@ def encrypt_sender_data(
 def decrypt_sender_data(
     enc: bytes, reuse_guard: bytes, key_schedule: KeySchedule, crypto: CryptoProvider, aad: bytes = b""
 ) -> SenderData:
+    """Decrypt SenderData using sender data key/nonce derived from KeySchedule."""
     key = key_schedule.sender_data_key()
     nonce = key_schedule.sender_data_nonce(reuse_guard)
     ptxt = crypto.aead_decrypt(key, nonce, enc, aad)
@@ -258,6 +351,7 @@ def encode_encrypted_sender_data(
 def decode_encrypted_sender_data(
     data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider
 ) -> SenderData:
+    """Decode the reuse_guard and inner SenderData from the opaque field."""
     blob, _ = read_opaque16(data, 0)
     # first 4 bytes are reuse_guard, remainder is ciphertext
     reuse_guard = blob[:4]
@@ -278,6 +372,10 @@ def compute_ciphertext_aad(group_id: bytes, epoch: int, content_type: ContentTyp
 
 
 def add_zero_padding(data: bytes, pad_to: int) -> bytes:
+    """Pad with zero bytes up to the next 'pad_to' boundary.
+
+    If pad_to <= 0, the input data is returned unchanged.
+    """
     if pad_to <= 0:
         return data
     rem = len(data) % pad_to
@@ -288,6 +386,7 @@ def add_zero_padding(data: bytes, pad_to: int) -> bytes:
 
 
 def strip_trailing_zeros(data: bytes) -> bytes:
+    """Remove trailing zero bytes."""
     return data.rstrip(b"\x00")
 
 
@@ -351,6 +450,14 @@ def sign_authenticated_content(
 def attach_membership_tag(plaintext: MLSPlaintext, membership_key: bytes, crypto: CryptoProvider) -> MLSPlaintext:
     """
     Compute membership tag as HMAC over the serialized TBS (MVP behavior).
+
+    Parameters
+    - plaintext: MLSPlaintext without a membership tag.
+    - membership_key: Group membership MAC key.
+    - crypto: Crypto provider offering HMAC.
+
+    Returns
+    - New MLSPlaintext with membership_tag set.
     """
     tag = crypto.hmac_sign(membership_key, plaintext.auth_content.tbs.serialize())
     return MLSPlaintext(AuthenticatedContent(tbs=plaintext.auth_content.tbs, signature=plaintext.auth_content.signature, membership_tag=tag))
@@ -365,6 +472,15 @@ def verify_plaintext(
     """
     Verify signature and (if provided) membership tag of an MLSPlaintext.
     Raises on failure.
+
+    Parameters
+    - plaintext: Message to verify.
+    - sender_signature_key: Public key for verifying the signature.
+    - membership_key: MAC key for membership tag verification, or None to skip.
+    - crypto: Crypto provider exposing verify() and hmac_sign().
+
+    Raises
+    - InvalidSignatureError: If signature or membership tag verification fails.
     """
     tbs_ser = plaintext.auth_content.tbs.serialize()
     crypto.verify(sender_signature_key, tbs_ser, plaintext.auth_content.signature)

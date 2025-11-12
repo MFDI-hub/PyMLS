@@ -1,3 +1,4 @@
+"""Utility helpers for cryptographic memory handling."""
 from __future__ import annotations
 
 

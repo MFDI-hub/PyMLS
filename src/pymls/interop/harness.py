@@ -26,50 +26,61 @@ from .wire import encode_handshake, decode_handshake, encode_application, decode
 
 
 def round_trip_commit(commit: Commit, signature: bytes) -> Tuple[Commit, bytes]:
+    """Encode and decode a commit using the internal wire format."""
     data = encode_commit_message(commit, signature)
     return decode_commit_message(data)
 
 
 def round_trip_proposals(proposals: List[Proposal], signature: bytes) -> Tuple[List[Proposal], bytes]:
+    """Encode and decode proposals using the internal wire format."""
     data = encode_proposals_message(proposals, signature)
     return decode_proposals_message(data)
 
 
 def round_trip_welcome(welcome: Welcome) -> Welcome:
+    """Encode and decode a Welcome message via internal codec."""
     data = encode_welcome(welcome)
     return decode_welcome(data)
 
 
 def export_plaintext_hex(m: MLSPlaintext) -> str:
+    """Export MLSPlaintext as a hex string."""
     return m.serialize().hex()
 
 
 def import_plaintext_hex(h: str) -> MLSPlaintext:
+    """Import MLSPlaintext from a hex string."""
     data = bytes.fromhex(h)
     return MLSPlaintext.deserialize(data)
 
 
 def export_ciphertext_hex(m: MLSCiphertext) -> str:
+    """Export MLSCiphertext as a hex string."""
     return m.serialize().hex()
 
 
 def import_ciphertext_hex(h: str) -> MLSCiphertext:
+    """Import MLSCiphertext from a hex string."""
     data = bytes.fromhex(h)
     return MLSCiphertext.deserialize(data)
 
 # --- Base64 RFC wire helpers ---
 def export_handshake_b64(m: MLSPlaintext) -> str:
+    """Export handshake plaintext to base64 RFC wire format."""
     return base64.b64encode(encode_handshake(m)).decode("ascii")
 
 
 def import_handshake_b64(s: str) -> MLSPlaintext:
+    """Import handshake plaintext from base64 RFC wire format."""
     return decode_handshake(base64.b64decode(s.encode("ascii")))
 
 
 def export_application_b64(m: MLSCiphertext) -> str:
+    """Export application ciphertext to base64 RFC wire format."""
     return base64.b64encode(encode_application(m)).decode("ascii")
 
 
 def import_application_b64(s: str) -> MLSCiphertext:
+    """Import application ciphertext from base64 RFC wire format."""
     return decode_application(base64.b64decode(s.encode("ascii")))
 

@@ -1,17 +1,21 @@
+"""Abstract cryptographic provider interface used by the protocol layer."""
 from abc import ABC, abstractmethod
 from .hpke import KEM, AEAD, KDF  # noqa: F401 (referenced in type hints and implementors)
 from .ciphersuites import MlsCiphersuite
 
 
 class CryptoProvider(ABC):
+    """Interface for all cryptographic operations required by PyMLS."""
     @property
     @abstractmethod
     def supported_ciphersuites(self):
+        """Iterable of RFC ciphersuite ids supported by this provider."""
         pass
 
     @property
     @abstractmethod
     def active_ciphersuite(self) -> MlsCiphersuite:
+        """Currently selected ciphersuite."""
         pass
 
     @abstractmethod
@@ -23,54 +27,67 @@ class CryptoProvider(ABC):
 
     @abstractmethod
     def kdf_extract(self, salt: bytes, ikm: bytes) -> bytes:
+        """HKDF-Extract(salt, ikm) for the active KDF."""
         pass
 
     @abstractmethod
     def kdf_expand(self, prk: bytes, info: bytes, length: int) -> bytes:
+        """HKDF-Expand(prk, info, length) for the active KDF."""
         pass
 
     @abstractmethod
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
+        """AEAD seal."""
         pass
 
     @abstractmethod
     def aead_decrypt(self, key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> bytes:
+        """AEAD open."""
         pass
 
     @abstractmethod
     def hmac_sign(self, key: bytes, data: bytes) -> bytes:
+        """Compute HMAC tag over data with key."""
         pass
 
     @abstractmethod
     def hmac_verify(self, key: bytes, data: bytes, tag: bytes) -> None:
+        """Verify HMAC tag, raising on failure."""
         pass
 
     @abstractmethod
     def sign(self, private_key: bytes, data: bytes) -> bytes:
+        """Sign data with the active signature scheme."""
         pass
 
     @abstractmethod
     def verify(self, public_key: bytes, data: bytes, signature: bytes) -> None:
+        """Verify signature, raising on failure."""
         pass
 
     @abstractmethod
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
+        """HPKE seal: returns (enc, ciphertext)."""
         pass
 
     @abstractmethod
     def hpke_open(self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
+        """HPKE open: returns plaintext."""
         pass
 
     @abstractmethod
     def generate_key_pair(self) -> tuple[bytes, bytes]:
+        """Generate a key pair for the active KEM's underlying curve/algorithm."""
         pass
 
     @abstractmethod
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
+        """Derive a deterministic key pair from a seed when supported."""
         pass
 
     @abstractmethod
     def kem_pk_size(self) -> int:
+        """Size in bytes of the KEM public key encoding for stream parsing (if defined)."""
         pass 
 
     @abstractmethod

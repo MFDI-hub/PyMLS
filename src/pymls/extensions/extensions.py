@@ -1,3 +1,4 @@
+"""Encoding helpers and simple constructors for MLS extensions (MVP set)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from ..codec.tls import (
 
 
 class ExtensionType(IntEnum):
+    """Extension type identifiers used in this library."""
     CAPABILITIES = 1
     LIFETIME = 2
     KEY_ID = 3
@@ -23,14 +25,17 @@ class ExtensionType(IntEnum):
 
 @dataclass(frozen=True)
 class Extension:
+    """Generic extension: (type, opaque data)."""
     ext_type: ExtensionType
     data: bytes
 
     def serialize(self) -> bytes:
+        """Encode as uint16(type) || opaque16(data)."""
         return write_uint16(int(self.ext_type)) + write_opaque16(self.data)
 
     @classmethod
     def deserialize(cls, data: bytes) -> Tuple["Extension", int]:
+        """Parse an Extension from the beginning of data and return (ext, bytes_used)."""
         off = 0
         t, off = read_uint16(data, off)
         body, off = read_opaque16(data, off)
@@ -38,6 +43,7 @@ class Extension:
 
 
 def serialize_extensions(exts: list[Extension]) -> bytes:
+    """Encode a vector of extensions as uint16(count) followed by entries."""
     out = write_uint16(len(exts))
     for e in exts:
         out += e.serialize()
@@ -45,6 +51,7 @@ def serialize_extensions(exts: list[Extension]) -> bytes:
 
 
 def deserialize_extensions(data: bytes) -> list[Extension]:
+    """Parse a vector of extensions encoded by serialize_extensions()."""
     off = 0
     num, off = read_uint16(data, off)
     out: list[Extension] = []
@@ -56,24 +63,29 @@ def deserialize_extensions(data: bytes) -> list[Extension]:
 
 
 def make_parent_hash_ext(parent_hash: bytes) -> Extension:
+    """Build a PARENT_HASH extension from the provided parent hash bytes."""
     return Extension(ExtensionType.PARENT_HASH, parent_hash)
 
 
 def make_capabilities_ext(data: bytes) -> Extension:
+    """Build a CAPABILITIES extension with pre-encoded capability data."""
     return Extension(ExtensionType.CAPABILITIES, data)
 
 
 def make_key_id_ext(key_id: bytes) -> Extension:
+    """Build a KEY_ID extension wrapping an opaque identifier."""
     return Extension(ExtensionType.KEY_ID, key_id)
 
 
 def make_lifetime_ext(not_before: int, not_after: int) -> Extension:
+    """Build a LIFETIME extension from not_before/not_after unix timestamps."""
     from ..codec.tls import write_uint64
     payload = write_uint64(not_before) + write_uint64(not_after)
     return Extension(ExtensionType.LIFETIME, payload)
 
 
 def parse_lifetime_ext(data: bytes) -> tuple[int, int]:
+    """Parse LIFETIME extension payload into (not_before, not_after) timestamps."""
     from ..codec.tls import read_uint64
     off = 0
     nb, off = read_uint64(data, off)
@@ -82,14 +94,17 @@ def parse_lifetime_ext(data: bytes) -> tuple[int, int]:
 
 
 def make_external_pub_ext(public_key: bytes) -> Extension:
+    """Build an EXTERNAL_PUB extension carrying a public key bytes value."""
     return Extension(ExtensionType.EXTERNAL_PUB, public_key)
 
 
 def parse_external_pub_ext(data: bytes) -> bytes:
+    """Return the raw EXTERNAL_PUB payload (identity function)."""
     return data
 
 
 def build_capabilities_data(ciphersuite_ids: list[int], supported_exts: list[ExtensionType]) -> bytes:
+    """Encode capabilities as vectors of ciphersuite ids and extension types."""
     from ..codec.tls import write_uint16
     out = write_uint16(len(ciphersuite_ids))
     for cs in ciphersuite_ids:
@@ -101,6 +116,7 @@ def build_capabilities_data(ciphersuite_ids: list[int], supported_exts: list[Ext
 
 
 def parse_capabilities_data(data: bytes) -> tuple[list[int], list[ExtensionType]]:
+    """Decode capabilities payload into (ciphersuite_ids, extension_types)."""
     from ..codec.tls import read_uint16
     off = 0
     num_cs, off = read_uint16(data, off)

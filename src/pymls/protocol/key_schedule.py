@@ -10,7 +10,23 @@ from ..crypto.crypto_provider import CryptoProvider
 
 
 class KeySchedule:
+    """Derive epoch secrets and per-branch keys for an MLS group.
+
+    This implementation follows RFC 9420 §9–§10 semantics using labels provided
+    to the active CryptoProvider. It produces the epoch secret and branches for
+    handshake, application, exporter, external, and sender-data, as well as
+    helpers for confirmation, membership, resumption, and content encryption.
+    """
     def __init__(self, init_secret: bytes, commit_secret: bytes, group_context: GroupContext, psk_secret: bytes | None, crypto_provider: CryptoProvider):
+        """Construct a new key schedule for the current epoch.
+
+        Parameters
+        - init_secret: Prior epoch's init secret (or 0 for the initial epoch).
+        - commit_secret: The commit secret for the transition to this epoch.
+        - group_context: Current GroupContext instance.
+        - psk_secret: Optional pre-shared key secret blended into update_secret.
+        - crypto_provider: Active CryptoProvider exposing labeled KDFs.
+        """
         self._init_secret = init_secret
         self._commit_secret = commit_secret
         self._group_context = group_context
@@ -37,14 +53,21 @@ class KeySchedule:
 
     @property
     def sender_data_secret(self) -> bytes:
+        """Base secret for deriving sender-data keys and nonces."""
         return self._sender_data_secret
 
     def sender_data_key(self) -> bytes:
+        """Derive the AEAD key for SenderData protection."""
         return self._crypto_provider.kdf_expand(
             self.sender_data_secret, b"sender data key", self._crypto_provider.aead_key_size()
         )
 
     def sender_data_nonce(self, reuse_guard: bytes) -> bytes:
+        """Derive the AEAD nonce for SenderData, XORed with reuse_guard.
+
+        The reuse_guard is left-padded to the AEAD nonce size and XORed into
+        the base nonce to mitigate nonce reuse.
+        """
         # Base nonce derived from sender_data_secret and XORed with a reuse guard (left-padded with zeros)
         base = self._crypto_provider.expand_with_label(
             self.sender_data_secret, b"sender data nonce", b"", self._crypto_provider.aead_nonce_size()
@@ -54,42 +77,52 @@ class KeySchedule:
 
     @property
     def encryption_secret(self) -> bytes:
+        """Epoch encryption secret feeding message protection contexts."""
         return self._crypto_provider.derive_secret(self._epoch_secret, b"encryption")
 
     @property
     def exporter_secret(self) -> bytes:
         # Backed by explicit branch
+        """Epoch exporter secret for external key material derivations."""
         return self._exporter_secret
 
     def export(self, label: bytes, context: bytes, length: int) -> bytes:
+        """Export external keying material from the exporter secret."""
         return self._crypto_provider.expand_with_label(self.exporter_secret, label, context, length)
 
     @property
     def confirmation_key(self) -> bytes:
+        """Key used to compute confirmation MACs over transcripts."""
         return self._crypto_provider.derive_secret(self._epoch_secret, b"confirm")
 
     @property
     def membership_key(self) -> bytes:
+        """MAC key used for membership tags in handshake messages."""
         return self._crypto_provider.derive_secret(self._epoch_secret, b"membership")
 
     @property
     def resumption_psk(self) -> bytes:
+        """Derive resumption PSK for future epochs."""
         return self._crypto_provider.derive_secret(self._epoch_secret, b"resumption")
 
     @property
     def handshake_secret(self) -> bytes:
+        """Root for handshake traffic key derivations (via SecretTree)."""
         return self._handshake_secret
 
     @property
     def application_secret(self) -> bytes:
+        """Root for application traffic key derivations (via SecretTree)."""
         return self._application_secret
 
     @property
     def external_secret(self) -> bytes:
+        """Secret for generating External Init and external commits (if used)."""
         return self._external_secret
 
     @property
     def epoch_secret(self) -> bytes:
+        """The epoch secret from which all other secrets are derived."""
         return self._epoch_secret
 
     def derive_sender_secrets(self, leaf_index: int) -> tuple[bytes, bytes]:

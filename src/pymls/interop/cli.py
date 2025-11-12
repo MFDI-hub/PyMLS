@@ -1,3 +1,4 @@
+"""Command-line utilities for encoding/decoding MLS messages for interop."""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +15,7 @@ from .harness import (
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Construct the argparse parser for the pymls-interop CLI."""
     p = argparse.ArgumentParser(prog="pymls-interop")
     sub = p.add_subparsers(dest="cmd", required=True)
     pt = sub.add_parser("plaintext")
@@ -39,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point for the CLI; returns process exit code."""
     p = build_parser()
     args = p.parse_args(argv)
     if args.cmd == "plaintext" and args.op == "decode":

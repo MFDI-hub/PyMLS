@@ -1,3 +1,9 @@
+"""Ratchet tree representation and update path processing (RFC 9420 Appendix C).
+
+This module provides a minimal array-indexed tree with helpers for adding,
+removing, and updating leaves, computing node hashes, and producing/merging
+UpdatePath structures used in commits.
+"""
 from .key_packages import KeyPackage, LeafNode
 from .data_structures import UpdatePath, Signature
 from . import tree_math
@@ -7,6 +13,15 @@ from ..codec.tls import write_uint16, write_opaque16, read_uint16, read_opaque16
 
 
 class RatchetTreeNode:
+    """A single node in the array-indexed ratchet tree.
+
+    Fields
+    - is_leaf: True for leaf nodes (even indices), False otherwise.
+    - public_key/private_key: Node key material (internal nodes derived from path secrets).
+    - parent_hash: Optional parent hash for leaf binding.
+    - leaf_node: Serialized leaf node metadata for leaves (KeyPackage.leaf_node).
+    - hash: Cached node hash for tree hashing.
+    """
     def __init__(self, is_leaf: bool):
         self.is_leaf = is_leaf
         self.public_key: bytes | None = None
@@ -17,22 +32,27 @@ class RatchetTreeNode:
 
 
 class RatchetTree:
+    """Array-indexed ratchet tree with hashing and path operations."""
     def __init__(self, crypto_provider: CryptoProvider):
+        """Create an empty ratchet tree."""
         self._n_leaves = 0
         self._nodes: dict[int, RatchetTreeNode] = {}
         self._crypto_provider = crypto_provider
 
     @property
     def n_leaves(self):
+        """Current number of leaves in the tree."""
         return self._n_leaves
 
     def get_node(self, index: int) -> RatchetTreeNode:
+        """Return the node at the given array index, creating a blank node if missing."""
         if index not in self._nodes:
             # Create blank nodes on demand. A node is a leaf if its index is even.
             self._nodes[index] = RatchetTreeNode(index % 2 == 0)
         return self._nodes[index]
 
     def add_leaf(self, key_package: KeyPackage) -> int:
+        """Append a leaf to the rightmost position and update hashes."""
         leaf_index = self._n_leaves
         self._n_leaves += 1
 
@@ -44,6 +64,7 @@ class RatchetTree:
         return leaf_index
 
     def remove_leaf(self, index: int) -> None:
+        """Blank a leaf and its direct path keys; then update hashes."""
         node_index = index * 2
         node = self.get_node(node_index)
         node.public_key = None
@@ -59,6 +80,7 @@ class RatchetTree:
         self._recalculate_hashes_from(node_index)
 
     def update_leaf(self, index: int, leaf_node: LeafNode) -> None:
+        """Replace the leaf node metadata and recompute affected hashes."""
         node_index = index * 2
         node = self.get_node(node_index)
         node.public_key = leaf_node.encryption_key
@@ -86,6 +108,7 @@ class RatchetTree:
         return self._crypto_provider.kdf_extract(b"parent-hash", acc)
 
     def _recalculate_hashes_from(self, start_node_index: int):
+        """Recompute hashes from the given node up to the root along the direct path."""
         # Recalculate hash for the node itself
         self._hash_node(start_node_index)
 
@@ -95,6 +118,7 @@ class RatchetTree:
             self._hash_node(node_index)
 
     def _hash_node(self, node_index: int):
+        """Compute and cache the hash for a node based on its type and children."""
         node = self.get_node(node_index)
         if node.is_leaf:
             if node.leaf_node:
@@ -113,6 +137,7 @@ class RatchetTree:
             node.hash = self._crypto_provider.kdf_extract(b"node_hash", left_child_hash + right_child_hash)
 
     def calculate_tree_hash(self) -> bytes:
+        """Return the current tree hash (hash of the root), or empty if no leaves."""
         if self.n_leaves == 0:
             return b""
         root_index = tree_math.root(self.n_leaves)
@@ -121,6 +146,12 @@ class RatchetTree:
         return self.get_node(root_index).hash or b""
 
     def create_update_path(self, committer_index: int, new_leaf_node: LeafNode) -> tuple[UpdatePath, bytes]:
+        """Create an UpdatePath for the committer and derive the commit secret.
+
+        Generates fresh key pairs along the committer's direct path, encrypts the
+        corresponding path secrets for the copath, attaches a parent hash to the
+        new leaf node, and returns (UpdatePath, commit_secret).
+        """
         # Generate new keypairs for the direct path
         path_secrets = {}
         direct_path = tree_math.direct_path(committer_index * 2, self.n_leaves)
@@ -162,6 +193,12 @@ class RatchetTree:
         return update_path, commit_secret
 
     def merge_update_path(self, update_path: UpdatePath, committer_index: int) -> bytes:
+        """Merge an UpdatePath from a received commit and return the commit secret.
+
+        Verifies the provided leaf's parent hash if present, decrypts applicable
+        path secrets for nodes on the committer copath, updates keys along the
+        direct path, and recomputes affected hashes.
+        """
         # Update leaf node
         provided_leaf = LeafNode.deserialize(update_path.leaf_node)
         # Verify simplified parent hash if present

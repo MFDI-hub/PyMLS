@@ -1,3 +1,4 @@
+"""CRL and OCSP revocation helpers (best-effort, no network by default)."""
 from __future__ import annotations
 
 import datetime as _dt
@@ -7,6 +8,7 @@ from ..mls.exceptions import CredentialRevocationError, PyMLSError
 
 
 def _now_utc() -> _dt.datetime:
+    """Return current UTC time (separated for testability)."""
     return _dt.datetime.utcnow()
 
 

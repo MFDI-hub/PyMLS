@@ -1,3 +1,4 @@
+"""Client-side and commit validations for MLS proposals and commits (MVP)."""
 from __future__ import annotations
 
 from typing import Iterable, Set
@@ -9,10 +10,12 @@ from ..crypto.crypto_provider import CryptoProvider
 
 
 class CommitValidationError(Exception):
+    """Raised when a commit or its related data fails validation checks."""
     pass
 
 
 def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
+    """Get a stable user ID string from a serialized KeyPackage's credential identity."""
     kp = KeyPackage.deserialize(kp_bytes)
     identity = kp.leaf_node.credential.identity
     try:
@@ -23,6 +26,7 @@ def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
 
 
 def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:
+    """Ensure there is at most one Add proposal per user identity in a commit batch."""
     seen: Set[str] = set()
     for p in proposals:
         if isinstance(p, AddProposal):
@@ -54,6 +58,7 @@ def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int
 
 
 def validate_commit_basic(commit: Commit) -> None:
+    """Basic structural checks for a Commit object."""
     # Basic structural checks
     # Path-less commits are allowed by RFC 9420 in several cases (e.g., external commits,
     # proposal-only commits, and re-initialization). Do not reject solely due to missing path.
@@ -64,12 +69,14 @@ def validate_commit_basic(commit: Commit) -> None:
 
 
 def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, commit_bytes: bytes, tag: bytes) -> None:
+    """Verify confirmation tag as HMAC(confirm_key, commit_bytes) truncated to tag length."""
     expected = crypto.hmac_sign(confirmation_key, commit_bytes)[: len(tag)]
     if expected != tag:
         raise CommitValidationError("invalid confirmation tag")
 
 
 def derive_ops_from_proposals(proposals: Iterable[Proposal]) -> tuple[list[int], list[bytes]]:
+    """Derive removes list and adds KeyPackage bytes from an iterable of proposals."""
     removes: list[int] = []
     adds: list[bytes] = []
     for p in proposals:

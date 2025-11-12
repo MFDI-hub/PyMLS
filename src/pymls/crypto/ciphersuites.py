@@ -1,3 +1,4 @@
+"""MLS ciphersuite registry and helpers (RFC 9420 §16.3)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ class MlsCiphersuite:
 
     @property
     def triple(self) -> Tuple[KEM, KDF, AEAD]:
+        """Return (KEM, KDF, AEAD) tuple for convenience comparisons."""
         return (self.kem, self.kdf, self.aead)
 
 
@@ -113,26 +115,32 @@ _REGISTRY_BY_NAME: Dict[str, MlsCiphersuite] = {
 
 
 def get_ciphersuite_by_id(suite_id: int) -> Optional[MlsCiphersuite]:
+    """Look up a ciphersuite by RFC suite id."""
     return _REGISTRY_BY_ID.get(suite_id)
 
 
 def get_ciphersuite_by_name(name: str) -> Optional[MlsCiphersuite]:
+    """Look up a ciphersuite by its canonical name."""
     return _REGISTRY_BY_NAME.get(name)
 
 
 def all_ciphersuites() -> Iterable[MlsCiphersuite]:
+    """Iterable over registered ciphersuites (by id ascending)."""
     return _REGISTRY_BY_ID.values()
 
 
 def list_ciphersuite_ids() -> List[int]:
+    """List of all registered RFC suite ids (sorted)."""
     return sorted(_REGISTRY_BY_ID.keys())
 
 
 def list_ciphersuite_names() -> List[str]:
+    """List of all registered ciphersuite names (sorted)."""
     return sorted(_REGISTRY_BY_NAME.keys())
 
 
 def find_by_triple(triple: Tuple[KEM, KDF, AEAD]) -> Optional[MlsCiphersuite]:
+    """Find a ciphersuite matching the given (KEM, KDF, AEAD) triple."""
     kem, kdf, aead = triple
     for cs in _REGISTRY_BY_ID.values():
         if (cs.kem, cs.kdf, cs.aead) == (kem, kdf, aead):

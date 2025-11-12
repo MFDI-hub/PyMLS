@@ -1,3 +1,4 @@
+"""Custom exception hierarchy for PyMLS."""
 class PyMLSError(Exception):
     """Base class for all PyMLS errors."""
 

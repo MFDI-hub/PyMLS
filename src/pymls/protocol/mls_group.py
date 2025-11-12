@@ -33,7 +33,22 @@ from ..mls.exceptions import (
 
 
 class MLSGroup:
+    """Core MLS group state machine and message processing.
+
+    This class encapsulates the ratchet tree, key schedule, transcript hashes,
+    pending proposals, and helpers for producing and consuming MLS handshake
+    and application messages. The implementation targets RFC 9420 semantics
+    with some MVP simplifications noted in method docs.
+    """
     def __init__(self, group_id: bytes, crypto_provider: CryptoProvider, own_leaf_index: int):
+        """Initialize a new MLSGroup wrapper around cryptographic providers.
+
+        Parameters
+        - group_id: Application-chosen identifier for the group.
+        - crypto_provider: Active CryptoProvider instance.
+        - own_leaf_index: Local member's leaf index in the group ratchet tree,
+          or -1 for groups created from a Welcome before inserting self.
+        """
         self._group_id = group_id
         self._crypto_provider = crypto_provider
         self._ratchet_tree = RatchetTree(crypto_provider)
@@ -53,6 +68,20 @@ class MLSGroup:
 
     @classmethod
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto_provider: CryptoProvider) -> "MLSGroup":
+        """Create a new group with an initial member represented by key_package.
+
+        Parameters
+        - group_id: New group identifier.
+        - key_package: Joiner's KeyPackage to insert as the first leaf.
+        - crypto_provider: Active CryptoProvider.
+
+        Returns
+        - Initialized MLSGroup instance with epoch 0 and derived secrets.
+
+        Notes
+        - This is an MVP simplification: initial secrets are derived as neutral
+          extracts rather than following the full RFC path.
+        """
         group = cls(group_id, crypto_provider, 0)
         group._ratchet_tree.add_leaf(key_package)
         # This is a simplification. The initial secrets and group context would be derived differently.
@@ -74,11 +103,25 @@ class MLSGroup:
 
     @classmethod
     def from_welcome(cls, welcome: Welcome, hpke_private_key: bytes, crypto_provider: CryptoProvider) -> "MLSGroup":
-        """
-        Minimal welcome processing:
-        - Decrypt one EncryptedGroupSecret using provided HPKE private key
-        - Decrypt GroupInfo using the recovered secret
-        - Initialize group context and key schedule
+        """Join a group using a Welcome message (MVP flow).
+
+        Steps
+        - Attempt to open each EncryptedGroupSecrets with the provided HPKE private key.
+        - Decrypt GroupInfo using the recovered epoch secret.
+        - Optionally verify GroupInfo using external or tree-provided public keys.
+        - Initialize GroupContext, KeySchedule, SecretTree, and optional ratchet tree.
+
+        Parameters
+        - welcome: Welcome structure received out-of-band.
+        - hpke_private_key: Private key for HPKE to recover the epoch secret.
+        - crypto_provider: Active CryptoProvider.
+
+        Returns
+        - MLSGroup instance initialized from the Welcome.
+
+        Raises
+        - CommitValidationError: If no EncryptedGroupSecrets can be opened.
+        - InvalidSignatureError: If a present GroupInfo signature fails validation.
         """
         # Try each secret until one opens
         epoch_secret = None
@@ -164,27 +207,35 @@ class MLSGroup:
 
     # --- Additional lifecycle APIs (placeholders) ---
     def set_trust_roots(self, roots_pem: list[bytes]) -> None:
-        """
-        Configure trust anchors for X.509 credential validation.
-        """
+        """Configure X.509 trust anchors for credential validation."""
         self._trust_roots = roots_pem
 
     def set_strict_psk_binders(self, enforce: bool) -> None:
-        """
-        Toggle strict PSK binder enforcement (default: True).
+        """Toggle strict PSK binder enforcement (default True).
+
+        If enabled, commits that reference PSK proposals must carry a valid
+        PSK binder in authenticated_data.
         """
         self._strict_psk_binders = enforce
 
     def set_x509_policy(self, policy) -> None:
-        """
-        Configure X.509 policy used when validating X.509 credentials (if/when invoked).
-        """
+        """Set X.509 policy applied when validating credentials."""
         self._x509_policy = policy
     def external_commit(self, key_package: KeyPackage, kem_public_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
-        """
-        Create a path-less external commit that adds a new member using the
-        group's external signing key. This queues an ExternalInit proposal and
-        an Add proposal, then emits a Commit without UpdatePath.
+        """Create and sign a path-less external commit adding a new member.
+
+        Queues an ExternalInit proposal and an Add proposal, then emits a Commit
+        without an UpdatePath, signed with the group's external signing key.
+
+        Parameters
+        - key_package: KeyPackage of the member to add.
+        - kem_public_key: External HPKE public key to include in ExternalInit.
+
+        Returns
+        - (MLSPlaintext commit, list of Welcome messages for new members)
+
+        Raises
+        - ConfigurationError: If no external private key is configured.
         """
         if not self._external_private_key:
             raise ConfigurationError("no external private key configured for this group")
@@ -195,16 +246,15 @@ class MLSGroup:
         return self.create_commit(self._external_private_key)
 
     def external_join(self, key_package: KeyPackage, kem_public_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
-        """
-        Convenience alias for external commit when acting as the external committer
-        on behalf of a joiner identified by the provided KeyPackage.
-        """
+        """Alias for external_commit when acting on behalf of a joiner."""
         return self.external_commit(key_package, kem_public_key)
 
     def reinit_group(self):
+        """Placeholder for group reinitialization flow (not implemented)."""
         raise NotImplementedError("reinit_group not implemented yet")
 
     def create_add_proposal(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
+        """Create and sign an Add proposal referencing the given KeyPackage."""
         proposal = AddProposal(key_package.serialize())
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -220,6 +270,7 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def create_update_proposal(self, leaf_node: LeafNode, signing_key: bytes) -> MLSPlaintext:
+        """Create and sign an Update proposal carrying the provided LeafNode."""
         proposal = UpdateProposal(leaf_node.serialize())
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -235,6 +286,7 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def create_remove_proposal(self, removed_index: int, signing_key: bytes) -> MLSPlaintext:
+        """Create and sign a Remove proposal for the given leaf index."""
         proposal = RemoveProposal(removed_index)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -250,6 +302,7 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def create_external_init_proposal(self, kem_public_key: bytes, signing_key: bytes) -> MLSPlaintext:
+        """Create and sign an ExternalInit proposal carrying the HPKE public key."""
         proposal = ExternalInitProposal(kem_public_key)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -265,6 +318,7 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def create_psk_proposal(self, psk_id: bytes, signing_key: bytes) -> MLSPlaintext:
+        """Create and sign a PreSharedKey proposal identified by psk_id."""
         proposal = PreSharedKeyProposal(psk_id)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -280,6 +334,7 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def create_reinit_proposal(self, new_group_id: bytes, signing_key: bytes) -> MLSPlaintext:
+        """Create and sign a ReInit proposal proposing a new group_id."""
         proposal = ReInitProposal(new_group_id)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -295,16 +350,23 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def external_commit_add_member(self, key_package: KeyPackage, kem_public_key: bytes, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
-        """
-        MVP external commit flow helper: queue ExternalInit and Add proposals and create a commit.
-        The committer is assumed to be a current member for this helper.
-        """
+        """Queue ExternalInit and Add proposals and create a commit (MVP helper)."""
         # Queue proposals locally; they will be referenced by create_commit
         self._pending_proposals.append(ExternalInitProposal(kem_public_key))
         self._pending_proposals.append(AddProposal(key_package.serialize()))
         return self.create_commit(signing_key)
 
     def process_proposal(self, message: MLSPlaintext, sender: Sender) -> None:
+        """Verify and enqueue a Proposal carried in MLSPlaintext.
+
+        Parameters
+        - message: Proposal-carrying MLSPlaintext.
+        - sender: Sender information (leaf index).
+
+        Raises
+        - CommitValidationError: If sender leaf node is missing.
+        - InvalidSignatureError: If signature or membership tag verification fails.
+        """
         sender_leaf_node = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
         if not sender_leaf_node:
             raise CommitValidationError(f"No leaf node found for sender index {sender.sender}")
@@ -320,6 +382,22 @@ class MLSGroup:
         self._pending_proposals.append(proposal)
 
     def create_commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+        """Create, sign, and return a Commit along with Welcome messages.
+
+        This MVP flow:
+        - Validates pending proposals against client rules.
+        - Applies removes/adds before path handling.
+        - Includes an UpdatePath if an Update was proposed or no proposals exist.
+        - Computes an optional PSK binder when PSK proposals are present.
+        - Updates transcript hashes and key schedule for the new epoch.
+        - Builds GroupInfo and Welcome for newly added members.
+
+        Parameters
+        - signing_key: Private key for signature generation.
+
+        Returns
+        - (MLSPlaintext commit, list of Welcome messages).
+        """
         # This is a simplification. It handles a self-update and pending proposals.
         removes = [p.removed for p in self._pending_proposals if isinstance(p, RemoveProposal)]
         adds_kps = [KeyPackage.deserialize(p.key_package) for p in self._pending_proposals if isinstance(p, AddProposal)]
@@ -462,6 +540,16 @@ class MLSGroup:
         return pt, welcomes
 
     def process_commit(self, message: MLSPlaintext, sender_index: int) -> None:
+        """Verify a received Commit and advance the local group state.
+
+        Parameters
+        - message: Commit-carrying MLSPlaintext from the committer.
+        - sender_index: Committer's leaf index.
+
+        Raises
+        - CommitValidationError: On missing references or invalid binder.
+        - InvalidSignatureError: On signature or membership tag failures.
+        """
         # Verify plaintext container
         sender_leaf_node = self._ratchet_tree.get_node(sender_index * 2).leaf_node
         if not sender_leaf_node:
@@ -561,10 +649,10 @@ class MLSGroup:
 
     # --- Advanced flows (MVP implementations) ---
     def process_external_commit(self, message: MLSPlaintext) -> None:
-        """
-        Verify plaintext using the group's external public key (if present) and
-        then process the commit without relying on a member sender index. Membership
-        tag is not required for external commits.
+        """Process a commit authenticated by the group's external signing key.
+
+        Verifies signature using the configured external public key and proceeds
+        without membership tag verification (not required for external commits).
         """
         if not self._external_public_key:
             raise ConfigurationError("no external public key configured for this group")
@@ -654,19 +742,16 @@ class MLSGroup:
         self._confirmed_transcript_hash = confirmed
 
     def reinit_group_to(self, new_group_id: bytes, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
-        """
-        Queue a ReInit proposal and create a commit (MVP: commit with update path).
-        """
+        """Queue a ReInit proposal and create a commit (with update path)."""
         self._pending_proposals.append(ReInitProposal(new_group_id))
         return self.create_commit(signing_key)
 
     def get_resumption_psk(self) -> bytes:
-        """
-        Export current resumption PSK from the key schedule.
-        """
+        """Export current resumption PSK from the key schedule."""
         return self._key_schedule.resumption_psk
 
     def protect(self, app_data: bytes) -> MLSCiphertext:
+        """Encrypt application data into MLSCiphertext for the current epoch."""
         return protect_content_application(
             group_id=self._group_id,
             epoch=self._group_context.epoch,
@@ -679,6 +764,7 @@ class MLSGroup:
         )
 
     def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:
+        """Decrypt an MLSCiphertext and return (sender_leaf_index, plaintext)."""
         return unprotect_content_application(
             message,
             key_schedule=self._key_schedule,
@@ -687,13 +773,16 @@ class MLSGroup:
         )
 
     def get_epoch(self) -> int:
+        """Return the current group epoch."""
         return self._group_context.epoch
 
     def get_group_id(self) -> bytes:
+        """Return the group's identifier."""
         return self._group_id
 
     # --- Persistence (minimal) ---
     def to_bytes(self) -> bytes:
+        """Serialize the minimal group state required for resumption."""
         from .data_structures import serialize_bytes
         if not self._group_context or not self._key_schedule:
             raise PyMLSError("group not initialized")
@@ -710,6 +799,7 @@ class MLSGroup:
 
     @classmethod
     def from_bytes(cls, data: bytes, crypto_provider: CryptoProvider) -> "MLSGroup":
+        """Deserialize minimal state created by to_bytes() and recreate schedule."""
         from .data_structures import deserialize_bytes, GroupContext
         gid, rest = deserialize_bytes(data)
         gc_bytes, rest = deserialize_bytes(rest)

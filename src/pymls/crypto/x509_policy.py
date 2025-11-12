@@ -1,3 +1,4 @@
+"""Configuration structures for X.509 certificate policy checks and revocation."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

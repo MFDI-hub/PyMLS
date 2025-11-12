@@ -1,3 +1,4 @@
+"""Best-effort X.509 chain verification and policy enforcement helpers."""
 from __future__ import annotations
 
 from typing import List

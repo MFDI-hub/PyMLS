@@ -1,3 +1,4 @@
+"""Transcript hash maintenance for MLS handshake flows."""
 from __future__ import annotations
 
 from ..crypto.crypto_provider import CryptoProvider
@@ -21,10 +22,12 @@ class TranscriptState:
 
     @property
     def interim(self) -> bytes | None:
+        """Current interim transcript hash (or None if uninitialized)."""
         return self._interim
 
     @property
     def confirmed(self) -> bytes | None:
+        """Current confirmed transcript hash (or None if not finalized)."""
         return self._confirmed
 
     def update_with_handshake(self, plaintext: MLSPlaintext) -> bytes:

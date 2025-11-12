@@ -1,3 +1,4 @@
+"""Credential encodings (basic and X.509) and signature scheme mapping."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from ..mls.exceptions import CredentialValidationError, UnsupportedCipherSuiteEr
 
 
 class CredentialType(IntEnum):
+    """Wire identifier for credential variants."""
     BASIC = 1
     X509 = 2
 
@@ -34,6 +36,7 @@ def _encode_signature_scheme(s: SignatureScheme) -> bytes:
 
 
 def _decode_signature_scheme(b: int) -> SignatureScheme:
+    """Inverse of _encode_signature_scheme for reading from the wire."""
     reverse = {
         0x01: SignatureScheme.ED25519,
         0x02: SignatureScheme.ED448,
@@ -47,11 +50,13 @@ def _decode_signature_scheme(b: int) -> SignatureScheme:
 
 @dataclass(frozen=True)
 class BasicCredential:
+    """Simple credential binding identity and public key with a signature scheme."""
     identity: bytes
     public_key: bytes
     signature_scheme: SignatureScheme
 
     def serialize(self) -> bytes:
+        """Encode as: type=BASIC || opaque16(identity) || opaque16(public_key) || scheme."""
         return (
             write_uint8(int(CredentialType.BASIC))
             + write_opaque16(self.identity)
@@ -61,6 +66,7 @@ class BasicCredential:
 
     @classmethod
     def deserialize(cls, data: bytes) -> "BasicCredential":
+        """Parse BasicCredential from bytes produced by serialize()."""
         off = 0
         cred_type, off = read_uint8(data, off)
         if CredentialType(cred_type) != CredentialType.BASIC:

@@ -1,3 +1,4 @@
+"""Runner for JSON-based protocol test vectors used for interop validation."""
 from __future__ import annotations
 
 import json
