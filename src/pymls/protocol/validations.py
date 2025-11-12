@@ -35,6 +35,8 @@ def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
             return kp_bytes.decode("utf-8")
         except Exception:
             return kp_bytes.hex()
+    # Fallback if credential was absent in a parsed KeyPackage
+    return kp_bytes.hex()
 
 
 def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:

@@ -84,8 +84,9 @@ class KeyPackage:
         Ensures that the credential public key matches the leaf's signature_key,
         then verifies the signature over the serialized LeafNode.
         """
-        # Ensure credential public key matches the leaf signature key
-        if self.leaf_node.credential.public_key != self.leaf_node.signature_key:
+        # Ensure credential public key matches the leaf signature key (if credential present)
+        cred = self.leaf_node.credential
+        if cred is not None and cred.public_key != self.leaf_node.signature_key:
             raise InvalidSignatureError("credential public key does not match leaf signature key")
         crypto_provider.verify(
             self.leaf_node.signature_key,

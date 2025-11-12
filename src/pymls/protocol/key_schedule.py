@@ -57,7 +57,7 @@ class KeySchedule:
         Construct a KeySchedule when the epoch_secret is already known (e.g., from Welcome).
         Derives all branch secrets from the provided epoch_secret and group_context.
         """
-        ks = cls.__new__(cls)  # type: ignore[misc]
+        ks: "KeySchedule" = object.__new__(cls)
         ks._init_secret = b""
         ks._commit_secret = b""
         ks._group_context = group_context
