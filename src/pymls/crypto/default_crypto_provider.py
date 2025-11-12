@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidSignature
-from hpke import HPKE, KEM_ID, KDF_ID, AEAD_ID
+from hpke import HPKE, KEM_ID, KDF_ID, AEAD_ID  # type: ignore[import-untyped]
 
 from .crypto_provider import CryptoProvider
 from .hpke import KEM, KDF as KDFEnum, AEAD
@@ -138,7 +138,7 @@ class DefaultCryptoProvider(CryptoProvider):
             salt=None,
             info=info,
         )
-        return hkdf.expand(prk)
+        return hkdf.derive(prk)
 
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
         """Encrypt using the active AEAD implementation."""
@@ -169,7 +169,7 @@ class DefaultCryptoProvider(CryptoProvider):
             sk = Ed25519PrivateKey.from_private_bytes(private_key)
             return sk.sign(data)
         if scheme == SignatureScheme.ED448:
-            sk = Ed448PrivateKey.from_private_bytes(private_key)
+            sk = Ed448PrivateKey.from_private_bytes(private_key)  # type: ignore[assignment]
             return sk.sign(data)
         if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
             sk = self._load_ec_private(private_key, ec.SECP256R1())
@@ -188,7 +188,7 @@ class DefaultCryptoProvider(CryptoProvider):
                 pk.verify(signature, data)
                 return
             if scheme == SignatureScheme.ED448:
-                pk = Ed448PublicKey.from_public_bytes(public_key)
+                pk = Ed448PublicKey.from_public_bytes(public_key)  # type: ignore[assignment]
                 pk.verify(signature, data)
                 return
             if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
@@ -210,7 +210,7 @@ class DefaultCryptoProvider(CryptoProvider):
         if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
             pkR = x25519.X25519PublicKey.from_public_bytes(public_key)
         elif self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            pkR = x448.X448PublicKey.from_public_bytes(public_key)
+            pkR = x448.X448PublicKey.from_public_bytes(public_key)  # type: ignore[assignment]
         elif self._suite.kem == KEM.DHKEM_P256_HKDF_SHA256:
             pkR = self._load_ec_public(public_key, ec.SECP256R1())
         elif self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
@@ -227,7 +227,7 @@ class DefaultCryptoProvider(CryptoProvider):
         if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
             skR = x25519.X25519PrivateKey.from_private_bytes(private_key)
         elif self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            skR = x448.X448PrivateKey.from_private_bytes(private_key)
+            skR = x448.X448PrivateKey.from_private_bytes(private_key)  # type: ignore[assignment]
         elif self._suite.kem == KEM.DHKEM_P256_HKDF_SHA256:
             skR = self._load_ec_private(private_key, ec.SECP256R1())
         elif self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
@@ -243,11 +243,11 @@ class DefaultCryptoProvider(CryptoProvider):
             pk = sk.public_key()
             return sk.private_bytes_raw(), pk.public_bytes_raw()
         if self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            sk = x448.X448PrivateKey.generate()
+            sk = x448.X448PrivateKey.generate()  # type: ignore[assignment]
             pk = sk.public_key()
             return sk.private_bytes_raw(), pk.public_bytes_raw()
         if self._suite.kem == KEM.DHKEM_P256_HKDF_SHA256:
-            sk = ec.generate_private_key(ec.SECP256R1())
+            sk = ec.generate_private_key(ec.SECP256R1())  # type: ignore[assignment]
             pk = sk.public_key()
             return (
                 sk.private_bytes(
@@ -261,7 +261,7 @@ class DefaultCryptoProvider(CryptoProvider):
                 ),
             )
         if self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
-            sk = ec.generate_private_key(ec.SECP521R1())
+            sk = ec.generate_private_key(ec.SECP521R1())  # type: ignore[assignment]
             pk = sk.public_key()
             return (
                 sk.private_bytes(
@@ -283,7 +283,7 @@ class DefaultCryptoProvider(CryptoProvider):
             pk = sk.public_key()
             return sk.private_bytes_raw(), pk.public_bytes_raw()
         if self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            sk = x448.X448PrivateKey.from_private_bytes(seed)
+            sk = x448.X448PrivateKey.from_private_bytes(seed)  # type: ignore[assignment]
             pk = sk.public_key()
             return sk.private_bytes_raw(), pk.public_bytes_raw()
         # For EC (P-256/521), deriving a private key from an arbitrary seed requires

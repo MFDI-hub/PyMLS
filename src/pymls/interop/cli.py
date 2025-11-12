@@ -45,28 +45,28 @@ def main(argv: list[str] | None = None) -> int:
     p = build_parser()
     args = p.parse_args(argv)
     if args.cmd == "plaintext" and args.op == "decode":
-        m = import_plaintext_hex(args.hex)
-        print(export_plaintext_hex(m))
+        m_pt = import_plaintext_hex(args.hex)
+        print(export_plaintext_hex(m_pt))
         return 0
     if args.cmd == "ciphertext" and args.op == "decode":
-        m = import_ciphertext_hex(args.hex)
-        print(export_ciphertext_hex(m))
+        m_ct = import_ciphertext_hex(args.hex)
+        print(export_ciphertext_hex(m_ct))
         return 0
     if args.cmd == "wire" and args.op == "encode-handshake":
-        m = import_plaintext_hex(args.hex)
-        print(export_handshake_b64(m))
+        m_pt = import_plaintext_hex(args.hex)
+        print(export_handshake_b64(m_pt))
         return 0
     if args.cmd == "wire" and args.op == "decode-handshake":
-        m = import_handshake_b64(args.b64)
-        print(export_plaintext_hex(m))
+        m_pt = import_handshake_b64(args.b64)
+        print(export_plaintext_hex(m_pt))
         return 0
     if args.cmd == "wire" and args.op == "encode-application":
-        m = import_ciphertext_hex(args.hex)
-        print(export_application_b64(m))
+        m_ct = import_ciphertext_hex(args.hex)
+        print(export_application_b64(m_ct))
         return 0
     if args.cmd == "wire" and args.op == "decode-application":
-        m = import_application_b64(args.b64)
-        print(export_ciphertext_hex(m))
+        m_ct = import_application_b64(args.b64)
+        print(export_ciphertext_hex(m_ct))
         return 0
     return 2
 

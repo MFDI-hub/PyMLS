@@ -255,6 +255,8 @@ class MLSGroup:
 
     def create_add_proposal(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
         """Create and sign an Add proposal referencing the given KeyPackage."""
+        if self._group_context is None or self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         proposal = AddProposal(key_package.serialize())
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -271,6 +273,8 @@ class MLSGroup:
 
     def create_update_proposal(self, leaf_node: LeafNode, signing_key: bytes) -> MLSPlaintext:
         """Create and sign an Update proposal carrying the provided LeafNode."""
+        if self._group_context is None or self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         proposal = UpdateProposal(leaf_node.serialize())
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -287,6 +291,8 @@ class MLSGroup:
 
     def create_remove_proposal(self, removed_index: int, signing_key: bytes) -> MLSPlaintext:
         """Create and sign a Remove proposal for the given leaf index."""
+        if self._group_context is None or self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         proposal = RemoveProposal(removed_index)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -303,6 +309,8 @@ class MLSGroup:
 
     def create_external_init_proposal(self, kem_public_key: bytes, signing_key: bytes) -> MLSPlaintext:
         """Create and sign an ExternalInit proposal carrying the HPKE public key."""
+        if self._group_context is None or self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         proposal = ExternalInitProposal(kem_public_key)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -319,6 +327,8 @@ class MLSGroup:
 
     def create_psk_proposal(self, psk_id: bytes, signing_key: bytes) -> MLSPlaintext:
         """Create and sign a PreSharedKey proposal identified by psk_id."""
+        if self._group_context is None or self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         proposal = PreSharedKeyProposal(psk_id)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -335,6 +345,8 @@ class MLSGroup:
 
     def create_reinit_proposal(self, new_group_id: bytes, signing_key: bytes) -> MLSPlaintext:
         """Create and sign a ReInit proposal proposing a new group_id."""
+        if self._group_context is None or self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         proposal = ReInitProposal(new_group_id)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -372,6 +384,8 @@ class MLSGroup:
             raise CommitValidationError(f"No leaf node found for sender index {sender.sender}")
 
         # Verify MLSPlaintext (signature and membership tag)
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
         tbs = message.auth_content.tbs
@@ -423,6 +437,8 @@ class MLSGroup:
             own_node = self._ratchet_tree.get_node(self._own_leaf_index * 2)
             # In a real update, this leaf node would be regenerated with new credentials
             new_leaf_node = own_node.leaf_node
+            if new_leaf_node is None:
+                raise PyMLSError("leaf node not found")
             update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node)
         else:
             update_path = None
@@ -460,6 +476,8 @@ class MLSGroup:
         commit = Commit(temp_commit.path, temp_commit.removes, temp_commit.adds, temp_commit.proposal_refs, Signature(signature_value))
 
         # Build plaintext and update transcript (RFC-style: use MLSPlaintext TBS bytes)
+        if self._group_context is None:
+            raise PyMLSError("group not initialized")
         pt = sign_authenticated_content(
             group_id=self._group_id,
             epoch=self._group_context.epoch,
@@ -490,6 +508,8 @@ class MLSGroup:
             from .messages import PSKPreimage
             preimage = PSKPreimage(psk_ids).serialize()
             psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(
             self._key_schedule.application_secret,
@@ -554,6 +574,8 @@ class MLSGroup:
         sender_leaf_node = self._ratchet_tree.get_node(sender_index * 2).leaf_node
         if not sender_leaf_node:
             raise CommitValidationError(f"No leaf node for committer index {sender_index}")
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
@@ -618,6 +640,8 @@ class MLSGroup:
             commit_secret = self._crypto_provider.kdf_extract(b"", b"")
 
         # ReInit handling on receive: if a ReInit proposal is referenced, reset epoch and switch group_id
+        if self._group_context is None:
+            raise PyMLSError("group not initialized")
         reinit_prop = next((p for p in referenced if isinstance(p, ReInitProposal)), None) if referenced else None
         if reinit_prop:
             new_epoch = 0
@@ -632,6 +656,8 @@ class MLSGroup:
         # Prepare new group context (confirmed hash will be set after computing tag)
         new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"")
 
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(
             self._key_schedule.application_secret,
@@ -713,6 +739,8 @@ class MLSGroup:
         commit_secret = self._crypto_provider.kdf_extract(b"", b"")
 
         # ReInit handling on receive (external): if a ReInit proposal is referenced, reset epoch and switch group_id
+        if self._group_context is None:
+            raise PyMLSError("group not initialized")
         reinit_prop = next((p for p in referenced if isinstance(p, ReInitProposal)), None) if commit.proposal_refs else None
         if reinit_prop:
             new_epoch = 0
@@ -725,6 +753,8 @@ class MLSGroup:
         prev_i = self._interim_transcript_hash or b""
         interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
         # Derive confirmed hash using placeholder confirmation recomputation
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         commit_bytes_full = commit.serialize()
         confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
         confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
@@ -748,10 +778,14 @@ class MLSGroup:
 
     def get_resumption_psk(self) -> bytes:
         """Export current resumption PSK from the key schedule."""
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
         return self._key_schedule.resumption_psk
 
     def protect(self, app_data: bytes) -> MLSCiphertext:
         """Encrypt application data into MLSCiphertext for the current epoch."""
+        if self._group_context is None or self._key_schedule is None or self._secret_tree is None:
+            raise PyMLSError("group not initialized")
         return protect_content_application(
             group_id=self._group_id,
             epoch=self._group_context.epoch,
@@ -765,6 +799,8 @@ class MLSGroup:
 
     def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:
         """Decrypt an MLSCiphertext and return (sender_leaf_index, plaintext)."""
+        if self._key_schedule is None or self._secret_tree is None:
+            raise PyMLSError("group not initialized")
         return unprotect_content_application(
             message,
             key_schedule=self._key_schedule,
@@ -774,6 +810,8 @@ class MLSGroup:
 
     def get_epoch(self) -> int:
         """Return the current group epoch."""
+        if self._group_context is None:
+            raise PyMLSError("group not initialized")
         return self._group_context.epoch
 
     def get_group_id(self) -> bytes:

@@ -349,8 +349,8 @@ class Commit:
             data += struct.pack("!I", item)
 
         data += struct.pack("!H", len(self.adds))
-        for item in self.adds:
-            data += serialize_bytes(item)
+        for add_item in self.adds:
+            data += serialize_bytes(add_item)
 
         # proposal references
         data += struct.pack("!H", len(self.proposal_refs))
