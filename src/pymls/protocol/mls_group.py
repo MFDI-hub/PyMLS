@@ -33,6 +33,8 @@ class MLSGroup:
         self._own_leaf_index = own_leaf_index
         self._external_private_key: bytes | None = None
         self._external_public_key: bytes | None = None
+        self._trust_roots: list[bytes] = []
+        self._strict_psk_binders: bool = True
 
     @classmethod
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto_provider: CryptoProvider) -> "MLSGroup":
@@ -97,11 +99,37 @@ class MLSGroup:
         return group
 
     # --- Additional lifecycle APIs (placeholders) ---
-    def external_commit(self):
-        raise NotImplementedError("external_commit not implemented yet")
+    def set_trust_roots(self, roots_pem: list[bytes]) -> None:
+        """
+        Configure trust anchors for X.509 credential validation.
+        """
+        self._trust_roots = roots_pem
 
-    def external_join(self):
-        raise NotImplementedError("external_join not implemented yet")
+    def set_strict_psk_binders(self, enforce: bool) -> None:
+        """
+        Toggle strict PSK binder enforcement (default: True).
+        """
+        self._strict_psk_binders = enforce
+    def external_commit(self, key_package: KeyPackage, kem_public_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+        """
+        Create a path-less external commit that adds a new member using the
+        group's external signing key. This queues an ExternalInit proposal and
+        an Add proposal, then emits a Commit without UpdatePath.
+        """
+        if not self._external_private_key:
+            raise ValueError("no external private key configured for this group")
+        # Queue proposals
+        self._pending_proposals.append(ExternalInitProposal(kem_public_key))
+        self._pending_proposals.append(AddProposal(key_package.serialize()))
+        # Emit a commit, signed with the external key; create_commit will omit path
+        return self.create_commit(self._external_private_key)
+
+    def external_join(self, key_package: KeyPackage, kem_public_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+        """
+        Convenience alias for external commit when acting as the external committer
+        on behalf of a joiner identified by the provided KeyPackage.
+        """
+        return self.external_commit(key_package, kem_public_key)
 
     def reinit_group(self):
         raise NotImplementedError("reinit_group not implemented yet")
@@ -225,6 +253,7 @@ class MLSGroup:
         # This is a simplification. It handles a self-update and pending proposals.
         removes = [p.removed for p in self._pending_proposals if isinstance(p, RemoveProposal)]
         adds_kps = [KeyPackage.deserialize(p.key_package) for p in self._pending_proposals if isinstance(p, AddProposal)]
+        has_update_prop = any(isinstance(p, UpdateProposal) for p in self._pending_proposals)
         # Basic validations
         validate_proposals_client_rules(self._pending_proposals, self._ratchet_tree.n_leaves)
         # Apply removes and adds before generating the update path (MVP ordering)
@@ -239,11 +268,18 @@ class MLSGroup:
             except Exception:
                 continue
 
-        # Create an update path for the committer (ourselves)
-        own_node = self._ratchet_tree.get_node(self._own_leaf_index * 2)
-        # In a real update, this leaf node would be regenerated with new credentials
-        new_leaf_node = own_node.leaf_node
-        update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node)
+        # Decide whether to include an UpdatePath
+        include_path = has_update_prop or (len(self._pending_proposals) == 0)
+        if include_path:
+            # Create an update path for the committer (ourselves)
+            own_node = self._ratchet_tree.get_node(self._own_leaf_index * 2)
+            # In a real update, this leaf node would be regenerated with new credentials
+            new_leaf_node = own_node.leaf_node
+            update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node)
+        else:
+            update_path = None
+            # Path-less commit: use a neutral commit_secret (RFC flows will bind PSKs/external later)
+            commit_secret = self._crypto_provider.kdf_extract(b"", b"")
 
         # Construct and sign the commit
         # Collect proposal references corresponding to pending proposals
@@ -251,7 +287,7 @@ class MLSGroup:
         for pref, prop in list(self._proposal_cache.items()):
             if prop in self._pending_proposals:
                 pending_refs.append(pref)
-        # Optionally derive a PSK secret if PSK proposals are present (MVP: derive from IDs directly)
+        # Optionally derive a PSK secret and binder if PSK proposals are present (RFC-style binder)
         psk_ids: list[bytes] = []
         for p in self._pending_proposals:
             if isinstance(p, PreSharedKeyProposal):
@@ -264,6 +300,14 @@ class MLSGroup:
             signature=Signature(b"")  # Empty signature for serialization
         )
         commit_bytes_for_signing = temp_commit.serialize()
+        # Build authenticated_data to carry PSK binder if needed
+        authenticated_data = b""
+        if psk_ids:
+            from .messages import PSKPreimage, encode_psk_binder
+            preimage = PSKPreimage(psk_ids).serialize()
+            binder_key = self._crypto_provider.kdf_extract(b"psk binder", preimage)
+            binder = self._crypto_provider.hmac_sign(binder_key, commit_bytes_for_signing)[:16]
+            authenticated_data = encode_psk_binder(binder)
         signature_value = self._crypto_provider.sign(signing_key, commit_bytes_for_signing)
         commit = Commit(temp_commit.path, temp_commit.removes, temp_commit.adds, temp_commit.proposal_refs, Signature(signature_value))
 
@@ -271,16 +315,23 @@ class MLSGroup:
         prev_i = self._interim_transcript_hash or b""
         interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
 
-        # Advance epoch and derive new key schedule
-        new_epoch = self._group_context.epoch + 1
+        # ReInit handling: if a ReInit proposal is present, reset epoch and switch group_id
+        reinit_prop = next((p for p in self._pending_proposals if isinstance(p, ReInitProposal)), None)
+        if reinit_prop:
+            new_epoch = 0
+            new_group_id = reinit_prop.new_group_id
+        else:
+            new_epoch = self._group_context.epoch + 1
+            new_group_id = self._group_id
         tree_hash = self._ratchet_tree.calculate_tree_hash()
-        new_group_context = GroupContext(self._group_id, new_epoch, tree_hash, b"")  # filled after confirm tag
+        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"")  # filled after confirm tag
 
-        # Derive PSK secret (MVP: H(KDF extract of concatenated psk_ids))
+        # Derive PSK secret using PSK preimage
         psk_secret = None
         if psk_ids:
-            acc = b"".join(psk_ids)
-            psk_secret = self._crypto_provider.kdf_extract(b"psk", acc)
+            from .messages import PSKPreimage
+            preimage = PSKPreimage(psk_ids).serialize()
+            psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
         self._group_context = new_group_context
@@ -328,7 +379,7 @@ class MLSGroup:
             group_id=self._group_id,
             epoch=self._group_context.epoch,
             sender_leaf_index=self._own_leaf_index,
-            authenticated_data=b"",
+            authenticated_data=authenticated_data,
             content_type=ContentType.COMMIT,
             content=commit.serialize(),
             signing_private_key=signing_key,
@@ -345,6 +396,105 @@ class MLSGroup:
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
+        # If commit includes proposal references, validate and prepare for PSK binder verification
+        referenced: list[Proposal] = []
+        if commit.proposal_refs:
+            for pref in commit.proposal_refs:
+                if pref not in self._proposal_cache:
+                    raise ValueError("missing referenced proposal")
+                referenced.append(self._proposal_cache[pref])
+            validate_commit_matches_referenced_proposals(commit, referenced)
+            # Do not clear yet; we may need them for PSK binder computation
+
+        # Verify commit inner signature
+        temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
+        commit_bytes_for_signing = temp_commit.serialize()
+        self._crypto_provider.verify(sender_leaf_node.signature_key, commit_bytes_for_signing, commit.signature.value)
+
+        # Verify PSK binder if PSK proposals are referenced; derive PSK secret
+        psk_secret = None
+        if referenced:
+            referenced_psk_ids = [p.psk_id for p in referenced if isinstance(p, PreSharedKeyProposal)]
+            if referenced_psk_ids:
+                from .messages import PSKPreimage, decode_psk_binder
+                binder = decode_psk_binder(message.auth_content.tbs.authenticated_data)
+                preimage = PSKPreimage(referenced_psk_ids).serialize()
+                if binder is None:
+                    if self._strict_psk_binders:
+                        raise ValueError("missing PSK binder for commit carrying PSK proposals")
+                    # Non-strict mode: accept and derive PSK without binder
+                    psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
+                else:
+                    binder_key = self._crypto_provider.kdf_extract(b"psk binder", preimage)
+                    expected = self._crypto_provider.hmac_sign(binder_key, commit_bytes_for_signing)[: len(binder)]
+                    if expected != binder:
+                        raise ValueError("invalid PSK binder")
+                    psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
+
+        # Clear referenced proposals from cache now that binder checks are done
+        if commit.proposal_refs:
+            for pref in commit.proposal_refs:
+                self._proposal_cache.pop(pref, None)
+
+        # Apply removals and additions before path handling (MVP ordering)
+        for idx in sorted(commit.removes, reverse=True):
+            try:
+                self._ratchet_tree.remove_leaf(idx)
+            except Exception:
+                continue
+        for kp_bytes in commit.adds:
+            try:
+                self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
+            except Exception:
+                continue
+
+        # Derive commit secret
+        if commit.path:
+            commit_secret = self._ratchet_tree.merge_update_path(commit.path, sender_index)
+        else:
+            # Path-less commit: derive a placeholder commit_secret (RFC-compliant flows will supply
+            # joiner/psk secrets; this MVP uses a neutral extract)
+            commit_secret = self._crypto_provider.kdf_extract(b"", b"")
+
+        # ReInit handling on receive: if a ReInit proposal is referenced, reset epoch and switch group_id
+        reinit_prop = next((p for p in referenced if isinstance(p, ReInitProposal)), None) if referenced else None
+        if reinit_prop:
+            new_epoch = 0
+            new_group_id = reinit_prop.new_group_id
+        else:
+            new_epoch = self._group_context.epoch + 1
+            new_group_id = self._group_id
+        tree_hash = self._ratchet_tree.calculate_tree_hash()
+        # Update transcript hashes
+        prev_i = self._interim_transcript_hash or b""
+        interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
+        # Derive confirmed hash using placeholder confirmation recomputation
+        commit_bytes_full = commit.serialize()
+        confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
+        confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
+        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
+
+        self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
+        self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
+        self._group_context = new_group_context
+        self._interim_transcript_hash = interim
+        self._confirmed_transcript_hash = confirmed
+
+    # --- Advanced flows (MVP implementations) ---
+    def process_external_commit(self, message: MLSPlaintext) -> None:
+        """
+        Verify plaintext using the group's external public key (if present) and
+        then process the commit without relying on a member sender index. Membership
+        tag is not required for external commits.
+        """
+        if not self._external_public_key:
+            raise ValueError("no external public key configured for this group")
+        # Verify signature only (no membership tag)
+        verify_plaintext(message, self._external_public_key, None, self._crypto_provider)
+
+        # Deserialize commit
+        commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
+
         # If commit includes proposal references, validate and consume them
         if commit.proposal_refs:
             referenced: list[Proposal] = []
@@ -356,58 +506,68 @@ class MLSGroup:
             for pref in commit.proposal_refs:
                 self._proposal_cache.pop(pref, None)
 
-        # Verify commit inner signature
+        # Verify commit inner signature with external key
         temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
         commit_bytes_for_signing = temp_commit.serialize()
-        self._crypto_provider.verify(sender_leaf_node.signature_key, commit_bytes_for_signing, commit.signature.value)
+        self._crypto_provider.verify(self._external_public_key, commit_bytes_for_signing, commit.signature.value)
 
-        # Apply changes and derive new key schedule
-        if commit.path:
-            # Apply removals and additions before merging path (MVP)
-            for idx in sorted(commit.removes, reverse=True):
-                try:
-                    self._ratchet_tree.remove_leaf(idx)
-                except Exception:
-                    continue
-            for kp_bytes in commit.adds:
-                try:
-                    self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
-                except Exception:
-                    continue
-            commit_secret = self._ratchet_tree.merge_update_path(commit.path, sender_index)
+        # Verify PSK binder if PSK proposals are referenced; derive PSK secret
+        psk_secret = None
+        if commit.proposal_refs:
+            referenced_psk_ids = [p.psk_id for p in referenced if isinstance(p, PreSharedKeyProposal)]
+            if referenced_psk_ids:
+                from .messages import PSKPreimage, decode_psk_binder
+                binder = decode_psk_binder(message.auth_content.tbs.authenticated_data)
+                preimage = PSKPreimage(referenced_psk_ids).serialize()
+                if binder is None:
+                    if self._strict_psk_binders:
+                        raise ValueError("missing PSK binder for commit carrying PSK proposals")
+                    psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
+                else:
+                    binder_key = self._crypto_provider.kdf_extract(b"psk binder", preimage)
+                    expected = self._crypto_provider.hmac_sign(binder_key, commit_bytes_for_signing)[: len(binder)]
+                    if expected != binder:
+                        raise ValueError("invalid PSK binder")
+                    psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
 
-            # Advance epoch
-            new_epoch = self._group_context.epoch + 1
-            tree_hash = self._ratchet_tree.calculate_tree_hash()
-            # Update transcript hashes
-            prev_i = self._interim_transcript_hash or b""
-            interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
-            # Derive confirmed hash using placeholder confirmation recomputation
-            commit_bytes_full = commit.serialize()
-            confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
-            confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
-            new_group_context = GroupContext(self._group_id, new_epoch, tree_hash, confirmed)
+        # Apply changes (removes/adds)
+        for idx in sorted(commit.removes, reverse=True):
+            try:
+                self._ratchet_tree.remove_leaf(idx)
+            except Exception:
+                continue
+        for kp_bytes in commit.adds:
+            try:
+                self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
+            except Exception:
+                continue
 
-            self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, None, self._crypto_provider)
-            self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
-            self._group_context = new_group_context
-            self._interim_transcript_hash = interim
-            self._confirmed_transcript_hash = confirmed
+        # External commits are path-less by design here; derive a neutral commit_secret
+        commit_secret = self._crypto_provider.kdf_extract(b"", b"")
+
+        # ReInit handling on receive (external): if a ReInit proposal is referenced, reset epoch and switch group_id
+        reinit_prop = next((p for p in referenced if isinstance(p, ReInitProposal)), None) if commit.proposal_refs else None
+        if reinit_prop:
+            new_epoch = 0
+            new_group_id = reinit_prop.new_group_id
         else:
-            raise NotImplementedError("Processing commits without a path is not supported yet.")
+            new_epoch = self._group_context.epoch + 1
+            new_group_id = self._group_id
+        tree_hash = self._ratchet_tree.calculate_tree_hash()
+        # Update transcript hashes
+        prev_i = self._interim_transcript_hash or b""
+        interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
+        # Derive confirmed hash using placeholder confirmation recomputation
+        commit_bytes_full = commit.serialize()
+        confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
+        confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
+        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
 
-    # --- Advanced flows (MVP implementations) ---
-    def process_external_commit(self, message: MLSPlaintext) -> None:
-        """
-        Verify plaintext using the group's external public key (if present) and
-        then process the commit assuming sender index 0 (MVP). This is a simplification.
-        """
-        if not self._external_public_key:
-            raise ValueError("no external public key configured for this group")
-        # Verify signature and membership tag using external key (membership tag is still checked with membership key)
-        verify_plaintext(message, self._external_public_key, self._key_schedule.membership_key, self._crypto_provider)
-        # Process with a default sender index (MVP)
-        self.process_commit(message, sender_index=0)
+        self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
+        self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
+        self._group_context = new_group_context
+        self._interim_transcript_hash = interim
+        self._confirmed_transcript_hash = confirmed
 
     def reinit_group_to(self, new_group_id: bytes, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         """

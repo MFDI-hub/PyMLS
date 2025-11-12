@@ -58,6 +58,39 @@ class ContentType(IntEnum):
     PROPOSAL = 2
     COMMIT = 3
 
+@dataclass(frozen=True)
+class PSKPreimage:
+    """
+    Simplified PSK preimage: list of PSK identifiers encoded as opaque16.
+    """
+    psk_ids: list[bytes]
+
+    def serialize(self) -> bytes:
+        out = write_uint16(len(self.psk_ids))
+        for pid in self.psk_ids:
+            out += write_opaque16(pid)
+        return out
+
+def encode_psk_binder(binder: bytes) -> bytes:
+    """
+    Encode a PSK binder into authenticated_data. Magic prefix + opaque16.
+    """
+    return b"PSKB" + write_opaque16(binder)
+
+def decode_psk_binder(authenticated_data: bytes) -> bytes | None:
+    """
+    Decode a PSK binder from authenticated_data if present.
+    Returns binder bytes or None.
+    """
+    if not authenticated_data or len(authenticated_data) < 4:
+        return None
+    if not authenticated_data.startswith(b"PSKB"):
+        return None
+    # read binder after 4-byte prefix
+    _, off = read_uint8(b"\x00", 0)  # no-op to access read_opaque16 signature
+    binder, _ = read_opaque16(authenticated_data, 4)
+    return binder
+
 
 @dataclass(frozen=True)
 class FramedContent:
@@ -253,6 +286,34 @@ def strip_trailing_zeros(data: bytes) -> bytes:
 
 
 # --- Helpers for signing and membership tags (RFC-aligned surface for MVP) ---
+def apply_application_padding(data: bytes, block: int = 32) -> bytes:
+    """
+    Add randomized padding so that (len(data) + 1 + pad_len) % block == 0.
+    The last byte encodes pad_len (0..255), and the pad bytes are random.
+    """
+    if block <= 0:
+        return data + b"\x00"
+    # Space for length byte
+    rem = (len(data) + 1) % block
+    need = (block - rem) % block
+    if need > 255:
+        # Cap to 255 to fit in one byte
+        need = need % 256
+    pad = os.urandom(need) if need > 0 else b""
+    return data + pad + bytes([need])
+
+
+def remove_application_padding(padded: bytes) -> bytes:
+    """
+    Remove padding added by apply_application_padding.
+    """
+    if not padded:
+        return padded
+    pad_len = padded[-1]
+    if pad_len > len(padded) - 1:
+        # Malformed; return as-is
+        return padded
+    return padded[: len(padded) - 1 - pad_len]
 def sign_authenticated_content(
     group_id: bytes,
     epoch: int,
@@ -359,8 +420,8 @@ def protect_content_application(
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
     enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto)
-    # Apply simple zero padding to 16-byte boundary (MVP)
-    padded = add_zero_padding(content, 16)
+    # Apply RFC-style randomized padding to 32-byte boundary (simple scheme: random bytes + 1-byte length)
+    padded = apply_application_padding(content, block=32)
     ct = crypto.aead_encrypt(key, nonce, padded, aad)
     return MLSCiphertext(
         group_id=group_id,
@@ -401,5 +462,5 @@ def unprotect_content_application(
     sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto)
     key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
     ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
-    # Strip zero padding
-    return sd.sender, strip_trailing_zeros(ptxt)
+    # Strip RFC-style padding
+    return sd.sender, remove_application_padding(ptxt)

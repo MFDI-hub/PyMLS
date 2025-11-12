@@ -103,5 +103,13 @@ class X509Credential:
         sig_code, off = read_uint8(data, off)
         return cls(chain, _decode_signature_scheme(sig_code))
 
+    def verify_chain(self, trust_roots: List[bytes]) -> bytes:
+        """
+        Verify the certificate chain against the provided trust roots.
+        Returns the leaf certificate's public key bytes on success.
+        """
+        from ..crypto.x509 import verify_certificate_chain
+        return verify_certificate_chain(self.cert_chain, trust_roots)
+
 
 

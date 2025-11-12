@@ -55,9 +55,8 @@ def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int
 
 def validate_commit_basic(commit: Commit) -> None:
     # Basic structural checks
-    if commit.path is None and (len(commit.adds) > 0 or len(commit.removes) > 0):
-        # In RFC, non-path commits are allowed in certain cases, but we don't support them.
-        raise CommitValidationError("commit without path not supported in this implementation")
+    # Path-less commits are allowed by RFC 9420 in several cases (e.g., external commits,
+    # proposal-only commits, and re-initialization). Do not reject solely due to missing path.
     # If proposal_refs are present, they must be non-empty opaque values
     for pref in getattr(commit, "proposal_refs", []):
         if not isinstance(pref, (bytes, bytearray)) or len(pref) == 0:

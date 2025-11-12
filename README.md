@@ -55,15 +55,17 @@ print(sender, pt)  # 0, b'hello'
 ```
 
 ## Notes
-- The library aims for correctness and clarity first. Some RFC features (external commit/join, PSKs, reinit, proposal-by-reference) are planned next.
+- The library aims for correctness and clarity first. Recent updates added path-less commits, external commit processing, PSK binders, reinit context migration, and randomized application padding.
 - The legacy DAVE protocol and opcodes were removed. This is a pure MLS library now.
 
-## Advanced features (MVP status)
+## Advanced features
 - Proposal-by-reference with commit validation
 - EncryptedGroupSecrets in Welcome; ratchet_tree extension included
-- External public key (EXTERNAL_PUB) published in GroupInfo; helper for external commit add
-- PSK proposals (MVP): PSK secret derived and included in key schedule
-- Basic credential checks: KeyPackage credential public key must match signature key
+- External public key (EXTERNAL_PUB) published in GroupInfo; external commit (path-less) and processing without membership tag
+- PSK proposals with RFC-style PSK binder carried in authenticated_data; strict verification by default
+- Randomized application padding to 32-byte boundary
+- Re-Initialization via path-less commit and context migration to new group_id
+- Basic credential checks: KeyPackage credential public key must match signature key; X.509 container verification helper and trust roots configuration
 - Resumption PSK export via `Group.get_resumption_psk()` (through protocol)
 
-Planned next: full external commit/join, reinit flows, robust PSKs/resumption, complete credential validation (X.509), interop CLI and vectors, negative/fuzz tests, and API stabilization timeline.
+Planned next: broaden RFC vector coverage and interop CLI, full X.509 policy and revocation, extended negative/fuzz tests, and API stabilization timeline.
