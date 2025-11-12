@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, Tuple
 
 from ..crypto.crypto_provider import CryptoProvider
+from . import tree_math
 
 
 def _u64(x: int) -> bytes:
@@ -22,15 +23,22 @@ class _LeafState:
 
 class SecretTree:
     """
-    Simplified secret tree interface. This is not the full TreeKEM secret tree,
-    but provides per-sender, per-generation key/nonce derivation for
-    application and handshake traffic.
+    RFC 9420 §9.2 Secret Tree
+
+    Two trees per epoch (handshake/application) rooted at the epoch's
+    corresponding branch secret. Leaf secrets are derived by walking
+    the array-based tree (Appendix C) from the root to the target leaf,
+    deriving left/right child secrets at each step. Per-generation sender
+    (key, nonce) are derived from the leaf secret and a generation counter.
+
+    This implementation derives receive keys on-demand (no cache).
     """
 
-    def __init__(self, application_secret: bytes, handshake_secret: bytes, crypto: CryptoProvider):
+    def __init__(self, application_secret: bytes, handshake_secret: bytes, crypto: CryptoProvider, n_leaves: int = 1):
         self._app_secret = application_secret
         self._hs_secret = handshake_secret
         self._crypto = crypto
+        self._n_leaves = max(1, int(n_leaves))
         self._leaves: Dict[int, _LeafState] = {}
 
     def _get_leaf_state(self, leaf: int) -> _LeafState:
@@ -38,19 +46,45 @@ class SecretTree:
             self._leaves[leaf] = _LeafState()
         return self._leaves[leaf]
 
-    def _derive_leaf_secret(self, base: bytes, leaf: int) -> bytes:
-        label = b"leaf"
-        context = _u64(leaf)
-        return self._crypto.expand_with_label(base, label, context, self._crypto.kdf_hash_len())
+    def _derive_leaf_secret(self, root_secret: bytes, leaf: int) -> bytes:
+        """
+        Walk the array-based tree from root to the target leaf (RFC 9420 Appendix C),
+        deriving left/right child secrets from the parent at each step using
+        labeled KDF expansion per §9.2.
+        """
+        n = self._n_leaves
+        if leaf < 0 or leaf >= n:
+            raise ValueError("leaf index out of range for current tree")
+        node = tree_math.root(n)
+        target = leaf * 2  # leaves are at even indices
+        secret = root_secret
+        hash_len = self._crypto.kdf_hash_len()
+        while node != target:
+            # Derive children from parent
+            left_secret = self._crypto.expand_with_label(secret, b"tree", b"left", hash_len)
+            right_secret = self._crypto.expand_with_label(secret, b"tree", b"right", hash_len)
+            # Choose next direction based on array index relation
+            left_node = tree_math.left(node)
+            right_node = tree_math.right(node, n)
+            if target < node:
+                secret = left_secret
+                node = left_node
+            else:
+                secret = right_secret
+                node = right_node
+        return secret
 
-    def _derive_generation_secret(self, leaf_secret: bytes, generation: int) -> bytes:
-        label = b"generation"
-        context = _u64(generation)
-        return self._crypto.expand_with_label(leaf_secret, label, context, self._crypto.kdf_hash_len())
+    def _derive_generation_secret(self, leaf_secret: bytes, generation: int, branch_label: bytes) -> bytes:
+        """
+        Derive the per-generation secret for the given branch (b\"handshake\" or b\"application\").
+        """
+        ctx = _u64(generation)
+        # Domain-separate with the branch label before deriving (key, nonce)
+        return self._crypto.expand_with_label(leaf_secret, branch_label, ctx, self._crypto.kdf_hash_len())
 
     def _derive_key_nonce(self, gen_secret: bytes) -> Tuple[bytes, bytes]:
-        key = self._crypto.expand_with_label(gen_secret, b"app key", b"", self._crypto.aead_key_size())
-        nonce_base = self._crypto.expand_with_label(gen_secret, b"app nonce", b"", self._crypto.aead_nonce_size())
+        key = self._crypto.expand_with_label(gen_secret, b"key", b"", self._crypto.aead_key_size())
+        nonce_base = self._crypto.expand_with_label(gen_secret, b"nonce", b"", self._crypto.aead_nonce_size())
         return key, nonce_base
 
     def _nonce_for_generation(self, nonce_base: bytes, generation: int) -> bytes:
@@ -67,7 +101,7 @@ class SecretTree:
 
     def application_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
         leaf_secret = self._derive_leaf_secret(self._app_secret, leaf)
-        gen_secret = self._derive_generation_secret(leaf_secret, generation)
+        gen_secret = self._derive_generation_secret(leaf_secret, generation, b"application")
         key, nonce_base = self._derive_key_nonce(gen_secret)
         nonce = self._nonce_for_generation(nonce_base, generation)
         return key, nonce, generation
@@ -81,9 +115,24 @@ class SecretTree:
 
     def handshake_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
         leaf_secret = self._derive_leaf_secret(self._hs_secret, leaf)
-        gen_secret = self._derive_generation_secret(leaf_secret, generation)
+        gen_secret = self._derive_generation_secret(leaf_secret, generation, b"handshake")
         key, nonce_base = self._derive_key_nonce(gen_secret)
         nonce = self._nonce_for_generation(nonce_base, generation)
         return key, nonce, generation
 
+
+    def wipe(self) -> None:
+        """
+        Best-effort zeroization of sensitive secrets and state.
+        """
+        try:
+            from ..crypto.utils import secure_wipe
+            for name in ["_app_secret", "_hs_secret"]:
+                val = getattr(self, name, None)
+                if isinstance(val, (bytes, bytearray)) and val:
+                    ba = bytearray(val)
+                    secure_wipe(ba)
+        except Exception:
+            pass
+        self._leaves.clear()
 

@@ -80,15 +80,16 @@ def _run_tree_math_vector(vec: Dict[str, Any], _crypto: CryptoProvider) -> None:
 
 def _run_secret_tree_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
     """
-    Check derivations in the simplified SecretTree.
+    Check derivations in the SecretTree (RFC 9420 §9.2).
     Expected keys:
       - application_secret, handshake_secret (hex)
-      - leaf (int), generation (int)
+      - leaf (int), generation (int), n_leaves (int, optional)
       - expected: { app_key, app_nonce, hs_key, hs_nonce } (hex)
     """
     h = lambda b: bytes.fromhex(b) if isinstance(b, str) else b
-    st = SecretTree(h(vec["application_secret"]), h(vec["handshake_secret"]), crypto)
     leaf = int(vec.get("leaf", 0))
+    n_leaves = int(vec.get("n_leaves", max(leaf + 1, 1)))
+    st = SecretTree(h(vec["application_secret"]), h(vec["handshake_secret"]), crypto, n_leaves=n_leaves)
     gen = int(vec.get("generation", 0))
     app_key, app_nonce, _ = st.application_for(leaf, gen)
     hs_key, hs_nonce, _ = st.handshake_for(leaf, gen)

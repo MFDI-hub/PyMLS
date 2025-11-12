@@ -93,7 +93,10 @@ class KeySchedule:
         return self._epoch_secret
 
     def derive_sender_secrets(self, leaf_index: int) -> tuple[bytes, bytes]:
-        # This is a simplification. The real derivation uses a secret tree.
+        """
+        Deprecated helper: real per-sender secrets are derived via SecretTree (§9.2).
+        Kept for compatibility; returns branch roots for diagnostics only.
+        """
         handshake_secret = self.handshake_secret
         application_secret = self.application_secret
         return handshake_secret, application_secret

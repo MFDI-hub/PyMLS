@@ -60,7 +60,12 @@ class MLSGroup:
         commit_secret = crypto_provider.kdf_extract(b"", b"")
         group._group_context = GroupContext(group_id, 0, group._ratchet_tree.calculate_tree_hash(), b"")
         group._key_schedule = KeySchedule(init_secret, commit_secret, group._group_context, None, crypto_provider)
-        group._secret_tree = SecretTree(group._key_schedule.application_secret, group._key_schedule.handshake_secret, crypto_provider)
+        group._secret_tree = SecretTree(
+            group._key_schedule.application_secret,
+            group._key_schedule.handshake_secret,
+            crypto_provider,
+            n_leaves=group._ratchet_tree.n_leaves,
+        )
         # Generate external HPKE key for ExternalPub extension (MVP)
         ext_sk, ext_pk = crypto_provider.generate_key_pair()
         group._external_private_key = ext_sk
@@ -137,7 +142,12 @@ class MLSGroup:
         group._group_context = gi.group_context
         # Initialize key schedule with recovered secret (commit_secret is unknown; reuse as both)
         group._key_schedule = KeySchedule(epoch_secret, epoch_secret, gi.group_context, None, crypto_provider)
-        group._secret_tree = SecretTree(group._key_schedule.application_secret, group._key_schedule.handshake_secret, crypto_provider)
+        group._secret_tree = SecretTree(
+            group._key_schedule.application_secret,
+            group._key_schedule.handshake_secret,
+            crypto_provider,
+            n_leaves=1,  # will be updated if/when ratchet tree extension is loaded
+        )
         # Ratchet tree via GroupInfo extension (if present)
         if gi.extensions:
             try:
@@ -403,7 +413,12 @@ class MLSGroup:
             preimage = PSKPreimage(psk_ids).serialize()
             psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
+        self._secret_tree = SecretTree(
+            self._key_schedule.application_secret,
+            self._key_schedule.handshake_secret,
+            self._crypto_provider,
+            n_leaves=self._ratchet_tree.n_leaves,
+        )
         self._group_context = new_group_context  # temporary, will be overwritten with confirmed hash
         self._pending_proposals = []
         # Clear referenced proposals from cache
@@ -530,7 +545,12 @@ class MLSGroup:
         new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"")
 
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
+        self._secret_tree = SecretTree(
+            self._key_schedule.application_secret,
+            self._key_schedule.handshake_secret,
+            self._crypto_provider,
+            n_leaves=self._ratchet_tree.n_leaves,
+        )
         self._group_context = new_group_context  # temporary
         # Compute and apply confirmation tag over interim transcript
         confirm_tag = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
@@ -623,7 +643,12 @@ class MLSGroup:
         new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
 
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
+        self._secret_tree = SecretTree(
+            self._key_schedule.application_secret,
+            self._key_schedule.handshake_secret,
+            self._crypto_provider,
+            n_leaves=self._ratchet_tree.n_leaves,
+        )
         self._group_context = new_group_context
         self._interim_transcript_hash = interim
         self._confirmed_transcript_hash = confirmed
