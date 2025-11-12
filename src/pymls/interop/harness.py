@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 """
 Interop harness scaffolding.
 
 These helpers serialize/deserialize MLS core structures using PyMLS codecs.
 External interop (OpenMLS/MLS++) can be added by invoking their CLIs/FFI here.
 """
-
+from __future__ import annotations
 from typing import Tuple, List
 import base64
 
@@ -20,7 +18,6 @@ from ..codec.mls import (
 )
 from ..protocol.data_structures import Commit, Proposal, Welcome
 from ..protocol.messages import MLSPlaintext, MLSCiphertext
-from ..protocol.messages import ContentType as WireContentType
 from .wire import encode_handshake, decode_handshake, encode_application, decode_application
 
 

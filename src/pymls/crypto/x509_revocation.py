@@ -4,13 +4,12 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Optional, Callable
 
-from ..mls.exceptions import CredentialRevocationError, PyMLSError
+from ..mls.exceptions import PyMLSError
 
 
 def _now_utc() -> _dt.datetime:
     """Return current UTC time (separated for testability)."""
     return _dt.datetime.utcnow()
-
 
 def check_ocsp_end_entity(
     end_entity_der: bytes,
@@ -139,7 +138,6 @@ def check_crl(
     """
     try:
         from cryptography import x509
-        from cryptography.hazmat.primitives import serialization
     except Exception as e:
         raise PyMLSError("cryptography package required for CRL checking") from e
 

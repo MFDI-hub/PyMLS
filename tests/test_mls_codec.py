@@ -5,10 +5,8 @@ from src.pymls.codec.mls import (
     decode_commit_message,
     encode_proposals_message,
     decode_proposals_message,
-    MLSMessage,
-    MLSContentType,
 )
-from src.pymls.protocol.data_structures import Commit, UpdatePath, Signature, AddProposal, Proposal
+from src.pymls.protocol.data_structures import Commit, Signature, AddProposal
 
 
 class TestMLSCodec(unittest.TestCase):

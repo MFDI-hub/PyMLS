@@ -4,7 +4,6 @@ RFC 9420 message framing helpers.
 - Application: RFC 9420 §9 (MLSCiphertext, sender data)
 """
 from dataclasses import dataclass
-import struct
 import os
 
 from .data_structures import Signature

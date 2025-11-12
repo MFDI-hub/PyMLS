@@ -1,9 +1,8 @@
 import unittest
 from src.pymls.protocol.data_structures import (
     AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ReInitProposal, ExternalInitProposal,
-    GroupContext, GroupInfo, Signature, UpdatePath, Commit, Welcome, MLSVersion, CipherSuite, EncryptedGroupSecrets
+    Signature, UpdatePath, Commit, Welcome, MLSVersion, CipherSuite, EncryptedGroupSecrets
 )
-from src.pymls.protocol.key_packages import LeafNode
 from src.pymls.protocol.data_structures import serialize_bytes
 from src.pymls.crypto.hpke import KEM, KDF, AEAD
 

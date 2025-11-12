@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, Tuple, Type
+from typing import Tuple
 
 from ..codec.tls import (
     write_uint16,

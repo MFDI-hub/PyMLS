@@ -15,9 +15,6 @@ Conventions
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
 class TLSDecodeError(Exception):
     """Raised when decoding fails due to insufficient or malformed input."""
 
