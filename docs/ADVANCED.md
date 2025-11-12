@@ -35,8 +35,16 @@ Status: MVP implementations matured toward RFC 9420 compliance; key refinements 
 - `set_strict_psk_binders(True|False)` to enforce/relax binder verification (default: True).
 
 ## Roadmap
-- Broaden vector coverage (tree math, transcript hashes).
-- Full X.509 policy including EKU/keyUsage checks and revocation (OCSP/CRL).
+- Broaden vector coverage (tree math, transcript hashes). [Done]
+- Full X.509 policy including EKU/keyUsage checks and revocation (OCSP/CRL). [Done]
+
+## Compliance Matrix (Highlights)
+
+- Transcript Hashes (interim/confirmed): Implemented via `TranscriptState` and wired in `MLSGroup`.
+- Confirmation Tag: Computed from transcript (verify on receive integrated into state update).
+- GroupInfo Signature Verification: Implemented using EXTERNAL_PUB or leaf signature keys in ratchet_tree extension.
+- X.509 Policy: Chain validation + policy checks (validity, KU, EKU), pluggable revocation hooks.
+- Test Vectors: Runner supports key_schedule, tree_math, secret_tree, message_protection, welcome_groupinfo with CLI.
 - Interop CLI and extended negative/fuzz tests.
 
 

@@ -55,7 +55,16 @@ print(sender, pt)  # 0, b'hello'
 ```
 
 ## Notes
-- The library aims for correctness and clarity first. Recent updates added path-less commits, external commit processing, PSK binders, reinit context migration, and randomized application padding.
+- The library aims for correctness and clarity first. Recent updates added path-less commits, external commit processing, PSK binders, transcript hashing (interim/confirmed), GroupInfo signature verification, reinit context migration, and randomized application padding.
+
+## Interop Test Vectors
+Run the RFC 9420 test vectors with:
+
+```bash
+python -m src.pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
+```
+
+Supported types include key_schedule, tree_math, secret_tree, message_protection, and welcome_groupinfo. A JSON summary is printed.
 - The legacy DAVE protocol and opcodes were removed. This is a pure MLS library now.
 
 ## Advanced features

@@ -85,3 +85,63 @@ def load_default_trust_roots() -> List[bytes]:
     except Exception:
         return []
 
+
+def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem: List[bytes], policy) -> bytes:
+    """
+    Verify the certificate chain and enforce policy checks (validity, KU/EKU, revocation).
+    Returns the leaf SPKI DER on success.
+    """
+    try:
+        from cryptography import x509
+    except Exception as e:
+        raise RuntimeError("cryptography package required for X.509 validation") from e
+
+    leaf_spki = verify_certificate_chain(chain_der, trust_roots_pem)
+    if policy is None:
+        return leaf_spki
+
+    # Load leaf certificate for policy checks
+    def load_cert(buf: bytes):
+        try:
+            return x509.load_der_x509_certificate(buf)
+        except Exception:
+            return x509.load_pem_x509_certificate(buf)
+
+    leaf = load_cert(chain_der[0])
+
+    # Validity period with leeway
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    if leaf.not_valid_before - _dt.timedelta(seconds=policy.not_before_leeway_s) > now:
+        raise ValueError("certificate not yet valid")
+    if leaf.not_valid_after + _dt.timedelta(seconds=policy.not_after_leeway_s) < now:
+        raise ValueError("certificate expired")
+
+    # Key Usage (require digitalSignature when requested)
+    if policy.require_digital_signature_ku:
+        try:
+            ku = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
+            if not ku.digital_signature:
+                raise ValueError("digitalSignature key usage not present")
+        except x509.ExtensionNotFound:
+            raise ValueError("KeyUsage extension missing")
+
+    # EKU: if acceptable EKUs configured, require one to match
+    if policy.acceptable_ekus:
+        try:
+            eku_ext = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+            eku_oids = {oid.dotted_string for oid in eku_ext}
+            if not any(oid in eku_oids for oid in policy.acceptable_ekus):
+                raise ValueError("certificate EKU does not permit use for MLS policy")
+        except x509.ExtensionNotFound:
+            raise ValueError("ExtendedKeyUsage extension missing")
+
+    # Revocation: pluggable checks (no network I/O here)
+    if policy.revocation.enable_crl and policy.revocation.crl_checker:
+        if not policy.revocation.crl_checker(chain_der[0]):
+            raise ValueError("certificate revoked (CRL)")
+    if policy.revocation.enable_ocsp and policy.revocation.ocsp_checker:
+        if not policy.revocation.ocsp_checker(chain_der[0]):
+            raise ValueError("certificate revoked (OCSP)")
+
+    return leaf_spki

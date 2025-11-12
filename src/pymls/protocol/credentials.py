@@ -111,5 +111,13 @@ class X509Credential:
         from ..crypto.x509 import verify_certificate_chain
         return verify_certificate_chain(self.cert_chain, trust_roots)
 
+    def verify_chain_with_policy(self, trust_roots: List[bytes], policy) -> bytes:
+        """
+        Verify the certificate chain and enforce an X.509 policy.
+        Returns the leaf certificate's public key bytes on success.
+        """
+        from ..crypto.x509 import verify_certificate_chain_with_policy
+        return verify_certificate_chain_with_policy(self.cert_chain, trust_roots, policy)
+
 
 

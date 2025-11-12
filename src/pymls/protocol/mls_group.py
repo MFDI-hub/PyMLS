@@ -13,6 +13,7 @@ from .messages import (
 from .ratchet_tree import RatchetTree
 from .key_schedule import KeySchedule
 from .secret_tree import SecretTree
+from .transcripts import TranscriptState
 from ..extensions.extensions import Extension, ExtensionType, serialize_extensions, deserialize_extensions
 from .validations import validate_proposals_client_rules, validate_commit_matches_referenced_proposals
 from ..crypto.crypto_provider import CryptoProvider
@@ -35,6 +36,7 @@ class MLSGroup:
         self._external_public_key: bytes | None = None
         self._trust_roots: list[bytes] = []
         self._strict_psk_binders: bool = True
+        self._x509_policy = None
 
     @classmethod
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto_provider: CryptoProvider) -> "MLSGroup":
@@ -76,8 +78,47 @@ class MLSGroup:
         gi_bytes = crypto_provider.aead_decrypt(epoch_secret, nonce, welcome.encrypted_group_info, b"")
         from .data_structures import GroupInfo as GroupInfoStruct
         gi = GroupInfoStruct.deserialize(gi_bytes)
-        # Verify GroupInfo signature if extensions provide a committer leaf
-        # TODO: Full GroupInfo signature verification will be added alongside explicit group signing keys.
+        # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
+        verifier_keys: list[bytes] = []
+        ext_external_pub: bytes | None = None
+        ext_tree_bytes: bytes | None = None
+        if gi.extensions:
+            try:
+                exts = deserialize_extensions(gi.extensions)
+                for e in exts:
+                    if e.ext_type == ExtensionType.EXTERNAL_PUB:
+                        ext_external_pub = e.data
+                    elif e.ext_type == ExtensionType.RATCHET_TREE:
+                        ext_tree_bytes = e.data
+            except Exception:
+                # If extension parsing fails, continue and attempt join optimistically
+                pass
+        if ext_external_pub:
+            verifier_keys.append(ext_external_pub)
+        # If ratchet tree is present, load and collect leaf signature keys
+        if ext_tree_bytes:
+            try:
+                tmp_tree = RatchetTree(crypto_provider)
+                tmp_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
+                for leaf in range(tmp_tree.n_leaves):
+                    node = tmp_tree.get_node(leaf * 2)
+                    if node.leaf_node and node.leaf_node.signature_key:
+                        verifier_keys.append(node.leaf_node.signature_key)
+            except Exception:
+                pass
+        # Attempt verification with any candidate key if available
+        if verifier_keys:
+            verified = False
+            tbs = gi.tbs_serialize()
+            for vk in verifier_keys:
+                try:
+                    crypto_provider.verify(vk, tbs, gi.signature.value)
+                    verified = True
+                    break
+                except Exception:
+                    continue
+            if not verified:
+                raise ValueError("invalid GroupInfo signature")
 
         group = cls(gi.group_context.group_id, crypto_provider, -1)
         group._group_context = gi.group_context
@@ -110,6 +151,12 @@ class MLSGroup:
         Toggle strict PSK binder enforcement (default: True).
         """
         self._strict_psk_binders = enforce
+
+    def set_x509_policy(self, policy) -> None:
+        """
+        Configure X.509 policy used when validating X.509 credentials (if/when invoked).
+        """
+        self._x509_policy = policy
     def external_commit(self, key_package: KeyPackage, kem_public_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         """
         Create a path-less external commit that adds a new member using the
@@ -311,9 +358,19 @@ class MLSGroup:
         signature_value = self._crypto_provider.sign(signing_key, commit_bytes_for_signing)
         commit = Commit(temp_commit.path, temp_commit.removes, temp_commit.adds, temp_commit.proposal_refs, Signature(signature_value))
 
-        # Update transcript hashes (placeholder chaining)
-        prev_i = self._interim_transcript_hash or b""
-        interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
+        # Build plaintext and update transcript (RFC-style: use MLSPlaintext TBS bytes)
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=authenticated_data,
+            content_type=ContentType.COMMIT,
+            content=commit.serialize(),
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        transcripts = TranscriptState(self._crypto_provider, interim=self._interim_transcript_hash, confirmed=self._confirmed_transcript_hash)
+        transcripts.update_with_handshake(pt)
 
         # ReInit handling: if a ReInit proposal is present, reset epoch and switch group_id
         reinit_prop = next((p for p in self._pending_proposals if isinstance(p, ReInitProposal)), None)
@@ -334,20 +391,19 @@ class MLSGroup:
             psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
-        self._group_context = new_group_context
+        self._group_context = new_group_context  # temporary, will be overwritten with confirmed hash
         self._pending_proposals = []
         # Clear referenced proposals from cache
         for pref in pending_refs:
             self._proposal_cache.pop(pref, None)
 
-        # Compute confirmation tag (placeholder: HMAC over commit bytes) and update confirmed transcript hash
-        commit_bytes = commit.serialize()
-        confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes)[:16]
-        confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
-        self._interim_transcript_hash = interim
-        self._confirmed_transcript_hash = confirmed
-        # update group context with confirmed hash
-        self._group_context = GroupContext(self._group_id, new_epoch, tree_hash, confirmed)
+        # Compute confirmation tag over interim transcript and finalize confirmed transcript hash
+        confirm_tag = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
+        transcripts.finalize_confirmed(confirm_tag)
+        self._interim_transcript_hash = transcripts.interim
+        self._confirmed_transcript_hash = transcripts.confirmed
+        # update group context with confirmed hash (for the new epoch)
+        self._group_context = GroupContext(self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"")
 
         # Construct Welcome messages for any added members (placeholder encoding)
         welcomes: list[Welcome] = []
@@ -358,11 +414,10 @@ class MLSGroup:
             if self._external_public_key:
                 exts.append(Extension(ExtensionType.EXTERNAL_PUB, self._external_public_key))
             ext_bytes = serialize_extensions(exts)
-            # Sign GroupInfo with committer's signing key (MVP)
-            gi_unsigned = GroupInfo(new_group_context, Signature(b""), ext_bytes)
-            gi_ser = gi_unsigned.group_context.serialize() + gi_unsigned.extensions
-            gi_sig = self._crypto_provider.sign(signing_key, gi_ser)
-            group_info = GroupInfo(new_group_context, Signature(gi_sig), ext_bytes)
+            # Sign GroupInfo with committer's signing key using TBS (context contains confirmed hash)
+            gi_unsigned = GroupInfo(self._group_context, Signature(b""), ext_bytes)
+            gi_sig = self._crypto_provider.sign(signing_key, gi_unsigned.tbs_serialize())
+            group_info = GroupInfo(self._group_context, Signature(gi_sig), ext_bytes)
             enc_group_info = self._crypto_provider.aead_encrypt(
                 self._key_schedule.encryption_secret, b"\x00" * self._crypto_provider.aead_nonce_size(), group_info.serialize(), b""
             )
@@ -374,17 +429,7 @@ class MLSGroup:
             welcome = Welcome(MLSVersion.MLS10, CipherSuite(self._crypto_provider.active_ciphersuite.kem, self._crypto_provider.active_ciphersuite.kdf, self._crypto_provider.active_ciphersuite.aead), secrets, enc_group_info)
             welcomes.append(welcome)
 
-        # Wrap commit in MLSPlaintext (handshake). Membership tag acts as MVP confirmation.
-        pt = sign_authenticated_content(
-            group_id=self._group_id,
-            epoch=self._group_context.epoch,
-            sender_leaf_index=self._own_leaf_index,
-            authenticated_data=authenticated_data,
-            content_type=ContentType.COMMIT,
-            content=commit.serialize(),
-            signing_private_key=signing_key,
-            crypto=self._crypto_provider,
-        )
+        # Wrap commit in MLSPlaintext (handshake). Membership tag remains MVP membership proof.
         pt = attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
         return pt, welcomes
 
@@ -465,20 +510,21 @@ class MLSGroup:
             new_epoch = self._group_context.epoch + 1
             new_group_id = self._group_id
         tree_hash = self._ratchet_tree.calculate_tree_hash()
-        # Update transcript hashes
-        prev_i = self._interim_transcript_hash or b""
-        interim = self._crypto_provider.kdf_extract(prev_i, commit_bytes_for_signing)
-        # Derive confirmed hash using placeholder confirmation recomputation
-        commit_bytes_full = commit.serialize()
-        confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
-        confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
-        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
+        # Build plaintext TBS from the received message and update transcript
+        transcripts = TranscriptState(self._crypto_provider, interim=self._interim_transcript_hash, confirmed=self._confirmed_transcript_hash)
+        transcripts.update_with_handshake(message)
+        # Prepare new group context (confirmed hash will be set after computing tag)
+        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"")
 
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
-        self._group_context = new_group_context
-        self._interim_transcript_hash = interim
-        self._confirmed_transcript_hash = confirmed
+        self._group_context = new_group_context  # temporary
+        # Compute and apply confirmation tag over interim transcript
+        confirm_tag = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
+        transcripts.finalize_confirmed(confirm_tag)
+        self._interim_transcript_hash = transcripts.interim
+        self._confirmed_transcript_hash = transcripts.confirmed
+        self._group_context = GroupContext(self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"")
 
     # --- Advanced flows (MVP implementations) ---
     def process_external_commit(self, message: MLSPlaintext) -> None:

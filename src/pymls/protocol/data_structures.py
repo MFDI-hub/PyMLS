@@ -409,6 +409,12 @@ class GroupInfo:
     signature: Signature
     extensions: bytes = b""  # serialized extensions (opaque); MVP keeps raw for flexibility
 
+    def tbs_serialize(self) -> bytes:
+        """
+        To-Be-Signed bytes for GroupInfo: GroupContext || extensions
+        """
+        return self.group_context.serialize() + self.extensions
+
     def serialize(self) -> bytes:
         # Serialize as length-delimited fields for forward compatibility
         out = serialize_bytes(self.group_context.serialize())
