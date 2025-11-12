@@ -116,20 +116,20 @@ class HPKE:
             dh = eph.exchange(pkR)
             enc = eph.public_key().public_bytes_raw()
         elif self._kem_id == KEM_ID.DHKEM_X448_HKDF_SHA512:
-            eph = x448.X448PrivateKey.generate()  # type: ignore[assignment]
-            dh = eph.exchange(pkR)
-            enc = eph.public_key().public_bytes_raw()
+            eph_x = x448.X448PrivateKey.generate()
+            dh = eph_x.exchange(pkR)
+            enc = eph_x.public_key().public_bytes_raw()
         elif self._kem_id == KEM_ID.DHKEM_P256_HKDF_SHA256:
-            eph = ec.generate_private_key(ec.SECP256R1())  # type: ignore[assignment]
-            dh = eph.exchange(ec.ECDH(), pkR)
-            enc = eph.public_key().public_bytes(
+            eph_ec = ec.generate_private_key(ec.SECP256R1())
+            dh = eph_ec.exchange(ec.ECDH(), pkR)
+            enc = eph_ec.public_key().public_bytes(
                 serialization.Encoding.DER,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
         elif self._kem_id == KEM_ID.DHKEM_P521_HKDF_SHA512:
-            eph = ec.generate_private_key(ec.SECP521R1())  # type: ignore[assignment]
-            dh = eph.exchange(ec.ECDH(), pkR)
-            enc = eph.public_key().public_bytes(
+            eph_ec = ec.generate_private_key(ec.SECP521R1())
+            dh = eph_ec.exchange(ec.ECDH(), pkR)
+            enc = eph_ec.public_key().public_bytes(
                 serialization.Encoding.DER,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
@@ -144,17 +144,23 @@ class HPKE:
     def open(self, skR, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
         # Recover ephemeral public key and derive shared secret
         if self._kem_id == KEM_ID.DHKEM_X25519_HKDF_SHA256:
-            pkE = x25519.X25519PublicKey.from_public_bytes(kem_output)
-            dh = skR.exchange(pkE)
+            pkE_x = x25519.X25519PublicKey.from_public_bytes(kem_output)
+            dh = skR.exchange(pkE_x)
         elif self._kem_id == KEM_ID.DHKEM_X448_HKDF_SHA512:
-            pkE = x448.X448PublicKey.from_public_bytes(kem_output)  # type: ignore[assignment]
-            dh = skR.exchange(pkE)
+            pkE_x = x448.X448PublicKey.from_public_bytes(kem_output)
+            dh = skR.exchange(pkE_x)
         elif self._kem_id == KEM_ID.DHKEM_P256_HKDF_SHA256:
-            pkE = serialization.load_der_public_key(kem_output)
-            dh = skR.exchange(ec.ECDH(), pkE)  # type: ignore[arg-type]
+            from typing import cast
+            from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+
+            pkE_ec = cast(EllipticCurvePublicKey, serialization.load_der_public_key(kem_output))
+            dh = skR.exchange(ec.ECDH(), pkE_ec)
         elif self._kem_id == KEM_ID.DHKEM_P521_HKDF_SHA512:
-            pkE = serialization.load_der_public_key(kem_output)
-            dh = skR.exchange(ec.ECDH(), pkE)  # type: ignore[arg-type]
+            from typing import cast
+            from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+
+            pkE_ec = cast(EllipticCurvePublicKey, serialization.load_der_public_key(kem_output))
+            dh = skR.exchange(ec.ECDH(), pkE_ec)
         else:
             raise ValueError("Unsupported KEM")
 
