@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
   "cryptography>=42",
-  "hpke>=0.4",
+  "hpke>=0.3.2,<0.4",
   "certifi>=2024.7.4",
 ]
 
@@ -37,11 +37,11 @@ pymls-interop = "src.pymls.interop.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pymls"]
 
-[tool.uv]
-dev-dependencies = [
-  "pytest>=8",
-  "ruff>=0.6",
-  "mypy>=1.10",
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+  "mypy>=1.10.0",
 ]
 
 [tool.ruff]
