@@ -4,10 +4,23 @@ RFC 9420 message framing helpers.
 - Application: RFC 9420 §9 (MLSCiphertext, sender data)
 """
 from dataclasses import dataclass
+from enum import IntEnum
 import os
 
 from .data_structures import Signature
 from ..mls.exceptions import InvalidSignatureError
+from ..codec.tls import (
+    write_uint8,
+    write_uint16,
+    write_uint32,
+    write_opaque16,
+    read_uint8,
+    read_uint16,
+    read_uint32,
+    read_opaque16,
+)
+from .key_schedule import KeySchedule
+from ..crypto.crypto_provider import CryptoProvider
 
 
 @dataclass(frozen=True)
@@ -70,20 +83,6 @@ class PrivateMessage:
         return cls(ciphertext, auth_tag)
 
 # --- RFC 9420 message framing (new API) ---
-
-from enum import IntEnum
-from ..codec.tls import (
-    write_uint8,
-    write_uint16,
-    write_uint32,
-    write_opaque16,
-    read_uint8,
-    read_uint16,
-    read_uint32,
-    read_opaque16,
-)
-from .key_schedule import KeySchedule
-from ..crypto.crypto_provider import CryptoProvider
 
 
 class ContentType(IntEnum):

@@ -7,9 +7,7 @@ from pymls.protocol.data_structures import Credential, Signature
 def main():
     crypto = DefaultCryptoProvider()
     # Create an initial key package for the creator
-    sk_sig = crypto.sign  # placeholder for signature key mgmt
     enc_sk, enc_pk = crypto.generate_key_pair()
-    sig_sk = b"\x11" * 32  # placeholder secret; use real key mgmt
     sig_pk = b"\x22" * 32  # placeholder public
     cred = Credential(identity=b"user-1", public_key=sig_pk)
     leaf = LeafNode(encryption_key=enc_pk, signature_key=sig_pk, credential=cred, capabilities=b"", parent_hash=b"")

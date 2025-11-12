@@ -1,4 +1,7 @@
 """Array-indexed balanced binary tree helpers (RFC 9420 Appendix C)."""
+from ..mls.exceptions import PyMLSError
+
+
 def log2(x: int) -> int:
     """Return floor(log2(x)) for positive integers; 0 for x == 0."""
     # Equivalent to floor(log2(x))
@@ -39,9 +42,6 @@ def root(n: int) -> int:
     if w == 0:
         return 0
     return (1 << log2(w)) - 1
-
-
-from ..mls.exceptions import PyMLSError
 
 
 def left(x: int) -> int:

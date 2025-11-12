@@ -18,7 +18,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
     """
     try:
         from cryptography import x509
-        from cryptography.hazmat.primitives import serialization, hashes
+        from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import padding
     except Exception as e:
         raise PyMLSError("cryptography package required for X.509 validation") from e

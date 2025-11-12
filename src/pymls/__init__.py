@@ -10,7 +10,7 @@ warnings.warn(
     DeprecationWarning,
     stacklevel=2,
 )
-from .protocol.mls_group import MLSGroup
+from .protocol.mls_group import MLSGroup  # noqa: E402
 
 __all__ = ["Group", "DefaultCryptoProvider", "MLSGroup"]
 

@@ -87,7 +87,8 @@ def _run_secret_tree_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None
       - leaf (int), generation (int), n_leaves (int, optional)
       - expected: { app_key, app_nonce, hs_key, hs_nonce } (hex)
     """
-    h = lambda b: bytes.fromhex(b) if isinstance(b, str) else b
+    def h(b):
+        return bytes.fromhex(b) if isinstance(b, str) else b
     leaf = int(vec.get("leaf", 0))
     n_leaves = int(vec.get("n_leaves", max(leaf + 1, 1)))
     st = SecretTree(h(vec["application_secret"]), h(vec["handshake_secret"]), crypto, n_leaves=n_leaves)
@@ -113,7 +114,8 @@ def _run_message_protection_vector(vec: Dict[str, Any], crypto: CryptoProvider) 
       - content (hex), content_type ("PROPOSAL"|"COMMIT")
       - expected: { tbs (hex) }
     """
-    h = lambda b: bytes.fromhex(b) if isinstance(b, str) else b
+    def h(b):
+        return bytes.fromhex(b) if isinstance(b, str) else b
     ct_map = {"PROPOSAL": ContentType.PROPOSAL, "COMMIT": ContentType.COMMIT, "APPLICATION": ContentType.APPLICATION}
     fc = FramedContent(content_type=ct_map[vec.get("content_type", "PROPOSAL")], content=h(vec.get("content", "")))
     tbs = AuthenticatedContentTBS(
@@ -135,7 +137,8 @@ def _run_welcome_groupinfo_vector(vec: Dict[str, Any], crypto: CryptoProvider) -
       - extensions (hex), signature (hex), signer_key (hex, optional)
       - expected: { tbs (hex) }
     """
-    h = lambda b: bytes.fromhex(b) if isinstance(b, str) else b
+    def h(b):
+        return bytes.fromhex(b) if isinstance(b, str) else b
     gc = GroupContext(
         group_id=h(vec["group_context"]["group_id"]),
         epoch=int(vec["group_context"]["epoch"]),
