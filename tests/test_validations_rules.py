@@ -1,10 +1,10 @@
 import unittest
-from src.pymls.protocol.validations import (
+from pymls.protocol.validations import (
     validate_proposals_client_rules,
     validate_commit_matches_referenced_proposals,
     CommitValidationError,
 )
-from src.pymls.protocol.data_structures import AddProposal, RemoveProposal, UpdateProposal, Commit, Signature
+from pymls.protocol.data_structures import AddProposal, RemoveProposal, UpdateProposal, Commit, Signature
 
 
 class TestValidations(unittest.TestCase):

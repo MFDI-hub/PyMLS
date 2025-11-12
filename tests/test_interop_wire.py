@@ -1,9 +1,9 @@
 import unittest
-from src.pymls import DefaultCryptoProvider
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
-from src.pymls.protocol.mls_group import MLSGroup
-from src.pymls.interop.harness import (
+from pymls import DefaultCryptoProvider
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
+from pymls.protocol.mls_group import MLSGroup
+from pymls.interop.harness import (
     export_handshake_b64,
     import_handshake_b64,
     export_application_b64,

@@ -1,6 +1,6 @@
 import unittest
-from src.pymls import DefaultCryptoProvider
-from src.pymls.protocol.messages import (
+from pymls import DefaultCryptoProvider
+from pymls.protocol.messages import (
     sign_authenticated_content,
     attach_membership_tag,
     verify_plaintext,
@@ -11,9 +11,9 @@ from src.pymls.protocol.messages import (
     unprotect_content_application,
     ContentType,
 )
-from src.pymls.protocol.key_schedule import KeySchedule
-from src.pymls.protocol.data_structures import GroupContext
-from src.pymls.protocol.secret_tree import SecretTree
+from pymls.protocol.key_schedule import KeySchedule
+from pymls.protocol.data_structures import GroupContext
+from pymls.protocol.secret_tree import SecretTree
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 

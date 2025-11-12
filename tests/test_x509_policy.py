@@ -5,8 +5,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 
-from src.pymls.crypto.x509_policy import X509Policy
-from src.pymls.crypto.x509 import verify_certificate_chain_with_policy
+from pymls.crypto.x509_policy import X509Policy
+from pymls.crypto.x509 import verify_certificate_chain_with_policy
 
 
 def _self_signed_cert(digital_signature: bool = True, add_eku_client_auth: bool = True) -> bytes:

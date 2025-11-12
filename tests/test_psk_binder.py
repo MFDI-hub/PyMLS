@@ -2,11 +2,11 @@ import unittest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from src.pymls import DefaultCryptoProvider
-from src.pymls.protocol.mls_group import MLSGroup
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature, Sender
-from src.pymls.protocol.messages import decode_psk_binder
+from pymls import DefaultCryptoProvider
+from pymls.protocol.mls_group import MLSGroup
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature, Sender
+from pymls.protocol.messages import decode_psk_binder
 
 
 def _ed25519_keypair():

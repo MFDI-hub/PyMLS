@@ -1,6 +1,6 @@
 import unittest
 import os
-from src.pymls.protocol.messages import MLSPlaintext, MLSCiphertext
+from pymls.protocol.messages import MLSPlaintext, MLSCiphertext
 
 
 class TestFuzzDeserialize(unittest.TestCase):

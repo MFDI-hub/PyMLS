@@ -1,12 +1,12 @@
 import unittest
 
-from src.pymls.codec.mls import (
+from pymls.codec.mls import (
     encode_commit_message,
     decode_commit_message,
     encode_proposals_message,
     decode_proposals_message,
 )
-from src.pymls.protocol.data_structures import Commit, Signature, AddProposal
+from pymls.protocol.data_structures import Commit, Signature, AddProposal
 
 
 class TestMLSCodec(unittest.TestCase):

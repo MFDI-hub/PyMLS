@@ -1,11 +1,11 @@
 import unittest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from src.pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import GroupContext, GroupInfo, Signature
-from src.pymls.protocol.ratchet_tree import RatchetTree
-from src.pymls.extensions.extensions import Extension, ExtensionType, serialize_extensions
+from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import GroupContext, GroupInfo, Signature
+from pymls.protocol.ratchet_tree import RatchetTree
+from pymls.extensions.extensions import Extension, ExtensionType, serialize_extensions
 
 
 class TestGroupInfoVerification(unittest.TestCase):

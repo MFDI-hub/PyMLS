@@ -1,6 +1,6 @@
 import unittest
 
-from src.pymls.codec.tls import (
+from pymls.codec.tls import (
     write_uint8,
     read_uint8,
     write_uint16,

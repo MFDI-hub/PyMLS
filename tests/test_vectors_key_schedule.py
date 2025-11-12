@@ -1,5 +1,5 @@
 import unittest
-from src.pymls.protocol.test_vectors import generate_key_schedule_vector
+from pymls.protocol.test_vectors import generate_key_schedule_vector
 
 
 class TestKeyScheduleVectors(unittest.TestCase):

@@ -1,8 +1,8 @@
 import unittest
-from src.pymls.protocol.ratchet_tree import RatchetTree
-from src.pymls import DefaultCryptoProvider
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from pymls.protocol.ratchet_tree import RatchetTree
+from pymls import DefaultCryptoProvider
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 

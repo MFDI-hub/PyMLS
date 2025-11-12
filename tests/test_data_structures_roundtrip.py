@@ -1,10 +1,10 @@
 import unittest
-from src.pymls.protocol.data_structures import (
+from pymls.protocol.data_structures import (
     AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ReInitProposal, ExternalInitProposal,
     Signature, UpdatePath, Commit, Welcome, MLSVersion, CipherSuite, EncryptedGroupSecrets
 )
-from src.pymls.protocol.data_structures import serialize_bytes
-from src.pymls.crypto.hpke import KEM, KDF, AEAD
+from pymls.protocol.data_structures import serialize_bytes
+from pymls.crypto.hpke import KEM, KDF, AEAD
 
 
 class TestDataStructuresRoundtrip(unittest.TestCase):

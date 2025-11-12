@@ -1,5 +1,5 @@
 import unittest
-from src.pymls import DefaultCryptoProvider
+from pymls import DefaultCryptoProvider
 
 
 class TestCryptoProvider(unittest.TestCase):

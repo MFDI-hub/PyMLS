@@ -1,6 +1,6 @@
 import unittest
-from src.pymls.protocol.secret_tree import SecretTree
-from src.pymls import DefaultCryptoProvider
+from pymls.protocol.secret_tree import SecretTree
+from pymls import DefaultCryptoProvider
 
 
 class TestSecretTree(unittest.TestCase):

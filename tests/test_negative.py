@@ -1,9 +1,9 @@
 import unittest
 
-from src.pymls import DefaultCryptoProvider
-from src.pymls.mls.group import Group
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from pymls import DefaultCryptoProvider
+from pymls.mls.group import Group
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
@@ -37,10 +37,10 @@ class TestNegative(unittest.TestCase):
         # Create a normal commit (no proposals) to get a valid commit container
         pt, welcomes = group.commit(sig_sk_a)
         # Tamper plaintext framed content by appending a fake reference in the commit body
-        from src.pymls.protocol.data_structures import Commit
+        from pymls.protocol.data_structures import Commit
         commit = Commit.deserialize(pt.auth_content.tbs.framed_content.content)
         tampered = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs + [b"\x01"], commit.signature)
-        from src.pymls.protocol.messages import sign_authenticated_content, attach_membership_tag, ContentType
+        from pymls.protocol.messages import sign_authenticated_content, attach_membership_tag, ContentType
         pt_tampered = sign_authenticated_content(
             group_id=group.group_id,
             epoch=group.epoch,

@@ -1,8 +1,8 @@
 import unittest
-from src.pymls import DefaultCryptoProvider
-from src.pymls.mls.group import Group
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from pymls import DefaultCryptoProvider
+from pymls.mls.group import Group
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
@@ -33,18 +33,18 @@ class TestMLSGroupExternalAndPersist(unittest.TestCase):
         kp, kem_sk, sig_sk = member(b"A")
         g = Group.create(b"gid", kp, self.crypto)
         bts = g._inner.to_bytes()
-        from src.pymls.protocol.mls_group import MLSGroup
+        from pymls.protocol.mls_group import MLSGroup
         g3 = MLSGroup.from_bytes(bts, self.crypto)
         self.assertEqual(g3.get_group_id(), g.group_id)
 
     def test_external_commit_processing(self):
         # Build group A and clone into B
         kp, kem_sk, sig_sk = member(b"A")
-        from src.pymls.protocol.mls_group import MLSGroup
+        from pymls.protocol.mls_group import MLSGroup
         gA = MLSGroup.create(b"gid2", kp, self.crypto)
         pt, _ = gA.create_commit(sig_sk)
         # Resign the plaintext with external private key and attach membership tag
-        from src.pymls.protocol.messages import sign_authenticated_content, attach_membership_tag, ContentType
+        from pymls.protocol.messages import sign_authenticated_content, attach_membership_tag, ContentType
         tbs = pt.auth_content.tbs
         # Access external private key from gA (MVP internals)
         ext_sk = gA._external_private_key

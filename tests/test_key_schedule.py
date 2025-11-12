@@ -1,7 +1,7 @@
 import unittest
-from src.pymls.protocol.key_schedule import KeySchedule
-from src.pymls.protocol.data_structures import GroupContext
-from src.pymls import DefaultCryptoProvider
+from pymls.protocol.key_schedule import KeySchedule
+from pymls.protocol.data_structures import GroupContext
+from pymls import DefaultCryptoProvider
 
 
 class TestKeySchedule(unittest.TestCase):
