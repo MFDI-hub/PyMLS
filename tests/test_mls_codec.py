@@ -13,7 +13,7 @@ from src.pymls.protocol.data_structures import Commit, UpdatePath, Signature, Ad
 
 class TestMLSCodec(unittest.TestCase):
     def test_commit_roundtrip(self):
-        commit = Commit(path=None, removes=[], adds=[], signature=Signature(b""))
+        commit = Commit(path=None, removes=[], adds=[], proposal_refs=[], signature=Signature(b""))
         sig = b"sig"
         data = encode_commit_message(commit, sig)
         c2, s2 = decode_commit_message(data)

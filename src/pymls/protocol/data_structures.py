@@ -279,6 +279,7 @@ class Commit:
     path: UpdatePath | None
     removes: list[int]
     adds: list[bytes]  # Serialized KeyPackages
+    proposal_refs: list[bytes]
     signature: Signature
 
     def serialize(self) -> bytes:
@@ -296,6 +297,11 @@ class Commit:
         data += struct.pack("!H", len(self.adds))
         for item in self.adds:
             data += serialize_bytes(item)
+
+        # proposal references
+        data += struct.pack("!H", len(self.proposal_refs))
+        for pref in self.proposal_refs:
+            data += serialize_bytes(pref)
 
         data += self.signature.serialize()
         return data
@@ -324,15 +330,22 @@ class Commit:
             item, rest = deserialize_bytes(rest)
             adds.append(item)
 
+        num_refs, = struct.unpack("!H", rest[:2])
+        rest = rest[2:]
+        refs = []
+        for _ in range(num_refs):
+            pref, rest = deserialize_bytes(rest)
+            refs.append(pref)
+
         signature = Signature.deserialize(rest)
-        return cls(path, removes, adds, signature)
+        return cls(path, removes, adds, refs, signature)
 
 
 @dataclass(frozen=True)
 class Welcome:
     version: MLSVersion
     cipher_suite: CipherSuite
-    secrets: list[bytes]
+    secrets: list["EncryptedGroupSecrets"]
     encrypted_group_info: bytes
 
     def serialize(self) -> bytes:
@@ -341,7 +354,7 @@ class Welcome:
 
         data += struct.pack("!H", len(self.secrets))
         for secret in self.secrets:
-            data += serialize_bytes(secret)
+            data += serialize_bytes(secret.serialize())
 
         data += serialize_bytes(self.encrypted_group_info)
         return data
@@ -356,10 +369,10 @@ class Welcome:
 
         num_secrets, = struct.unpack("!H", rest[:2])
         rest = rest[2:]
-        secrets = []
+        secrets: list[EncryptedGroupSecrets] = []
         for _ in range(num_secrets):
-            secret, rest = deserialize_bytes(rest)
-            secrets.append(secret)
+            sbytes, rest = deserialize_bytes(rest)
+            secrets.append(EncryptedGroupSecrets.deserialize(sbytes))
 
         encrypted_group_info, _ = deserialize_bytes(rest)
 
@@ -411,6 +424,21 @@ class GroupInfo:
         group_context = GroupContext.deserialize(gc_bytes)
         signature = Signature.deserialize(sig_bytes)
         return cls(group_context, signature, ext_bytes)
+
+
+@dataclass(frozen=True)
+class EncryptedGroupSecrets:
+    kem_output: bytes
+    ciphertext: bytes
+
+    def serialize(self) -> bytes:
+        return serialize_bytes(self.kem_output) + serialize_bytes(self.ciphertext)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "EncryptedGroupSecrets":
+        kem, rest = deserialize_bytes(data)
+        ct, _ = deserialize_bytes(rest)
+        return cls(kem, ct)
 
 
 

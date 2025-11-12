@@ -18,6 +18,9 @@ from ..codec.mls import (
     decode_welcome,
 )
 from ..protocol.data_structures import Commit, Proposal, Welcome
+from ..protocol.messages import MLSPlaintext, MLSCiphertext
+from ..protocol.messages import ContentType as WireContentType
+
 
 
 def round_trip_commit(commit: Commit, signature: bytes) -> Tuple[Commit, bytes]:
@@ -34,4 +37,21 @@ def round_trip_welcome(welcome: Welcome) -> Welcome:
     data = encode_welcome(welcome)
     return decode_welcome(data)
 
+
+def export_plaintext_hex(m: MLSPlaintext) -> str:
+    return m.serialize().hex()
+
+
+def import_plaintext_hex(h: str) -> MLSPlaintext:
+    data = bytes.fromhex(h)
+    return MLSPlaintext.deserialize(data)
+
+
+def export_ciphertext_hex(m: MLSCiphertext) -> str:
+    return m.serialize().hex()
+
+
+def import_ciphertext_hex(h: str) -> MLSCiphertext:
+    data = bytes.fromhex(h)
+    return MLSCiphertext.deserialize(data)
 

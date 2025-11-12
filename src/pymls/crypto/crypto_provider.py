@@ -93,3 +93,19 @@ class CryptoProvider(ABC):
         Return the underlying hash length (bytes) for the active KDF.
         """
         pass
+
+    # --- RFC 9420 labeled KDF helpers ---
+    @abstractmethod
+    def expand_with_label(self, secret: bytes, label: bytes, context: bytes, length: int) -> bytes:
+        """
+        HKDF-Expand with RFC 9420 label formatting:
+        info := uint16(length) || opaque8("MLS 1.0 " + label) || opaque16(context)
+        """
+        pass
+
+    @abstractmethod
+    def derive_secret(self, secret: bytes, label: bytes) -> bytes:
+        """
+        Convenience wrapper: expand_with_label(secret, label, context="", length=Hash.length)
+        """
+        pass

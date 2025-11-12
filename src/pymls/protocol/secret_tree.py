@@ -39,16 +39,18 @@ class SecretTree:
         return self._leaves[leaf]
 
     def _derive_leaf_secret(self, base: bytes, leaf: int) -> bytes:
-        label = b"leaf|" + _u64(leaf)
-        return self._crypto.kdf_expand(base, label, self._crypto.kdf_hash_len())
+        label = b"leaf"
+        context = _u64(leaf)
+        return self._crypto.expand_with_label(base, label, context, self._crypto.kdf_hash_len())
 
     def _derive_generation_secret(self, leaf_secret: bytes, generation: int) -> bytes:
-        label = b"gen|" + _u64(generation)
-        return self._crypto.kdf_expand(leaf_secret, label, self._crypto.kdf_hash_len())
+        label = b"generation"
+        context = _u64(generation)
+        return self._crypto.expand_with_label(leaf_secret, label, context, self._crypto.kdf_hash_len())
 
     def _derive_key_nonce(self, gen_secret: bytes) -> Tuple[bytes, bytes]:
-        key = self._crypto.kdf_expand(gen_secret, b"key", self._crypto.aead_key_size())
-        nonce_base = self._crypto.kdf_expand(gen_secret, b"nonce", self._crypto.aead_nonce_size())
+        key = self._crypto.expand_with_label(gen_secret, b"app key", b"", self._crypto.aead_key_size())
+        nonce_base = self._crypto.expand_with_label(gen_secret, b"app nonce", b"", self._crypto.aead_nonce_size())
         return key, nonce_base
 
     def _nonce_for_generation(self, nonce_base: bytes, generation: int) -> bytes:

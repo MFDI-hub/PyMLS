@@ -205,23 +205,25 @@ def decrypt_sender_data(
     return SenderData.deserialize(ptxt)
 
 
-def encode_encrypted_sender_data_with_reuse_guard_prefix(
+def encode_encrypted_sender_data(
     sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider
 ) -> bytes:
     """
-    MVP encoding: prefix encrypted sender data with opaque16(reuse_guard) to allow
-    the receiver to reconstruct the sender-data nonce for decryption.
+    Encode encrypted sender data as a single opaque field containing:
+      reuse_guard || enc(SenderData)
     """
     enc = encrypt_sender_data(sd, key_schedule, crypto, aad=b"")
-    return write_opaque16(sd.reuse_guard) + write_opaque16(enc)
+    return write_opaque16(sd.reuse_guard + enc)
 
 
-def decode_encrypted_sender_data_with_reuse_guard_prefix(
+def decode_encrypted_sender_data(
     data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider
 ) -> SenderData:
-    rg, off = read_opaque16(data, 0)
-    enc, _ = read_opaque16(data, off)
-    return decrypt_sender_data(enc, rg, key_schedule, crypto, aad=b"")
+    blob, _ = read_opaque16(data, 0)
+    # first 4 bytes are reuse_guard, remainder is ciphertext
+    reuse_guard = blob[:4]
+    enc = blob[4:]
+    return decrypt_sender_data(enc, reuse_guard, key_schedule, crypto, aad=b"")
 
 
 # AAD and padding helpers
@@ -327,7 +329,7 @@ def protect_content_handshake(
     reuse_guard = os.urandom(4)
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.COMMIT, authenticated_data)
-    enc_sd = encode_encrypted_sender_data_with_reuse_guard_prefix(sd, key_schedule, crypto)
+    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto)
     ct = crypto.aead_encrypt(key, nonce, content, aad)
     return MLSCiphertext(
         group_id=group_id,
@@ -356,8 +358,10 @@ def protect_content_application(
     reuse_guard = os.urandom(4)
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
-    enc_sd = encode_encrypted_sender_data_with_reuse_guard_prefix(sd, key_schedule, crypto)
-    ct = crypto.aead_encrypt(key, nonce, content, aad)
+    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto)
+    # Apply simple zero padding to 16-byte boundary (MVP)
+    padded = add_zero_padding(content, 16)
+    ct = crypto.aead_encrypt(key, nonce, padded, aad)
     return MLSCiphertext(
         group_id=group_id,
         epoch=epoch,
@@ -378,7 +382,7 @@ def unprotect_content_handshake(
     Decrypt handshake content and return (sender_leaf_index, plaintext).
     """
     aad = compute_ciphertext_aad(m.group_id, m.epoch, m.content_type, m.authenticated_data)
-    sd = decode_encrypted_sender_data_with_reuse_guard_prefix(m.encrypted_sender_data, key_schedule, crypto)
+    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto)
     key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
     ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
     return sd.sender, ptxt
@@ -394,7 +398,8 @@ def unprotect_content_application(
     Decrypt application content and return (sender_leaf_index, plaintext).
     """
     aad = compute_ciphertext_aad(m.group_id, m.epoch, m.content_type, m.authenticated_data)
-    sd = decode_encrypted_sender_data_with_reuse_guard_prefix(m.encrypted_sender_data, key_schedule, crypto)
+    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto)
     key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
     ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
-    return sd.sender, ptxt
+    # Strip zero padding
+    return sd.sender, strip_trailing_zeros(ptxt)

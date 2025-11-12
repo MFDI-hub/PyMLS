@@ -1,4 +1,4 @@
-from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo
+from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets
 from .key_packages import KeyPackage, LeafNode
 from .messages import (
     MLSPlaintext,
@@ -14,7 +14,7 @@ from .ratchet_tree import RatchetTree
 from .key_schedule import KeySchedule
 from .secret_tree import SecretTree
 from ..extensions.extensions import Extension, ExtensionType, serialize_extensions, deserialize_extensions
-from .validations import validate_proposals_client_rules
+from .validations import validate_proposals_client_rules, validate_commit_matches_referenced_proposals
 from ..crypto.crypto_provider import CryptoProvider
 
 
@@ -29,7 +29,10 @@ class MLSGroup:
         self._interim_transcript_hash: bytes | None = None
         self._confirmed_transcript_hash: bytes | None = None
         self._pending_proposals: list[Proposal] = []
+        self._proposal_cache: dict[bytes, Proposal] = {}
         self._own_leaf_index = own_leaf_index
+        self._external_private_key: bytes | None = None
+        self._external_public_key: bytes | None = None
 
     @classmethod
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto_provider: CryptoProvider) -> "MLSGroup":
@@ -41,6 +44,10 @@ class MLSGroup:
         group._group_context = GroupContext(group_id, 0, group._ratchet_tree.calculate_tree_hash(), b"")
         group._key_schedule = KeySchedule(init_secret, commit_secret, group._group_context, None, crypto_provider)
         group._secret_tree = SecretTree(group._key_schedule.application_secret, group._key_schedule.handshake_secret, crypto_provider)
+        # Generate external HPKE key for ExternalPub extension (MVP)
+        ext_sk, ext_pk = crypto_provider.generate_key_pair()
+        group._external_private_key = ext_sk
+        group._external_public_key = ext_pk
         return group
 
     @classmethod
@@ -53,20 +60,9 @@ class MLSGroup:
         """
         # Try each secret until one opens
         epoch_secret = None
-        for blob in welcome.secrets:
+        for egs in welcome.secrets:
             try:
-                # Our Welcome encodes enc || ct where enc length depends on KEM.
-                # We cannot split by fixed size, so assume enc=first half? Not reliable.
-                # For this placeholder, we expect enc||ct where enc is KEM pk size for DH suites.
-                # If that fails, skip.
-                try:
-                    enc_len = crypto_provider.kem_pk_size()
-                    enc, ct = blob[:enc_len], blob[enc_len:]
-                except NotImplementedError:
-                    # DER-encoded EC public key in KEMs without fixed size: cannot split reliably.
-                    # Skip in placeholder.
-                    continue
-                epoch_secret = crypto_provider.hpke_open(hpke_private_key, enc, b"welcome secret", b"", ct)
+                epoch_secret = crypto_provider.hpke_open(hpke_private_key, egs.kem_output, b"welcome secret", b"", egs.ciphertext)
                 break
             except Exception:
                 continue
@@ -78,6 +74,8 @@ class MLSGroup:
         gi_bytes = crypto_provider.aead_decrypt(epoch_secret, nonce, welcome.encrypted_group_info, b"")
         from .data_structures import GroupInfo as GroupInfoStruct
         gi = GroupInfoStruct.deserialize(gi_bytes)
+        # Verify GroupInfo signature if extensions provide a committer leaf
+        # TODO: Full GroupInfo signature verification will be added alongside explicit group signing keys.
 
         group = cls(gi.group_context.group_id, crypto_provider, -1)
         group._group_context = gi.group_context
@@ -91,7 +89,8 @@ class MLSGroup:
                 for e in exts:
                     if e.ext_type == ExtensionType.RATCHET_TREE:
                         group._ratchet_tree.load_tree_from_welcome_bytes(e.data)
-                        break
+                    elif e.ext_type == ExtensionType.EXTERNAL_PUB:
+                        group._external_public_key = e.data
             except Exception:
                 # If extension parsing fails, proceed without tree
                 pass
@@ -152,6 +151,61 @@ class MLSGroup:
         )
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
+    def create_external_init_proposal(self, kem_public_key: bytes, signing_key: bytes) -> MLSPlaintext:
+        proposal = ExternalInitProposal(kem_public_key)
+        proposal_bytes = proposal.serialize()
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.PROPOSAL,
+            content=proposal_bytes,
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
+
+    def create_psk_proposal(self, psk_id: bytes, signing_key: bytes) -> MLSPlaintext:
+        proposal = PreSharedKeyProposal(psk_id)
+        proposal_bytes = proposal.serialize()
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.PROPOSAL,
+            content=proposal_bytes,
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
+
+    def create_reinit_proposal(self, new_group_id: bytes, signing_key: bytes) -> MLSPlaintext:
+        proposal = ReInitProposal(new_group_id)
+        proposal_bytes = proposal.serialize()
+        pt = sign_authenticated_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_type=ContentType.PROPOSAL,
+            content=proposal_bytes,
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
+        return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
+
+    def external_commit_add_member(self, key_package: KeyPackage, kem_public_key: bytes, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+        """
+        MVP external commit flow helper: queue ExternalInit and Add proposals and create a commit.
+        The committer is assumed to be a current member for this helper.
+        """
+        # Queue proposals locally; they will be referenced by create_commit
+        self._pending_proposals.append(ExternalInitProposal(kem_public_key))
+        self._pending_proposals.append(AddProposal(key_package.serialize()))
+        return self.create_commit(signing_key)
+
     def process_proposal(self, message: MLSPlaintext, sender: Sender) -> None:
         sender_leaf_node = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
         if not sender_leaf_node:
@@ -160,7 +214,11 @@ class MLSGroup:
         # Verify MLSPlaintext (signature and membership tag)
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
-        proposal = Proposal.deserialize(message.auth_content.tbs.framed_content.content)
+        tbs = message.auth_content.tbs
+        proposal = Proposal.deserialize(tbs.framed_content.content)
+        # Compute a proposal reference from the serialized plaintext (MVP; RFC uses hash of the MLSPlaintext)
+        prop_ref = self._crypto_provider.kdf_extract(b"proposal", message.serialize())
+        self._proposal_cache[prop_ref] = proposal
         self._pending_proposals.append(proposal)
 
     def create_commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
@@ -188,15 +246,26 @@ class MLSGroup:
         update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node)
 
         # Construct and sign the commit
+        # Collect proposal references corresponding to pending proposals
+        pending_refs: list[bytes] = []
+        for pref, prop in list(self._proposal_cache.items()):
+            if prop in self._pending_proposals:
+                pending_refs.append(pref)
+        # Optionally derive a PSK secret if PSK proposals are present (MVP: derive from IDs directly)
+        psk_ids: list[bytes] = []
+        for p in self._pending_proposals:
+            if isinstance(p, PreSharedKeyProposal):
+                psk_ids.append(p.psk_id)
         temp_commit = Commit(
             path=update_path,
             removes=removes,
             adds=[kp.serialize() for kp in adds_kps],
+            proposal_refs=pending_refs,
             signature=Signature(b"")  # Empty signature for serialization
         )
         commit_bytes_for_signing = temp_commit.serialize()
         signature_value = self._crypto_provider.sign(signing_key, commit_bytes_for_signing)
-        commit = Commit(temp_commit.path, temp_commit.removes, temp_commit.adds, Signature(signature_value))
+        commit = Commit(temp_commit.path, temp_commit.removes, temp_commit.adds, temp_commit.proposal_refs, Signature(signature_value))
 
         # Update transcript hashes (placeholder chaining)
         prev_i = self._interim_transcript_hash or b""
@@ -207,10 +276,18 @@ class MLSGroup:
         tree_hash = self._ratchet_tree.calculate_tree_hash()
         new_group_context = GroupContext(self._group_id, new_epoch, tree_hash, b"")  # filled after confirm tag
 
-        self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, None, self._crypto_provider)
+        # Derive PSK secret (MVP: H(KDF extract of concatenated psk_ids))
+        psk_secret = None
+        if psk_ids:
+            acc = b"".join(psk_ids)
+            psk_secret = self._crypto_provider.kdf_extract(b"psk", acc)
+        self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(self._key_schedule.application_secret, self._key_schedule.handshake_secret, self._crypto_provider)
         self._group_context = new_group_context
         self._pending_proposals = []
+        # Clear referenced proposals from cache
+        for pref in pending_refs:
+            self._proposal_cache.pop(pref, None)
 
         # Compute confirmation tag (placeholder: HMAC over commit bytes) and update confirmed transcript hash
         commit_bytes = commit.serialize()
@@ -224,18 +301,25 @@ class MLSGroup:
         # Construct Welcome messages for any added members (placeholder encoding)
         welcomes: list[Welcome] = []
         if adds_kps:
-            # Include ratchet_tree extension for new members
+            # Include ratchet_tree extension for new members (and external public key if available)
             rt_bytes = self._ratchet_tree.serialize_tree_for_welcome()
-            ext_bytes = serialize_extensions([Extension(ExtensionType.RATCHET_TREE, rt_bytes)])
-            group_info = GroupInfo(new_group_context, Signature(b""), ext_bytes)
+            exts = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]
+            if self._external_public_key:
+                exts.append(Extension(ExtensionType.EXTERNAL_PUB, self._external_public_key))
+            ext_bytes = serialize_extensions(exts)
+            # Sign GroupInfo with committer's signing key (MVP)
+            gi_unsigned = GroupInfo(new_group_context, Signature(b""), ext_bytes)
+            gi_ser = gi_unsigned.group_context.serialize() + gi_unsigned.extensions
+            gi_sig = self._crypto_provider.sign(signing_key, gi_ser)
+            group_info = GroupInfo(new_group_context, Signature(gi_sig), ext_bytes)
             enc_group_info = self._crypto_provider.aead_encrypt(
                 self._key_schedule.encryption_secret, b"\x00" * self._crypto_provider.aead_nonce_size(), group_info.serialize(), b""
             )
-            secrets: list[bytes] = []
+            secrets: list[EncryptedGroupSecrets] = []
             for kp in adds_kps:
                 pk = kp.leaf_node.encryption_key
                 enc, ct = self._crypto_provider.hpke_seal(pk, b"welcome secret", b"", self._key_schedule.epoch_secret)
-                secrets.append(enc + ct)
+                secrets.append(EncryptedGroupSecrets(enc, ct))
             welcome = Welcome(MLSVersion.MLS10, CipherSuite(self._crypto_provider.active_ciphersuite.kem, self._crypto_provider.active_ciphersuite.kdf, self._crypto_provider.active_ciphersuite.aead), secrets, enc_group_info)
             welcomes.append(welcome)
 
@@ -261,9 +345,19 @@ class MLSGroup:
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
+        # If commit includes proposal references, validate and consume them
+        if commit.proposal_refs:
+            referenced: list[Proposal] = []
+            for pref in commit.proposal_refs:
+                if pref not in self._proposal_cache:
+                    raise ValueError("missing referenced proposal")
+                referenced.append(self._proposal_cache[pref])
+            validate_commit_matches_referenced_proposals(commit, referenced)
+            for pref in commit.proposal_refs:
+                self._proposal_cache.pop(pref, None)
 
         # Verify commit inner signature
-        temp_commit = Commit(commit.path, commit.removes, commit.adds, Signature(b""))
+        temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
         commit_bytes_for_signing = temp_commit.serialize()
         self._crypto_provider.verify(sender_leaf_node.signature_key, commit_bytes_for_signing, commit.signature.value)
 
@@ -301,6 +395,32 @@ class MLSGroup:
             self._confirmed_transcript_hash = confirmed
         else:
             raise NotImplementedError("Processing commits without a path is not supported yet.")
+
+    # --- Advanced flows (MVP implementations) ---
+    def process_external_commit(self, message: MLSPlaintext) -> None:
+        """
+        Verify plaintext using the group's external public key (if present) and
+        then process the commit assuming sender index 0 (MVP). This is a simplification.
+        """
+        if not self._external_public_key:
+            raise ValueError("no external public key configured for this group")
+        # Verify signature and membership tag using external key (membership tag is still checked with membership key)
+        verify_plaintext(message, self._external_public_key, self._key_schedule.membership_key, self._crypto_provider)
+        # Process with a default sender index (MVP)
+        self.process_commit(message, sender_index=0)
+
+    def reinit_group_to(self, new_group_id: bytes, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+        """
+        Queue a ReInit proposal and create a commit (MVP: commit with update path).
+        """
+        self._pending_proposals.append(ReInitProposal(new_group_id))
+        return self.create_commit(signing_key)
+
+    def get_resumption_psk(self) -> bytes:
+        """
+        Export current resumption PSK from the key schedule.
+        """
+        return self._key_schedule.resumption_psk
 
     def protect(self, app_data: bytes) -> MLSCiphertext:
         return protect_content_application(

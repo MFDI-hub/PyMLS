@@ -67,3 +67,52 @@ def make_key_id_ext(key_id: bytes) -> Extension:
     return Extension(ExtensionType.KEY_ID, key_id)
 
 
+def make_lifetime_ext(not_before: int, not_after: int) -> Extension:
+    from ..codec.tls import write_uint64
+    payload = write_uint64(not_before) + write_uint64(not_after)
+    return Extension(ExtensionType.LIFETIME, payload)
+
+
+def parse_lifetime_ext(data: bytes) -> tuple[int, int]:
+    from ..codec.tls import read_uint64
+    off = 0
+    nb, off = read_uint64(data, off)
+    na, off = read_uint64(data, off)
+    return nb, na
+
+
+def make_external_pub_ext(public_key: bytes) -> Extension:
+    return Extension(ExtensionType.EXTERNAL_PUB, public_key)
+
+
+def parse_external_pub_ext(data: bytes) -> bytes:
+    return data
+
+
+def build_capabilities_data(ciphersuite_ids: list[int], supported_exts: list[ExtensionType]) -> bytes:
+    from ..codec.tls import write_uint16
+    out = write_uint16(len(ciphersuite_ids))
+    for cs in ciphersuite_ids:
+        out += write_uint16(cs)
+    out += write_uint16(len(supported_exts))
+    for e in supported_exts:
+        out += write_uint16(int(e))
+    return out
+
+
+def parse_capabilities_data(data: bytes) -> tuple[list[int], list[ExtensionType]]:
+    from ..codec.tls import read_uint16
+    off = 0
+    num_cs, off = read_uint16(data, off)
+    cs_ids: list[int] = []
+    for _ in range(num_cs):
+        cs, off = read_uint16(data, off)
+        cs_ids.append(cs)
+    num_ext, off = read_uint16(data, off)
+    exts: list[ExtensionType] = []
+    for _ in range(num_ext):
+        t, off = read_uint16(data, off)
+        exts.append(ExtensionType(t))
+    return cs_ids, exts
+
+

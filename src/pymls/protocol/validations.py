@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Iterable, Set
 
-from .data_structures import Proposal, AddProposal, Commit
+from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal
 from .key_packages import KeyPackage
+from ..extensions.extensions import parse_capabilities_data
 from ..crypto.crypto_provider import CryptoProvider
 
 
@@ -42,6 +43,14 @@ def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int
         if isinstance(p, RemoveProposal):
             if p.removed < 0 or p.removed >= n_leaves:
                 raise CommitValidationError(f"remove index out of range: {p.removed} not in [0, {n_leaves})")
+        if isinstance(p, AddProposal):
+            # Validate that capabilities payload (if present in LeafNode) parses
+            try:
+                kp = KeyPackage.deserialize(p.key_package)
+                if kp.leaf_node.capabilities:
+                    parse_capabilities_data(kp.leaf_node.capabilities)
+            except Exception as e:
+                raise CommitValidationError("invalid capabilities in key package") from e
 
 
 def validate_commit_basic(commit: Commit) -> None:
@@ -49,9 +58,39 @@ def validate_commit_basic(commit: Commit) -> None:
     if commit.path is None and (len(commit.adds) > 0 or len(commit.removes) > 0):
         # In RFC, non-path commits are allowed in certain cases, but we don't support them.
         raise CommitValidationError("commit without path not supported in this implementation")
+    # If proposal_refs are present, they must be non-empty opaque values
+    for pref in getattr(commit, "proposal_refs", []):
+        if not isinstance(pref, (bytes, bytearray)) or len(pref) == 0:
+            raise CommitValidationError("invalid proposal reference encoding")
 
 
 def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, commit_bytes: bytes, tag: bytes) -> None:
     expected = crypto.hmac_sign(confirmation_key, commit_bytes)[: len(tag)]
     if expected != tag:
         raise CommitValidationError("invalid confirmation tag")
+
+
+def derive_ops_from_proposals(proposals: Iterable[Proposal]) -> tuple[list[int], list[bytes]]:
+    removes: list[int] = []
+    adds: list[bytes] = []
+    for p in proposals:
+        if isinstance(p, RemoveProposal):
+            removes.append(p.removed)
+        elif isinstance(p, AddProposal):
+            adds.append(p.key_package)
+        elif isinstance(p, UpdateProposal):
+            # Updates affect committer path; no remove/add lists
+            continue
+    return removes, adds
+
+
+def validate_commit_matches_referenced_proposals(commit: Commit, referenced: Iterable[Proposal]) -> None:
+    """
+    If a commit carries proposal references, ensure its removes/adds match
+    the referenced proposals (MVP rule).
+    """
+    ref_removes, ref_adds = derive_ops_from_proposals(referenced)
+    if commit.removes != ref_removes:
+        raise CommitValidationError("commit removes do not match referenced proposals")
+    if commit.adds != ref_adds:
+        raise CommitValidationError("commit adds do not match referenced proposals")

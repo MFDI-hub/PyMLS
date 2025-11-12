@@ -19,6 +19,8 @@ from hpke import HPKE, KEM_ID, KDF_ID, AEAD_ID
 
 from .crypto_provider import CryptoProvider
 from .hpke import KEM, KDF as KDFEnum, AEAD
+from ..codec.tls import write_uint16 as _write_uint16
+from ..codec.tls import write_opaque8 as _write_opaque8, write_opaque16 as _write_opaque16
 from .ciphersuites import (
     MlsCiphersuite,
     SignatureScheme,
@@ -287,3 +289,13 @@ class DefaultCryptoProvider(CryptoProvider):
 
     def kdf_hash_len(self) -> int:
         return self._hash_algo().digest_size
+
+    # --- RFC 9420 labeled helpers ---
+    def expand_with_label(self, secret: bytes, label: bytes, context: bytes, length: int) -> bytes:
+        # info := uint16(length) || opaque8("MLS 1.0 " + label) || opaque16(context)
+        full_label = b"MLS 1.0 " + (label or b"")
+        info = _write_uint16(length) + _write_opaque8(full_label) + _write_opaque16(context or b"")
+        return self.kdf_expand(secret, info, length)
+
+    def derive_secret(self, secret: bytes, label: bytes) -> bytes:
+        return self.expand_with_label(secret, label, b"", self.kdf_hash_len())

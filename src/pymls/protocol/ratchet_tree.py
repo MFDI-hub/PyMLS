@@ -97,7 +97,13 @@ class RatchetTree:
         node = self.get_node(node_index)
         if node.is_leaf:
             if node.leaf_node:
-                node.hash = self._crypto_provider.kdf_extract(b"leaf_hash", node.leaf_node.serialize())
+                # RFC-style labeled hashing for leaf content
+                node.hash = self._crypto_provider.expand_with_label(
+                    self._crypto_provider.kdf_extract(b"", node.leaf_node.serialize()),
+                    b"leaf hash",
+                    b"",
+                    self._crypto_provider.kdf_hash_len(),
+                )
             else:
                 node.hash = None
         else:
@@ -109,6 +115,8 @@ class RatchetTree:
         if self.n_leaves == 0:
             return b""
         root_index = tree_math.root(self.n_leaves)
+        # Ensure hashes are up to date from root down
+        self._hash_node(root_index)
         return self.get_node(root_index).hash or b""
 
     def create_update_path(self, committer_index: int, new_leaf_node: LeafNode) -> tuple[UpdatePath, bytes]:
