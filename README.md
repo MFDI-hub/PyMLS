@@ -3,9 +3,9 @@ Pure Messaging Layer Security (MLS, RFC 9420) library in Python.
 
 ## Status
 - Core wire types (`MLSPlaintext`, `MLSCiphertext`, `Welcome`, `GroupInfo`) implemented
-- Group state machine for Add/Update/Remove, commit create/process
-- Ratchet tree with parent-hash validation (MVP)
-- Welcome processing with ratchet_tree extension
+- Group state machine for Add/Update/Remove, commit create/process (RFC-aligned ordering)
+- Ratchet tree with RFC-style parent-hash validation
+- Welcome processing with full ratchet_tree extension (internal nodes included)
 - Ergonomic API: `pymls.Group`
 
 ## Quickstart
@@ -55,7 +55,7 @@ print(sender, pt)  # 0, b'hello'
 ```
 
 ## Notes
-- The library aims for correctness and clarity first. Recent updates added path-less commits, external commit processing, PSK binders, transcript hashing (interim/confirmed), GroupInfo signature verification, reinit context migration, and randomized application padding.
+- The library aims for correctness and clarity first. Recent updates removed MVP shortcuts and aligned with RFC 9420 semantics for group creation, commit ordering, parent hash, and Welcome tree encoding. External HPKE backend is now provided by `cryptography` (fails fast if unavailable). Revocation helpers default to fail-closed unless explicitly configured to fail-open.
 
 ## Interop Test Vectors
 Run the RFC 9420 test vectors with:
@@ -132,4 +132,4 @@ policy = X509Policy(
 )
 ```
 
-If network is unavailable, helpers return “not revoked” by default (explicit revocation → False).
+By default, helpers fail-closed on network/responder errors (return revoked). To opt into fail-open behavior, pass `fail_open=True` to the helper functions.

@@ -21,6 +21,7 @@ class ExtensionType(IntEnum):
     PARENT_HASH = 4
     RATCHET_TREE = 5
     EXTERNAL_PUB = 6
+    REQUIRED_CAPABILITIES = 7
 
 
 @dataclass(frozen=True)
@@ -130,5 +131,26 @@ def parse_capabilities_data(data: bytes) -> tuple[list[int], list[ExtensionType]
         t, off = read_uint16(data, off)
         exts.append(ExtensionType(t))
     return cs_ids, exts
+
+
+def build_required_capabilities(exts_required: list[ExtensionType]) -> bytes:
+    """Encode REQUIRED_CAPABILITIES as a vector of extension types."""
+    from ..codec.tls import write_uint16
+    out = write_uint16(len(exts_required))
+    for e in exts_required:
+        out += write_uint16(int(e))
+    return out
+
+
+def parse_required_capabilities(data: bytes) -> list[ExtensionType]:
+    """Decode REQUIRED_CAPABILITIES payload into a list of ExtensionType."""
+    from ..codec.tls import read_uint16
+    off = 0
+    num, off = read_uint16(data, off)
+    out: list[ExtensionType] = []
+    for _ in range(num):
+        t, off = read_uint16(data, off)
+        out.append(ExtensionType(t))
+    return out
 
 

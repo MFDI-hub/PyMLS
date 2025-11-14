@@ -18,6 +18,7 @@ def check_ocsp_end_entity(
     cache: Optional[dict] = None,
     ttl_seconds: int = 900,
     fetcher: Optional[Callable[[str, bytes], bytes]] = None,
+    fail_open: bool = False,
 ) -> bool:
     """
     Basic OCSP revocation check for an end-entity certificate.
@@ -94,15 +95,15 @@ def check_ocsp_end_entity(
         except Exception:
             resp_bytes = None
     if not resp_bytes:
-        # Network unavailable or responder error → treat as not revoked
-        cache[cache_key] = (now, True)
-        return True
+        # Network unavailable or responder error
+        cache[cache_key] = (now, bool(fail_open))
+        return bool(fail_open)
 
     ocsp_resp = load_der_ocsp_response(resp_bytes)
     # Validate responder status and signature
     if ocsp_resp.response_status.name != "SUCCESSFUL":
-        cache[cache_key] = (now, True)
-        return True
+        cache[cache_key] = (now, bool(fail_open))
+        return bool(fail_open)
     single = ocsp_resp  # cryptography returns a high-level object with .certificate_status
     try:
         ocsp_resp._responder_key_hash  # type: ignore[attr-defined]
@@ -129,6 +130,7 @@ def check_crl(
     cache: Optional[dict] = None,
     ttl_seconds: int = 900,
     fetcher: Optional[Callable[[str], bytes]] = None,
+    fail_open: bool = False,
 ) -> bool:
     """
     Basic CRL check for an end-entity certificate.
@@ -186,8 +188,8 @@ def check_crl(
         except Exception:
             crl_bytes = None
     if not crl_bytes:
-        cache[cache_key] = (now, True)
-        return True
+        cache[cache_key] = (now, bool(fail_open))
+        return bool(fail_open)
 
     try:
         try:

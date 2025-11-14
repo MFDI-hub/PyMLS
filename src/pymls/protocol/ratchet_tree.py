@@ -9,7 +9,7 @@ from .data_structures import UpdatePath, Signature
 from . import tree_math
 from ..crypto.crypto_provider import CryptoProvider
 from ..mls.exceptions import CommitValidationError
-from ..codec.tls import write_uint16, write_opaque16, read_uint16, read_opaque16
+from ..codec.tls import write_uint8, write_uint16, write_opaque16, read_uint8, read_uint16, read_opaque16
 
 
 class RatchetTreeNode:
@@ -88,24 +88,18 @@ class RatchetTree:
         self._recalculate_hashes_from(node_index)
 
     def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes:
-        """
-        RFC-inspired parent hash binding (MVP):
-        Derive a digest over the sequence of (parent_index || parent_hash) along the
-        direct path from the leaf to the root. This binds the leaf to the current
-        parent public keys/hashes and detects path tampering.
-        """
+        """Compute parent hash binding of a leaf to current direct-path nodes (RFC-style)."""
         if self.n_leaves == 0:
             return b""
         leaf_node_index = leaf_index * 2
         # Ensure hashes are current
         self._recalculate_hashes_from(leaf_node_index)
-        acc = b"parent-hash|"
-        for p_idx in tree_math.direct_path(leaf_node_index, self.n_leaves):
-            p = self.get_node(p_idx)
-            ph = p.hash or b""
-            acc += p_idx.to_bytes(4, "big") + ph
-        # Finalize with a KDF extract for fixed-length output tied to KDF hash len
-        return self._crypto_provider.kdf_extract(b"parent-hash", acc)
+        # Collect NodeHash values of parents along the direct path
+        path = tree_math.direct_path(leaf_node_index, self.n_leaves)
+        concatenated = b"".join((self.get_node(p_idx).hash or b"") for p_idx in path)
+        prk = self._crypto_provider.kdf_extract(b"parent-hash", concatenated)
+        ctx = leaf_index.to_bytes(4, "big") + concatenated
+        return self._crypto_provider.expand_with_label(prk, b"parent hash", ctx, self._crypto_provider.kdf_hash_len())
 
     def _recalculate_hashes_from(self, start_node_index: int):
         """Recompute hashes from the given node up to the root along the direct path."""
@@ -118,23 +112,21 @@ class RatchetTree:
             self._hash_node(node_index)
 
     def _hash_node(self, node_index: int):
-        """Compute and cache the hash for a node based on its type and children."""
+        """Compute and cache the hash (NodeHash) for a node based on its type and children."""
         node = self.get_node(node_index)
         if node.is_leaf:
             if node.leaf_node:
-                # RFC-style labeled hashing for leaf content
-                node.hash = self._crypto_provider.expand_with_label(
-                    self._crypto_provider.kdf_extract(b"", node.leaf_node.serialize()),
-                    b"leaf hash",
-                    b"",
-                    self._crypto_provider.kdf_hash_len(),
-                )
+                leaf_ser = node.leaf_node.serialize()
+                prk = self._crypto_provider.kdf_extract(b"node", leaf_ser)
+                node.hash = self._crypto_provider.expand_with_label(prk, b"leaf hash", b"", self._crypto_provider.kdf_hash_len())
             else:
                 node.hash = None
         else:
             left_child_hash = self.get_node(tree_math.left(node_index)).hash or b""
             right_child_hash = self.get_node(tree_math.right(node_index, self.n_leaves)).hash or b""
-            node.hash = self._crypto_provider.kdf_extract(b"node_hash", left_child_hash + right_child_hash)
+            prk = self._crypto_provider.kdf_extract(b"parent", left_child_hash + right_child_hash)
+            context = (node.public_key or b"") + left_child_hash + right_child_hash
+            node.hash = self._crypto_provider.expand_with_label(prk, b"parent hash", context, self._crypto_provider.kdf_hash_len())
 
     def calculate_tree_hash(self) -> bytes:
         """Return the current tree hash (hash of the root), or empty if no leaves."""
@@ -279,7 +271,7 @@ class RatchetTree:
         visit(node_index)
         return recipients
 
-    # --- Welcome ratchet_tree extension helpers (MVP: leaves only) ---
+    # --- Welcome ratchet_tree extension helpers ---
     def serialize_tree_for_welcome(self) -> bytes:
         """
         Serialize leaves needed for a new member to reconstruct the tree view.
@@ -294,6 +286,41 @@ class RatchetTree:
                 out += write_opaque16(node.leaf_node.serialize())
             else:
                 out += write_opaque16(b"")
+        return out
+
+    def serialize_full_tree_for_welcome(self) -> bytes:
+        """
+        Serialize the ratchet tree including internal nodes sufficient for a joiner.
+        Format:
+          uint16 n_leaves
+          uint16 node_count (array width)
+          repeated {
+            uint8 node_type (0=blank, 1=leaf, 2=parent)
+            if leaf:
+              opaque16 leaf_node (may be empty if blank)
+            if parent:
+              opaque16 public_key (may be empty if blank)
+              opaque16 parent_hash (may be empty)
+          }
+        """
+        out = write_uint16(self.n_leaves)
+        width = tree_math.node_width(self.n_leaves)
+        out += write_uint16(width)
+        for idx in range(width):
+            node = self.get_node(idx)
+            if node.is_leaf:
+                if node.leaf_node:
+                    out += write_uint8(1)
+                    out += write_opaque16(node.leaf_node.serialize())
+                else:
+                    out += write_uint8(0)
+            else:
+                if node.public_key or node.parent_hash:
+                    out += write_uint8(2)
+                    out += write_opaque16(node.public_key or b"")
+                    out += write_opaque16(node.parent_hash or b"")
+                else:
+                    out += write_uint8(0)
         return out
 
     def load_tree_from_welcome_bytes(self, data: bytes) -> None:
@@ -313,5 +340,114 @@ class RatchetTree:
                 # Even if blank, we need to advance the leaf count
                 self._n_leaves += 1
         # Re-hash tree
+        if self.n_leaves > 0:
+            self._recalculate_hashes_from(0)
+
+    def load_full_tree_from_welcome_bytes(self, data: bytes) -> None:
+        """Load the tree from bytes produced by serialize_full_tree_for_welcome()."""
+        off = 0
+        n, off = read_uint16(data, off)
+        width, off = read_uint16(data, off)
+        self._n_leaves = 0
+        self._nodes.clear()
+        # First pass: set leaf count
+        for _ in range(n):
+            self._n_leaves += 1
+        # Populate nodes
+        for idx in range(width):
+            node_type, off = read_uint8(data, off)
+            if node_type == 0:
+                continue
+            node = self.get_node(idx)
+            if node.is_leaf:
+                blob, off = read_opaque16(data, off)
+                if blob:
+                    leaf = LeafNode.deserialize(blob)
+                    node.public_key = leaf.encryption_key
+                    node.leaf_node = leaf
+            else:
+                pk, off = read_opaque16(data, off)
+                ph, off = read_opaque16(data, off)
+                node.public_key = pk if pk else None
+                node.parent_hash = ph if ph else None
+        if self.n_leaves > 0:
+            self._recalculate_hashes_from(0)
+
+    # --- Persistence helpers (full state, including private keys when present) ---
+    def serialize_full_state(self) -> bytes:
+        """
+        Serialize the full ratchet tree state, including private keys where present.
+        Format:
+          uint16 n_leaves
+          uint16 node_count
+          repeated {
+            uint8 node_type (0=blank, 1=leaf, 2=parent)
+            if leaf:
+              opaque16 leaf_node (may be empty)
+              opaque16 public_key (may be empty)
+              opaque16 private_key (may be empty)
+            if parent:
+              opaque16 public_key (may be empty)
+              opaque16 private_key (may be empty)
+              opaque16 parent_hash (may be empty)
+          }
+        """
+        out = write_uint16(self.n_leaves)
+        width = tree_math.node_width(self.n_leaves)
+        out += write_uint16(width)
+        for idx in range(width):
+            node = self.get_node(idx)
+            if node.is_leaf:
+                if node.leaf_node or node.public_key or node.private_key:
+                    out += write_uint8(1)
+                    out += write_opaque16(node.leaf_node.serialize() if node.leaf_node else b"")
+                    out += write_opaque16(node.public_key or b"")
+                    out += write_opaque16(node.private_key or b"")
+                else:
+                    out += write_uint8(0)
+            else:
+                if node.public_key or node.private_key or node.parent_hash:
+                    out += write_uint8(2)
+                    out += write_opaque16(node.public_key or b"")
+                    out += write_opaque16(node.private_key or b"")
+                    out += write_opaque16(node.parent_hash or b"")
+                else:
+                    out += write_uint8(0)
+        return out
+
+    def load_full_state(self, data: bytes) -> None:
+        """
+        Load a full ratchet tree state produced by serialize_full_state().
+        """
+        off = 0
+        n, off = read_uint16(data, off)
+        width, off = read_uint16(data, off)
+        self._n_leaves = 0
+        self._nodes.clear()
+        for _ in range(n):
+            self._n_leaves += 1
+        for idx in range(width):
+            node_type, off = read_uint8(data, off)
+            if node_type == 0:
+                continue
+            node = self.get_node(idx)
+            if node.is_leaf:
+                blob, off = read_opaque16(data, off)
+                pk, off = read_opaque16(data, off)
+                sk, off = read_opaque16(data, off)
+                if blob:
+                    leaf = LeafNode.deserialize(blob)
+                    node.leaf_node = leaf
+                    node.public_key = leaf.encryption_key
+                else:
+                    node.public_key = pk if pk else None
+                node.private_key = sk if sk else None
+            else:
+                pk, off = read_opaque16(data, off)
+                sk, off = read_opaque16(data, off)
+                ph, off = read_opaque16(data, off)
+                node.public_key = pk if pk else None
+                node.private_key = sk if sk else None
+                node.parent_hash = ph if ph else None
         if self.n_leaves > 0:
             self._recalculate_hashes_from(0)

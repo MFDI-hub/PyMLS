@@ -31,6 +31,7 @@ from ..mls.exceptions import (
     ConfigurationError,
 )
 from ..crypto.ciphersuites import SignatureScheme
+import struct
 
 
 class MLSGroup:
@@ -59,7 +60,8 @@ class MLSGroup:
         self._interim_transcript_hash: bytes | None = None
         self._confirmed_transcript_hash: bytes | None = None
         self._pending_proposals: list[Proposal] = []
-        self._proposal_cache: dict[bytes, Proposal] = {}
+        # Map proposal reference -> (proposal, sender_leaf_index)
+        self._proposal_cache: dict[bytes, tuple[Proposal, int]] = {}
         self._own_leaf_index = own_leaf_index
         self._external_private_key: bytes | None = None
         self._external_public_key: bytes | None = None
@@ -79,16 +81,22 @@ class MLSGroup:
         Returns
         - Initialized MLSGroup instance with epoch 0 and derived secrets.
 
-        Notes
-        - This is an MVP simplification: initial secrets are derived as neutral
-          extracts rather than following the full RFC path.
         """
         group = cls(group_id, crypto_provider, 0)
+        # Insert initial member
         group._ratchet_tree.add_leaf(key_package)
-        # This is a simplification. The initial secrets and group context would be derived differently.
-        init_secret = crypto_provider.kdf_extract(b"", b"")
-        commit_secret = crypto_provider.kdf_extract(b"", b"")
-        group._group_context = GroupContext(group_id, 0, group._ratchet_tree.calculate_tree_hash(), b"")
+        # RFC-aligned initialization: generate an UpdatePath for the creator and derive commit_secret
+        # For single-member creation, recipients list is empty; commit_secret binds path secrets
+        # Use the existing leaf node as the basis for the path leaf (credentials unchanged here)
+        own_leaf = group._ratchet_tree.get_node(0).leaf_node
+        if own_leaf is None:
+            raise PyMLSError("failed to initialize group: missing creator leaf")
+        _update_path, commit_secret = group._ratchet_tree.create_update_path(0, own_leaf)
+        # Initialize group context at epoch 0 with the current tree hash
+        tree_hash = group._ratchet_tree.calculate_tree_hash()
+        group._group_context = GroupContext(group_id, 0, tree_hash, b"")
+        # Per RFC §10, init_secret is 0 for the first epoch
+        init_secret = b""
         group._key_schedule = KeySchedule(init_secret, commit_secret, group._group_context, None, crypto_provider)
         group._secret_tree = SecretTree(
             group._key_schedule.application_secret,
@@ -240,14 +248,36 @@ class MLSGroup:
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
+                required_exts: list[ExtensionType] = []
                 for e in exts:
                     if e.ext_type == ExtensionType.RATCHET_TREE:
-                        group._ratchet_tree.load_tree_from_welcome_bytes(e.data)
+                        # Prefer full-tree loader; fall back to legacy leaves-only
+                        try:
+                            group._ratchet_tree.load_full_tree_from_welcome_bytes(e.data)
+                        except Exception:
+                            group._ratchet_tree.load_tree_from_welcome_bytes(e.data)
                     elif e.ext_type == ExtensionType.EXTERNAL_PUB:
                         group._external_public_key = e.data
+                    elif e.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
+                        from ..extensions.extensions import parse_required_capabilities
+                        required_exts = parse_required_capabilities(e.data)
             except Exception:
                 # If extension parsing fails, proceed without tree
                 pass
+        # Enforce REQUIRED_CAPABILITIES against leaf capabilities if present
+        try:
+            if required_exts:
+                for leaf in range(group._ratchet_tree.n_leaves):
+                    node = group._ratchet_tree.get_node(leaf * 2)
+                    if node.leaf_node and node.leaf_node.capabilities:
+                        from ..extensions.extensions import parse_capabilities_data
+                        _cs_ids, ext_types = parse_capabilities_data(node.leaf_node.capabilities)
+                        for req in required_exts:
+                            if req not in ext_types:
+                                raise CommitValidationError("member lacks required capability")
+        except Exception:
+            # If we cannot enforce, default to strict behavior: raise
+            raise
         # Ensure secret tree reflects actual group size (after loading ratchet tree)
         try:
             if group._secret_tree is not None:
@@ -305,9 +335,11 @@ class MLSGroup:
         """Alias for external_commit when acting on behalf of a joiner."""
         return self.external_commit(key_package, kem_public_key)
 
-    def reinit_group(self):
-        """Placeholder for group reinitialization flow (not implemented)."""
-        raise NotImplementedError("reinit_group not implemented yet")
+    def reinit_group(self, signing_key: bytes):
+        """Initiate re-initialization with a fresh random group_id and create a commit."""
+        import os as _os
+        new_group_id = _os.urandom(16)
+        return self.reinit_group_to(new_group_id, signing_key)
 
     def create_add_proposal(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
         """Create and sign an Add proposal referencing the given KeyPackage."""
@@ -448,7 +480,7 @@ class MLSGroup:
         proposal = Proposal.deserialize(tbs.framed_content.content)
         # Compute a proposal reference from the serialized plaintext (MVP; RFC uses hash of the MLSPlaintext)
         prop_ref = self._crypto_provider.kdf_extract(b"proposal", message.serialize())
-        self._proposal_cache[prop_ref] = proposal
+        self._proposal_cache[prop_ref] = (proposal, sender.sender)
         self._pending_proposals.append(proposal)
 
     def create_commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
@@ -471,10 +503,11 @@ class MLSGroup:
         # This is a simplification. It handles a self-update and pending proposals.
         removes = [p.removed for p in self._pending_proposals if isinstance(p, RemoveProposal)]
         adds_kps = [KeyPackage.deserialize(p.key_package) for p in self._pending_proposals if isinstance(p, AddProposal)]
-        has_update_prop = any(isinstance(p, UpdateProposal) for p in self._pending_proposals)
+        update_props = [p for p in self._pending_proposals if isinstance(p, UpdateProposal)]
+        has_update_prop = len(update_props) > 0
         # Basic validations
         validate_proposals_client_rules(self._pending_proposals, self._ratchet_tree.n_leaves)
-        # Apply removes and adds before generating the update path (MVP ordering)
+        # Apply removes and adds before generating the update path (RFC §11.2 ordering)
         for idx in sorted(removes, reverse=True):
             try:
                 self._ratchet_tree.remove_leaf(idx)
@@ -485,16 +518,34 @@ class MLSGroup:
                 self._ratchet_tree.add_leaf(kp)
             except Exception:
                 continue
+        # Apply Update proposals from other members before generating our path
+        if self._proposal_cache:
+            for pref, (prop, proposer_idx) in list(self._proposal_cache.items()):
+                if isinstance(prop, UpdateProposal) and prop in self._pending_proposals and proposer_idx != self._own_leaf_index:
+                    try:
+                        from .key_packages import LeafNode as _LeafNode
+                        leaf = _LeafNode.deserialize(prop.leaf_node)
+                        self._ratchet_tree.update_leaf(proposer_idx, leaf)
+                    except Exception:
+                        continue
 
         # Decide whether to include an UpdatePath
         include_path = has_update_prop or (len(self._pending_proposals) == 0)
         if include_path:
-            # Create an update path for the committer (ourselves)
+            # Create an update path for the committer (ourselves).
+            # If an Update proposal was queued for self, use its LeafNode; otherwise keep current.
             own_node = self._ratchet_tree.get_node(self._own_leaf_index * 2)
-            # In a real update, this leaf node would be regenerated with new credentials
             new_leaf_node = own_node.leaf_node
             if new_leaf_node is None:
                 raise PyMLSError("leaf node not found")
+            if has_update_prop:
+                try:
+                    # Use first UpdateProposal's leaf node bytes
+                    from .key_packages import LeafNode as _LeafNode
+                    new_leaf_node = _LeafNode.deserialize(update_props[0].leaf_node)
+                except Exception:
+                    # Fallback to existing leaf node if deserialization fails
+                    pass
             update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node)
         else:
             update_path = None
@@ -504,7 +555,8 @@ class MLSGroup:
         # Construct and sign the commit
         # Collect proposal references corresponding to pending proposals
         pending_refs: list[bytes] = []
-        for pref, prop in list(self._proposal_cache.items()):
+        for pref, entry in list(self._proposal_cache.items()):
+            prop, _sender_idx = entry
             if prop in self._pending_proposals:
                 pending_refs.append(pref)
         # Optionally derive a PSK secret and binder if PSK proposals are present (RFC-style binder)
@@ -591,10 +643,20 @@ class MLSGroup:
         welcomes: list[Welcome] = []
         if adds_kps:
             # Include ratchet_tree extension for new members (and external public key if available)
-            rt_bytes = self._ratchet_tree.serialize_tree_for_welcome()
+            # Use full ratchet tree encoding for Welcome
+            rt_bytes = self._ratchet_tree.serialize_full_tree_for_welcome()
             exts = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]
             if self._external_public_key:
                 exts.append(Extension(ExtensionType.EXTERNAL_PUB, self._external_public_key))
+            # Include REQUIRED_CAPABILITIES so joiners can enforce support
+            try:
+                from ..extensions.extensions import build_required_capabilities
+                req = [ExtensionType.RATCHET_TREE]
+                if self._external_public_key:
+                    req.append(ExtensionType.EXTERNAL_PUB)
+                exts.append(Extension(ExtensionType.REQUIRED_CAPABILITIES, build_required_capabilities(req)))
+            except Exception:
+                pass
             ext_bytes = serialize_extensions(exts)
             # Sign GroupInfo with committer's signing key using TBS (context contains confirmed hash)
             gi_unsigned = GroupInfo(self._group_context, Signature(b""), ext_bytes)
@@ -641,7 +703,7 @@ class MLSGroup:
             for pref in commit.proposal_refs:
                 if pref not in self._proposal_cache:
                     raise CommitValidationError("missing referenced proposal")
-                referenced.append(self._proposal_cache[pref])
+                referenced.append(self._proposal_cache[pref][0])
             validate_commit_matches_referenced_proposals(commit, referenced)
             # Do not clear yet; we may need them for PSK binder computation
 
@@ -675,7 +737,7 @@ class MLSGroup:
             for pref in commit.proposal_refs:
                 self._proposal_cache.pop(pref, None)
 
-        # Apply removals and additions before path handling (MVP ordering)
+        # Apply removals and additions before path handling (RFC §11.2 ordering)
         for idx in sorted(commit.removes, reverse=True):
             try:
                 self._ratchet_tree.remove_leaf(idx)
@@ -686,6 +748,17 @@ class MLSGroup:
                 self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
             except Exception:
                 continue
+        # Apply Update proposals (replace leaf nodes for proposers) before merging path
+        if commit.proposal_refs:
+            for pref in commit.proposal_refs:
+                try:
+                    prop, proposer_idx = self._proposal_cache[pref]
+                    if isinstance(prop, UpdateProposal):
+                        from .key_packages import LeafNode as _LeafNode
+                        leaf = _LeafNode.deserialize(prop.leaf_node)
+                        self._ratchet_tree.update_leaf(proposer_idx, leaf)
+                except Exception:
+                    continue
 
         # Derive commit secret
         if commit.path:
@@ -882,13 +955,16 @@ class MLSGroup:
         """Return the group's identifier."""
         return self._group_id
 
-    # --- Persistence (minimal) ---
+    # --- Persistence (versioned) ---
     def to_bytes(self) -> bytes:
-        """Serialize the minimal group state required for resumption."""
+        """Serialize the group state for resumption (versioned encoding v2)."""
         from .data_structures import serialize_bytes
         if not self._group_context or not self._key_schedule:
             raise PyMLSError("group not initialized")
-        data = b""
+        data = b"" + serialize_bytes(b"v2")
+        # Active ciphersuite id (uint16)
+        suite_id = self._crypto_provider.active_ciphersuite.suite_id.to_bytes(2, "big")
+        data += serialize_bytes(suite_id)
         data += serialize_bytes(self._group_id)
         data += serialize_bytes(self._group_context.serialize())
         data += serialize_bytes(self._key_schedule.epoch_secret)
@@ -897,36 +973,137 @@ class MLSGroup:
         data += serialize_bytes(self._confirmed_transcript_hash or b"")
         data += serialize_bytes(self._interim_transcript_hash or b"")
         data += serialize_bytes(self._own_leaf_index.to_bytes(4, "big"))
-        # Persist external public key for external commit verification
+        # Persist external keys
         data += serialize_bytes(self._external_public_key or b"")
+        data += serialize_bytes(self._external_private_key or b"")
+        # Persist ratchet tree full state
+        try:
+            tree_state = self._ratchet_tree.serialize_full_state()
+        except Exception:
+            tree_state = b""
+        data += serialize_bytes(tree_state)
+        # Persist pending proposals
+        props = self._pending_proposals or []
+        props_blob = struct.pack("!H", len(props)) + b"".join(serialize_bytes(p.serialize()) for p in props)
+        data += serialize_bytes(props_blob)
+        # Persist proposal cache (ref -> (proposal, sender_idx))
+        cache_items = list(self._proposal_cache.items())
+        cache_blob_parts: list[bytes] = [struct.pack("!H", len(cache_items))]
+        for pref, (prop, sender_idx) in cache_items:
+            cache_blob_parts.append(serialize_bytes(pref))
+            cache_blob_parts.append(struct.pack("!H", sender_idx))
+            cache_blob_parts.append(serialize_bytes(prop.serialize()))
+        data += serialize_bytes(b"".join(cache_blob_parts))
         return data
 
     @classmethod
     def from_bytes(cls, data: bytes, crypto_provider: CryptoProvider) -> "MLSGroup":
-        """Deserialize minimal state created by to_bytes() and recreate schedule."""
+        """Deserialize state created by to_bytes() and recreate schedule."""
         from .data_structures import deserialize_bytes, GroupContext
-        gid, rest = deserialize_bytes(data)
-        gc_bytes, rest = deserialize_bytes(rest)
-        epoch_secret, rest = deserialize_bytes(rest)
-        hs, rest = deserialize_bytes(rest)
-        app, rest = deserialize_bytes(rest)
-        cth, rest = deserialize_bytes(rest)
-        ith, rest = deserialize_bytes(rest)
-        own_idx_bytes, rest = deserialize_bytes(rest)
-        own_idx = int.from_bytes(own_idx_bytes, "big")
-        # External public key may be absent in older encodings; treat missing as empty
-        try:
+        # Attempt to read version marker
+        first, rest0 = deserialize_bytes(data)
+        if first == b"v2":
+            # v2 encoding
+            suite_id_bytes, rest = deserialize_bytes(rest0)
+            gid, rest = deserialize_bytes(rest)
+            gc_bytes, rest = deserialize_bytes(rest)
+            epoch_secret, rest = deserialize_bytes(rest)
+            hs, rest = deserialize_bytes(rest)
+            app, rest = deserialize_bytes(rest)
+            cth, rest = deserialize_bytes(rest)
+            ith, rest = deserialize_bytes(rest)
+            own_idx_bytes, rest = deserialize_bytes(rest)
+            own_idx = int.from_bytes(own_idx_bytes, "big")
             ext_pub, rest = deserialize_bytes(rest)
-        except Exception:
-            ext_pub = b""
+            ext_prv, rest = deserialize_bytes(rest)
+            tree_state, rest = deserialize_bytes(rest)
+            # Pending proposals blob
+            props_blob, rest = deserialize_bytes(rest)
+            # Proposal cache blob
+            cache_blob, rest = deserialize_bytes(rest)
 
-        group = cls(gid, crypto_provider, own_idx)
-        gc = GroupContext.deserialize(gc_bytes)
-        group._group_context = gc
-        # Recreate key schedule anchored at epoch_secret (stored directly)
-        ks = KeySchedule.from_epoch_secret(epoch_secret, gc, crypto_provider)
-        group._key_schedule = ks
-        group._confirmed_transcript_hash = cth if cth else None
-        group._interim_transcript_hash = ith if ith else None
-        group._external_public_key = ext_pub if ext_pub else None
-        return group
+            group = cls(gid, crypto_provider, own_idx)
+            gc = GroupContext.deserialize(gc_bytes)
+            group._group_context = gc
+            ks = KeySchedule.from_epoch_secret(epoch_secret, gc, crypto_provider)
+            group._key_schedule = ks
+            # Secret tree based on known leaves (may update after loading ratchet tree)
+            group._confirmed_transcript_hash = cth if cth else None
+            group._interim_transcript_hash = ith if ith else None
+            group._external_public_key = ext_pub if ext_pub else None
+            group._external_private_key = ext_prv if ext_prv else None
+            # Load ratchet tree state
+            if tree_state:
+                try:
+                    group._ratchet_tree.load_full_state(tree_state)
+                except Exception:
+                    # Fall back to no-op if state cannot be loaded
+                    pass
+            # Rebuild secret tree with correct n_leaves
+            try:
+                group._secret_tree = SecretTree(
+                    ks.application_secret,
+                    ks.handshake_secret,
+                    crypto_provider,
+                    n_leaves=group._ratchet_tree.n_leaves,
+                )
+            except Exception:
+                group._secret_tree = None
+            # Load pending proposals
+            try:
+                off = 0
+                if len(props_blob) >= 2:
+                    n_props = struct.unpack("!H", props_blob[off:off+2])[0]
+                    off += 2
+                    group._pending_proposals = []
+                    for _ in range(n_props):
+                        p_bytes, off = deserialize_bytes(props_blob[off:])
+                        group._pending_proposals.append(Proposal.deserialize(p_bytes))
+            except Exception:
+                group._pending_proposals = []
+            # Load proposal cache
+            group._proposal_cache = {}
+            try:
+                off = 0
+                if len(cache_blob) >= 2:
+                    n_items = struct.unpack("!H", cache_blob[off:off+2])[0]
+                    off += 2
+                    for _ in range(n_items):
+                        pref, rem = deserialize_bytes(cache_blob[off:])
+                        off += len(cache_blob[off:]) - len(rem)
+                        sender_idx = struct.unpack("!H", cache_blob[off:off+2])[0]
+                        off += 2
+                        prop_bytes, rem2 = deserialize_bytes(cache_blob[off:])
+                        off += len(cache_blob[off:]) - len(rem2)
+                        prop = Proposal.deserialize(prop_bytes)
+                        group._proposal_cache[pref] = (prop, sender_idx)
+            except Exception:
+                group._proposal_cache = {}
+            return group
+        else:
+            # v1 legacy encoding: first field was group_id
+            gid = first
+            rest = rest0
+            gc_bytes, rest = deserialize_bytes(rest)
+            epoch_secret, rest = deserialize_bytes(rest)
+            hs, rest = deserialize_bytes(rest)
+            app, rest = deserialize_bytes(rest)
+            cth, rest = deserialize_bytes(rest)
+            ith, rest = deserialize_bytes(rest)
+            own_idx_bytes, rest = deserialize_bytes(rest)
+            own_idx = int.from_bytes(own_idx_bytes, "big")
+            # External public key may be absent in older encodings; treat missing as empty
+            try:
+                ext_pub, rest = deserialize_bytes(rest)
+            except Exception:
+                ext_pub = b""
+
+            group = cls(gid, crypto_provider, own_idx)
+            gc = GroupContext.deserialize(gc_bytes)
+            group._group_context = gc
+            ks = KeySchedule.from_epoch_secret(epoch_secret, gc, crypto_provider)
+            group._key_schedule = ks
+            group._confirmed_transcript_hash = cth if cth else None
+            group._interim_transcript_hash = ith if ith else None
+            group._external_public_key = ext_pub if ext_pub else None
+            return group

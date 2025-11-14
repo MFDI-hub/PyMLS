@@ -4,7 +4,7 @@ from enum import Enum, IntEnum
 from abc import ABC, abstractmethod
 import struct
 
-from ..crypto.hpke import KEM, KDF, AEAD
+from ..crypto.ciphersuites import KEM, KDF, AEAD
 from ..mls.exceptions import PyMLSError
 
 

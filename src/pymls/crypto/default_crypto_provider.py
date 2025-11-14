@@ -16,11 +16,11 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidSignature
-# Use internal minimal HPKE implementation to avoid external dependency variability.
-from .hpke import HPKE, KEM_ID, KDF_ID, AEAD_ID
+
+from .hpke_backend import hpke_seal as _hpke_seal_backend, hpke_open as _hpke_open_backend
 
 from .crypto_provider import CryptoProvider
-from .hpke import KEM, KDF as KDFEnum, AEAD
+from .ciphersuites import KEM, KDF as KDFEnum, AEAD
 from ..codec.tls import write_uint16 as _write_uint16
 from ..codec.tls import write_opaque8 as _write_opaque8, write_opaque16 as _write_opaque16
 from .ciphersuites import (
@@ -78,28 +78,6 @@ class DefaultCryptoProvider(CryptoProvider):
         if self._suite.aead == AEAD.CHACHA20_POLY1305:
             return ChaCha20Poly1305
         raise UnsupportedCipherSuiteError("Unsupported AEAD")
-
-    def _hpke_ids(self):
-        """Map active suite algorithms to hpke package enum ids."""
-        kem_id = {
-            KEM.DHKEM_X25519_HKDF_SHA256: KEM_ID.DHKEM_X25519_HKDF_SHA256,
-            KEM.DHKEM_X448_HKDF_SHA512: KEM_ID.DHKEM_X448_HKDF_SHA512,
-            KEM.DHKEM_P256_HKDF_SHA256: KEM_ID.DHKEM_P256_HKDF_SHA256,
-            KEM.DHKEM_P521_HKDF_SHA512: KEM_ID.DHKEM_P521_HKDF_SHA512,
-        }[self._suite.kem]
-
-        kdf_id = {
-            KDFEnum.HKDF_SHA256: KDF_ID.HKDF_SHA256,
-            KDFEnum.HKDF_SHA512: KDF_ID.HKDF_SHA512,
-            KDFEnum.HKDF_SHA384: KDF_ID.HKDF_SHA384,
-        }[self._suite.kdf]
-
-        aead_id = {
-            AEAD.AES_128_GCM: AEAD_ID.AES128_GCM,
-            AEAD.AES_256_GCM: AEAD_ID.AES256_GCM,
-            AEAD.CHACHA20_POLY1305: AEAD_ID.CHACHA20_POLY1305,
-        }[self._suite.aead]
-        return kem_id, kdf_id, aead_id
 
     def _load_ec_private(self, data: bytes, curve: ec.EllipticCurve):
         """Load an EC private key from DER or PEM bytes."""
@@ -205,37 +183,29 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported signature scheme")
 
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
-        """HPKE seal using the active suite."""
-        kem_id, kdf_id, aead_id = self._hpke_ids()
-        hpke = HPKE(kem_id=kem_id, kdf_id=kdf_id, aead_id=aead_id)
-        if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
-            pkR = x25519.X25519PublicKey.from_public_bytes(public_key)
-        elif self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            pkR = x448.X448PublicKey.from_public_bytes(public_key)  # type: ignore[assignment]
-        elif self._suite.kem == KEM.DHKEM_P256_HKDF_SHA256:
-            pkR = self._load_ec_public(public_key, ec.SECP256R1())
-        elif self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
-            pkR = self._load_ec_public(public_key, ec.SECP521R1())
-        else:
-            raise UnsupportedCipherSuiteError("Unsupported KEM")
-        enc, ct = hpke.seal(pkR, info, aad, ptxt)
-        return enc, ct
+        """HPKE seal using the active suite (cryptography backend)."""
+        return _hpke_seal_backend(
+            kem=self._suite.kem,
+            kdf=self._suite.kdf,
+            aead=self._suite.aead,
+            recipient_public_key=public_key,
+            info=info,
+            aad=aad,
+            plaintext=ptxt,
+        )
 
     def hpke_open(self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
-        """HPKE open using the active suite."""
-        kem_id, kdf_id, aead_id = self._hpke_ids()
-        hpke = HPKE(kem_id=kem_id, kdf_id=kdf_id, aead_id=aead_id)
-        if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
-            skR = x25519.X25519PrivateKey.from_private_bytes(private_key)
-        elif self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            skR = x448.X448PrivateKey.from_private_bytes(private_key)  # type: ignore[assignment]
-        elif self._suite.kem == KEM.DHKEM_P256_HKDF_SHA256:
-            skR = self._load_ec_private(private_key, ec.SECP256R1())
-        elif self._suite.kem == KEM.DHKEM_P521_HKDF_SHA512:
-            skR = self._load_ec_private(private_key, ec.SECP521R1())
-        else:
-            raise UnsupportedCipherSuiteError("Unsupported KEM")
-        return hpke.open(skR, kem_output, info, aad, ctxt)
+        """HPKE open using the active suite (cryptography backend)."""
+        return _hpke_open_backend(
+            kem=self._suite.kem,
+            kdf=self._suite.kdf,
+            aead=self._suite.aead,
+            recipient_private_key=private_key,
+            kem_output=kem_output,
+            info=info,
+            aad=aad,
+            ciphertext=ctxt,
+        )
 
     def generate_key_pair(self) -> tuple[bytes, bytes]:
         """Generate a KEM key pair compatible with the active suite."""
