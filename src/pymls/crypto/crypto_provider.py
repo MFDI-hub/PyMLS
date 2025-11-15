@@ -70,6 +70,24 @@ class CryptoProvider(ABC):
         pass
 
     @abstractmethod
+    def sign_with_label(self, private_key: bytes, label: bytes, content: bytes) -> bytes:
+        """
+        Domain-separated signing helper (RFC 9420 §5.1.2).
+        Signs the serialization of:
+            SignContent := struct { opaque label<V>; opaque content<V>; }
+        where V is a 4-byte length prefix.
+        """
+        pass
+
+    @abstractmethod
+    def verify_with_label(self, public_key: bytes, label: bytes, content: bytes, signature: bytes) -> None:
+        """
+        Domain-separated signature verification (RFC 9420 §5.1.2).
+        Verifies signature over the serialized SignContent struct as above.
+        """
+        pass
+
+    @abstractmethod
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
         """HPKE seal: returns (enc, ciphertext)."""
         pass

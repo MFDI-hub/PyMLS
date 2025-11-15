@@ -5,7 +5,7 @@ Rationale:
 - Implements RFC 9420 §8 (Group operations), including commit processing,
   external commit (MVP), and application protection (§9).
 """
-from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets
+from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets, ProposalOrRef, ProposalOrRefType
 from .key_packages import KeyPackage, LeafNode
 from .messages import (
     MLSPlaintext,
@@ -85,25 +85,15 @@ class MLSGroup:
         group = cls(group_id, crypto_provider, 0)
         # Insert initial member
         group._ratchet_tree.add_leaf(key_package)
-        # RFC-aligned initialization: generate an UpdatePath for the creator and derive commit_secret
-        # For single-member creation, recipients list is empty; commit_secret binds path secrets
-        # Use the existing leaf node as the basis for the path leaf (credentials unchanged here)
-        own_leaf = group._ratchet_tree.get_node(0).leaf_node
-        if own_leaf is None:
-            raise PyMLSError("failed to initialize group: missing creator leaf")
-        _update_path, commit_secret = group._ratchet_tree.create_update_path(0, own_leaf)
+        # RFC §11: initialize with random epoch secret; no update path
+        import os
         # Initialize group context at epoch 0 with the current tree hash
         tree_hash = group._ratchet_tree.calculate_tree_hash()
         group._group_context = GroupContext(group_id, 0, tree_hash, b"")
-        # Per RFC §10, init_secret is 0 for the first epoch
-        init_secret = b""
-        group._key_schedule = KeySchedule(init_secret, commit_secret, group._group_context, None, crypto_provider)
-        group._secret_tree = SecretTree(
-            group._key_schedule.application_secret,
-            group._key_schedule.handshake_secret,
-            crypto_provider,
-            n_leaves=group._ratchet_tree.n_leaves,
-        )
+        # From random epoch secret
+        epoch_secret = os.urandom(crypto_provider.kdf_hash_len())
+        group._key_schedule = KeySchedule.from_epoch_secret(epoch_secret, group._group_context, crypto_provider)
+        group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves)
         # Generate external signing key pair based on the active signature scheme
         try:
             sig_scheme = crypto_provider.active_ciphersuite.signature
@@ -226,7 +216,7 @@ class MLSGroup:
             tbs = gi.tbs_serialize()
             for vk in verifier_keys:
                 try:
-                    crypto_provider.verify(vk, tbs, gi.signature.value)
+                    crypto_provider.verify_with_label(vk, b"GroupInfoTBS", tbs, gi.signature.value)
                     verified = True
                     break
                 except Exception:
@@ -238,12 +228,7 @@ class MLSGroup:
         group._group_context = gi.group_context
         # Initialize key schedule directly from recovered epoch_secret
         group._key_schedule = KeySchedule.from_epoch_secret(epoch_secret, gi.group_context, crypto_provider)
-        group._secret_tree = SecretTree(
-            group._key_schedule.application_secret,
-            group._key_schedule.handshake_secret,
-            crypto_provider,
-            n_leaves=1,  # will be updated if/when ratchet tree extension is loaded
-        )
+        group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=1)  # will be updated if/when ratchet tree extension is loaded
         # Ratchet tree via GroupInfo extension (if present)
         if gi.extensions:
             try:
@@ -264,6 +249,31 @@ class MLSGroup:
             except Exception:
                 # If extension parsing fails, proceed without tree
                 pass
+        # Validate tree hash equals GroupContext.tree_hash if ratchet tree present
+        try:
+            if group._ratchet_tree.n_leaves > 0:
+                computed_th = group._ratchet_tree.calculate_tree_hash()
+                if computed_th != group._group_context.tree_hash:
+                    raise CommitValidationError("ratchet tree hash mismatch with GroupContext.tree_hash")
+                # Parent-hash validity for each leaf that includes a parent_hash
+                for leaf in range(group._ratchet_tree.n_leaves):
+                    node = group._ratchet_tree.get_node(leaf * 2)
+                    if node.leaf_node and node.leaf_node.parent_hash:
+                        expected_ph = group._ratchet_tree._compute_parent_hash_for_leaf(leaf)  # type: ignore[attr-defined]
+                        if expected_ph != node.leaf_node.parent_hash:
+                            raise CommitValidationError("invalid parent_hash for leaf in Welcome tree")
+                # Basic leaf validation (credential/signature key consistency)
+                for leaf in range(group._ratchet_tree.n_leaves):
+                    node = group._ratchet_tree.get_node(leaf * 2)
+                    if node.leaf_node and node.leaf_node.credential is not None:
+                        if node.leaf_node.credential.public_key != node.leaf_node.signature_key:
+                            raise CommitValidationError("leaf credential public key does not match signature key")
+        except Exception as e:
+            # Surface as CommitValidationError
+            raise CommitValidationError(str(e)) from e
+        # Best-effort confirmation_tag check: ensure present
+        if gi.confirmation_tag is None or len(gi.confirmation_tag) == 0:
+            raise CommitValidationError("GroupInfo confirmation_tag missing in Welcome")
         # Enforce REQUIRED_CAPABILITIES against leaf capabilities if present
         try:
             if required_exts:
@@ -281,12 +291,7 @@ class MLSGroup:
         # Ensure secret tree reflects actual group size (after loading ratchet tree)
         try:
             if group._secret_tree is not None:
-                group._secret_tree = SecretTree(
-                    group._key_schedule.application_secret,
-                    group._key_schedule.handshake_secret,
-                    crypto_provider,
-                    n_leaves=group._ratchet_tree.n_leaves,
-                )
+                group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves)
         except Exception:
             pass
         return group
@@ -500,6 +505,8 @@ class MLSGroup:
         Returns
         - (MLSPlaintext commit, list of Welcome messages).
         """
+        # Mark commit as pending to enforce RFC §15.2 sending restrictions
+        self._commit_pending = True
         # This is a simplification. It handles a self-update and pending proposals.
         removes = [p.removed for p in self._pending_proposals if isinstance(p, RemoveProposal)]
         adds_kps = [KeyPackage.deserialize(p.key_package) for p in self._pending_proposals if isinstance(p, AddProposal)]
@@ -507,17 +514,13 @@ class MLSGroup:
         has_update_prop = len(update_props) > 0
         # Basic validations
         validate_proposals_client_rules(self._pending_proposals, self._ratchet_tree.n_leaves)
-        # Apply removes and adds before generating the update path (RFC §11.2 ordering)
-        for idx in sorted(removes, reverse=True):
-            try:
-                self._ratchet_tree.remove_leaf(idx)
-            except Exception:
-                continue
-        for kp in adds_kps:
-            try:
-                self._ratchet_tree.add_leaf(kp)
-            except Exception:
-                continue
+        try:
+            from .validations import validate_proposals_server_rules
+            validate_proposals_server_rules(self._pending_proposals, self._own_leaf_index, self._ratchet_tree.n_leaves)
+        except Exception as _e:
+            # Surface as CommitValidationError
+            raise
+        # RFC §12.3 ordering: GroupContextExtensions -> Update -> Remove -> Add
         # Apply Update proposals from other members before generating our path
         if self._proposal_cache:
             for pref, (prop, proposer_idx) in list(self._proposal_cache.items()):
@@ -528,6 +531,18 @@ class MLSGroup:
                         self._ratchet_tree.update_leaf(proposer_idx, leaf)
                     except Exception:
                         continue
+        # Apply Removes
+        for idx in sorted(removes, reverse=True):
+            try:
+                self._ratchet_tree.remove_leaf(idx)
+            except Exception:
+                continue
+        # Apply Adds
+        for kp in adds_kps:
+            try:
+                self._ratchet_tree.add_leaf(kp)
+            except Exception:
+                continue
 
         # Decide whether to include an UpdatePath
         include_path = has_update_prop or (len(self._pending_proposals) == 0)
@@ -553,24 +568,31 @@ class MLSGroup:
             commit_secret = self._crypto_provider.kdf_extract(b"", b"")
 
         # Construct and sign the commit
-        # Collect proposal references corresponding to pending proposals
+        # Collect proposal references corresponding to pending proposals and build union proposals list
         pending_refs: list[bytes] = []
         for pref, entry in list(self._proposal_cache.items()):
             prop, _sender_idx = entry
             if prop in self._pending_proposals:
                 pending_refs.append(pref)
+        proposals_union: list[ProposalOrRef] = []
+        # Prefer by-reference for proposals found in cache
+        for pref in pending_refs:
+            proposals_union.append(ProposalOrRef(ProposalOrRefType.REFERENCE, reference=pref))
+        # Include any remaining pending proposals by-value
+        for p in self._pending_proposals:
+            # Skip ones already included by reference
+            try:
+                if any((self._proposal_cache.get(pref, (None, -1))[0] is p) for pref in pending_refs):
+                    continue
+            except Exception:
+                pass
+            proposals_union.append(ProposalOrRef(ProposalOrRefType.PROPOSAL, proposal=p))
         # Optionally derive a PSK secret and binder if PSK proposals are present (RFC-style binder)
         psk_ids: list[bytes] = []
         for p in self._pending_proposals:
             if isinstance(p, PreSharedKeyProposal):
                 psk_ids.append(p.psk_id)
-        temp_commit = Commit(
-            path=update_path,
-            removes=removes,
-            adds=[kp.serialize() for kp in adds_kps],
-            proposal_refs=pending_refs,
-            signature=Signature(b"")  # Empty signature for serialization
-        )
+        temp_commit = Commit(path=update_path, proposals=proposals_union, signature=Signature(b""))
         commit_bytes_for_signing = temp_commit.serialize()
         # Build authenticated_data to carry PSK binder if needed
         authenticated_data = b""
@@ -581,7 +603,7 @@ class MLSGroup:
             binder = self._crypto_provider.hmac_sign(binder_key, commit_bytes_for_signing)[:16]
             authenticated_data = encode_psk_binder(binder)
         signature_value = self._crypto_provider.sign(signing_key, commit_bytes_for_signing)
-        commit = Commit(temp_commit.path, temp_commit.removes, temp_commit.adds, temp_commit.proposal_refs, Signature(signature_value))
+        commit = Commit(temp_commit.path, temp_commit.proposals, Signature(signature_value))
 
         # Build plaintext and update transcript (RFC-style: use MLSPlaintext TBS bytes)
         if self._group_context is None:
@@ -619,17 +641,13 @@ class MLSGroup:
         if self._key_schedule is None:
             raise PyMLSError("group not initialized")
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(
-            self._key_schedule.application_secret,
-            self._key_schedule.handshake_secret,
-            self._crypto_provider,
-            n_leaves=self._ratchet_tree.n_leaves,
-        )
+        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
         self._group_context = new_group_context  # temporary, will be overwritten with confirmed hash
         self._pending_proposals = []
         # Clear referenced proposals from cache
-        for pref in pending_refs:
-            self._proposal_cache.pop(pref, None)
+        for por in proposals_union:
+            if por.typ == ProposalOrRefType.REFERENCE and por.reference is not None:
+                self._proposal_cache.pop(por.reference, None)
 
         # Compute confirmation tag over interim transcript and finalize confirmed transcript hash
         confirm_tag = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
@@ -659,9 +677,11 @@ class MLSGroup:
                 pass
             ext_bytes = serialize_extensions(exts)
             # Sign GroupInfo with committer's signing key using TBS (context contains confirmed hash)
-            gi_unsigned = GroupInfo(self._group_context, Signature(b""), ext_bytes)
-            gi_sig = self._crypto_provider.sign(signing_key, gi_unsigned.tbs_serialize())
-            group_info = GroupInfo(self._group_context, Signature(gi_sig), ext_bytes)
+            gi_unsigned = GroupInfo(self._group_context, Signature(b""), ext_bytes, b"", self._own_leaf_index)
+            gi_sig = self._crypto_provider.sign_with_label(signing_key, b"GroupInfoTBS", gi_unsigned.tbs_serialize())
+            # Include confirmation_tag and signer index
+            confirm_tag_local = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
+            group_info = GroupInfo(self._group_context, Signature(gi_sig), ext_bytes, confirm_tag_local, self._own_leaf_index)
             enc_group_info = self._crypto_provider.aead_encrypt(
                 self._key_schedule.encryption_secret, b"\x00" * self._crypto_provider.aead_nonce_size(), group_info.serialize(), b""
             )
@@ -675,6 +695,7 @@ class MLSGroup:
 
         # Wrap commit in MLSPlaintext (handshake). Membership tag remains MVP membership proof.
         pt = attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
+        # Commit created; caller must apply locally; keep _commit_pending True until applied
         return pt, welcomes
 
     def process_commit(self, message: MLSPlaintext, sender_index: int) -> None:
@@ -688,6 +709,8 @@ class MLSGroup:
         - CommitValidationError: On missing references or invalid binder.
         - InvalidSignatureError: On signature or membership tag failures.
         """
+        # Mark receipt for sending restrictions until fully applied
+        self._received_commit_unapplied = True
         # Verify plaintext container
         sender_leaf_node = self._ratchet_tree.get_node(sender_index * 2).leaf_node
         if not sender_leaf_node:
@@ -697,22 +720,42 @@ class MLSGroup:
         verify_plaintext(message, sender_leaf_node.signature_key, self._key_schedule.membership_key, self._crypto_provider)
 
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
-        # If commit includes proposal references, validate and prepare for PSK binder verification
+        # Resolve proposals: references from cache, inlined proposals direct
+        resolved: list[Proposal] = []
         referenced: list[Proposal] = []
-        if commit.proposal_refs:
-            for pref in commit.proposal_refs:
+        ref_bytes: list[bytes] = []
+        update_tuples: list[tuple[UpdateProposal, int]] = []
+        for por in commit.proposals:
+            if por.typ == ProposalOrRefType.REFERENCE:
+                pref = por.reference or b""
                 if pref not in self._proposal_cache:
                     raise CommitValidationError("missing referenced proposal")
-                referenced.append(self._proposal_cache[pref][0])
-            validate_commit_matches_referenced_proposals(commit, referenced)
-            # Do not clear yet; we may need them for PSK binder computation
+                prop, proposer_idx = self._proposal_cache[pref]
+                ref_bytes.append(pref)
+                referenced.append(prop)
+                resolved.append(prop)
+                if isinstance(prop, UpdateProposal):
+                    update_tuples.append((prop, proposer_idx))
+            else:
+                prop = por.proposal
+                if prop is not None:
+                    resolved.append(prop)
+                    if isinstance(prop, UpdateProposal):
+                        update_tuples.append((prop, sender_index))
+        validate_commit_matches_referenced_proposals(commit, referenced)
+        # Server-side validations on resolved proposals
+        try:
+            from .validations import validate_proposals_server_rules
+            validate_proposals_server_rules(resolved, sender_index, self._ratchet_tree.n_leaves)
+        except Exception as _e:
+            raise
 
-        # Verify commit inner signature
-        temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
+        # Verify commit inner signature against the serialized Commit (signature stripped)
+        temp_commit = Commit(commit.path, commit.proposals, Signature(b""))
         commit_bytes_for_signing = temp_commit.serialize()
         self._crypto_provider.verify(sender_leaf_node.signature_key, commit_bytes_for_signing, commit.signature.value)
 
-        # Verify PSK binder if PSK proposals are referenced; derive PSK secret
+        # Verify PSK binder if references include PSK proposals; derive PSK secret
         psk_secret = None
         if referenced:
             referenced_psk_ids = [p.psk_id for p in referenced if isinstance(p, PreSharedKeyProposal)]
@@ -723,7 +766,6 @@ class MLSGroup:
                 if binder is None:
                     if self._strict_psk_binders:
                         raise CommitValidationError("missing PSK binder for commit carrying PSK proposals")
-                    # Non-strict mode: accept and derive PSK without binder
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
                 else:
                     binder_key = self._crypto_provider.kdf_extract(b"psk binder", preimage)
@@ -732,33 +774,30 @@ class MLSGroup:
                         raise CommitValidationError("invalid PSK binder")
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
 
-        # Clear referenced proposals from cache now that binder checks are done
-        if commit.proposal_refs:
-            for pref in commit.proposal_refs:
-                self._proposal_cache.pop(pref, None)
-
-        # Apply removals and additions before path handling (RFC §11.2 ordering)
-        for idx in sorted(commit.removes, reverse=True):
+        # Apply Update proposals (replace leaf nodes for proposers) before path
+        for up, proposer_idx in update_tuples:
+            try:
+                from .key_packages import LeafNode as _LeafNode
+                leaf = _LeafNode.deserialize(up.leaf_node)
+                self._ratchet_tree.update_leaf(proposer_idx, leaf)
+            except Exception:
+                continue
+        # Apply Removes then Adds derived from resolved proposals
+        from .validations import derive_ops_from_proposals
+        removes, adds = derive_ops_from_proposals(resolved)
+        for idx in sorted(removes, reverse=True):
             try:
                 self._ratchet_tree.remove_leaf(idx)
             except Exception:
                 continue
-        for kp_bytes in commit.adds:
+        for kp_bytes in adds:
             try:
                 self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
             except Exception:
                 continue
-        # Apply Update proposals (replace leaf nodes for proposers) before merging path
-        if commit.proposal_refs:
-            for pref in commit.proposal_refs:
-                try:
-                    prop, proposer_idx = self._proposal_cache[pref]
-                    if isinstance(prop, UpdateProposal):
-                        from .key_packages import LeafNode as _LeafNode
-                        leaf = _LeafNode.deserialize(prop.leaf_node)
-                        self._ratchet_tree.update_leaf(proposer_idx, leaf)
-                except Exception:
-                    continue
+        # Clear referenced proposals from cache after applying
+        for pref in ref_bytes:
+            self._proposal_cache.pop(pref, None)
 
         # Derive commit secret
         if commit.path:
@@ -788,12 +827,7 @@ class MLSGroup:
         if self._key_schedule is None:
             raise PyMLSError("group not initialized")
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(
-            self._key_schedule.application_secret,
-            self._key_schedule.handshake_secret,
-            self._crypto_provider,
-            n_leaves=self._ratchet_tree.n_leaves,
-        )
+        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
         self._group_context = new_group_context  # temporary
         # Compute and apply confirmation tag over interim transcript
         confirm_tag = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
@@ -801,6 +835,9 @@ class MLSGroup:
         self._interim_transcript_hash = transcripts.interim
         self._confirmed_transcript_hash = transcripts.confirmed
         self._group_context = GroupContext(self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"")
+        # Clear sending restriction flags after successful apply
+        self._received_commit_unapplied = False
+        self._commit_pending = False
 
     # --- Advanced flows (MVP implementations) ---
     def process_external_commit(self, message: MLSPlaintext) -> None:
@@ -817,19 +854,22 @@ class MLSGroup:
         # Deserialize commit
         commit = Commit.deserialize(message.auth_content.tbs.framed_content.content)
         # Prepare bytes used for inner-signature verification and binders
-        temp_commit = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs, Signature(b""))
+        temp_commit = Commit(commit.path, commit.proposals, Signature(b""))
         commit_bytes_for_signing = temp_commit.serialize()
 
         # If commit includes proposal references, validate and consume them
-        if commit.proposal_refs:
-            referenced: list[Proposal] = []
-            for pref in commit.proposal_refs:
+        referenced: list[Proposal] = []
+        ref_bytes: list[bytes] = []
+        for por in commit.proposals:
+            if por.typ == ProposalOrRefType.REFERENCE and por.reference is not None:
+                pref = por.reference
                 if pref not in self._proposal_cache:
                     raise CommitValidationError("missing referenced proposal")
-                referenced.append(self._proposal_cache[pref])
-            validate_commit_matches_referenced_proposals(commit, referenced)
-            for pref in commit.proposal_refs:
-                self._proposal_cache.pop(pref, None)
+                referenced.append(self._proposal_cache[pref][0])
+                ref_bytes.append(pref)
+        validate_commit_matches_referenced_proposals(commit, referenced)
+        for pref in ref_bytes:
+            self._proposal_cache.pop(pref, None)
 
         # Verify commit inner signature with the sender's leaf signature key (not external key)
         try:
@@ -843,7 +883,7 @@ class MLSGroup:
 
         # Verify PSK binder if PSK proposals are referenced; derive PSK secret
         psk_secret = None
-        if commit.proposal_refs:
+        if referenced:
             referenced_psk_ids = [p.psk_id for p in referenced if isinstance(p, PreSharedKeyProposal)]
             if referenced_psk_ids:
                 from .messages import PSKPreimage, decode_psk_binder
@@ -898,12 +938,7 @@ class MLSGroup:
         new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
 
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(
-            self._key_schedule.application_secret,
-            self._key_schedule.handshake_secret,
-            self._crypto_provider,
-            n_leaves=self._ratchet_tree.n_leaves,
-        )
+        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
         self._group_context = new_group_context
         self._interim_transcript_hash = interim
         self._confirmed_transcript_hash = confirmed
@@ -923,6 +958,8 @@ class MLSGroup:
         """Encrypt application data into MLSCiphertext for the current epoch."""
         if self._group_context is None or self._key_schedule is None or self._secret_tree is None:
             raise PyMLSError("group not initialized")
+        if self._commit_pending or self._received_commit_unapplied:
+            raise PyMLSError("sending not allowed while commit is pending or unprocessed (RFC §15.2)")
         return protect_content_application(
             group_id=self._group_id,
             epoch=self._group_context.epoch,

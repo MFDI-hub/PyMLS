@@ -91,6 +91,21 @@ class Signature:
         return cls(data)
 
 
+@dataclass(frozen=True)
+class SignContent:
+    """
+    Domain-separated signing structure (RFC 9420 §5.1.2).
+    Serialized as:
+        uint32(len(label)) || label || uint32(len(content)) || content
+    """
+    label: bytes
+    content: bytes
+
+    def serialize(self) -> bytes:
+        """Length-prefixed label and content."""
+        return serialize_bytes(self.label or b"") + serialize_bytes(self.content or b"")
+
+
 class ProposalType(IntEnum):
     """Enumeration of proposal kinds."""
     ADD = 1
@@ -352,6 +367,47 @@ class AppAckProposal(Proposal):
         authenticated_data, _ = deserialize_bytes(data)
         return cls(authenticated_data)
 
+class ProposalOrRefType(IntEnum):
+    """Discriminator for Commit proposals vector entries."""
+    PROPOSAL = 1
+    REFERENCE = 2
+
+@dataclass(frozen=True)
+class ProposalOrRef:
+    """Union of a Proposal by-value or a Proposal reference (opaque bytes)."""
+    typ: ProposalOrRefType
+    proposal: Proposal | None = None
+    reference: bytes | None = None
+
+    def serialize(self) -> bytes:
+        """Encode as uint8 typ || opaque16(payload)."""
+        payload = b""
+        if self.typ == ProposalOrRefType.PROPOSAL:
+            if self.proposal is None:
+                raise PyMLSError("missing proposal for ProposalOrRef.PROPOSAL")
+            payload = self.proposal.serialize()
+        elif self.typ == ProposalOrRefType.REFERENCE:
+            if self.reference is None:
+                raise PyMLSError("missing reference for ProposalOrRef.REFERENCE")
+            payload = self.reference
+        else:
+            raise PyMLSError("unknown ProposalOrRefType")
+        return struct.pack("!B", int(self.typ)) + serialize_bytes(payload)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "ProposalOrRef":
+        """Parse from bytes produced by serialize()."""
+        if len(data) < 1:
+            raise PyMLSError("invalid ProposalOrRef encoding")
+        t_val, = struct.unpack("!B", data[:1])
+        typ = ProposalOrRefType(t_val)
+        payload, _ = deserialize_bytes(data[1:])
+        if typ == ProposalOrRefType.PROPOSAL:
+            return cls(typ=typ, proposal=Proposal.deserialize(payload))
+        if typ == ProposalOrRefType.REFERENCE:
+            return cls(typ=typ, reference=payload)
+        raise PyMLSError("unknown ProposalOrRefType during deserialize")
+
 @dataclass(frozen=True)
 class UpdatePath:
     """Commit path structure with leaf and per-recipient encrypted path secrets."""
@@ -393,35 +449,23 @@ class UpdatePath:
 
 @dataclass(frozen=True)
 class Commit:
-    """Commit object carrying optional UpdatePath and proposal effects."""
+    """Commit object carrying optional UpdatePath and proposal list (by-value or by-reference)."""
     path: UpdatePath | None
-    removes: list[int]
-    adds: list[bytes]  # Serialized KeyPackages
-    proposal_refs: list[bytes]
+    proposals: list[ProposalOrRef]
     signature: Signature
 
     def serialize(self) -> bytes:
-        """Encode presence of path, removes/adds lists, proposal_refs, and signature."""
+        """Encode presence of path, proposals vector, and signature."""
         data = b""
         if self.path:
             data += b'\x01'
             data += serialize_bytes(self.path.serialize())
         else:
             data += b'\x00'
-
-        data += struct.pack("!H", len(self.removes))
-        for item in self.removes:
-            data += struct.pack("!I", item)
-
-        data += struct.pack("!H", len(self.adds))
-        for add_item in self.adds:
-            data += serialize_bytes(add_item)
-
-        # proposal references
-        data += struct.pack("!H", len(self.proposal_refs))
-        for pref in self.proposal_refs:
-            data += serialize_bytes(pref)
-
+        # Proposals vector
+        data += struct.pack("!H", len(self.proposals))
+        for por in self.proposals:
+            data += serialize_bytes(por.serialize())
         data += self.signature.serialize()
         return data
 
@@ -434,31 +478,14 @@ class Commit:
         if has_path:
             path_bytes, rest = deserialize_bytes(rest)
             path = UpdatePath.deserialize(path_bytes)
-
-        num_removes, = struct.unpack("!H", rest[:2])
+        num_props, = struct.unpack("!H", rest[:2])
         rest = rest[2:]
-        removes = []
-        for _ in range(num_removes):
-            item, = struct.unpack("!I", rest[:4])
-            removes.append(item)
-            rest = rest[4:]
-
-        num_adds, = struct.unpack("!H", rest[:2])
-        rest = rest[2:]
-        adds = []
-        for _ in range(num_adds):
-            item, rest = deserialize_bytes(rest)
-            adds.append(item)
-
-        num_refs, = struct.unpack("!H", rest[:2])
-        rest = rest[2:]
-        refs = []
-        for _ in range(num_refs):
-            pref, rest = deserialize_bytes(rest)
-            refs.append(pref)
-
+        proposals: list[ProposalOrRef] = []
+        for _ in range(num_props):
+            blob, rest = deserialize_bytes(rest)
+            proposals.append(ProposalOrRef.deserialize(blob))
         signature = Signature.deserialize(rest)
-        return cls(path, removes, adds, refs, signature)
+        return cls(path, proposals, signature)
 
 
 @dataclass(frozen=True)
@@ -535,6 +562,8 @@ class GroupInfo:
     group_context: GroupContext
     signature: Signature
     extensions: bytes = b""  # serialized extensions (opaque); MVP keeps raw for flexibility
+    confirmation_tag: bytes = b""
+    signer_leaf_index: int = 0
 
     def tbs_serialize(self) -> bytes:
         """
@@ -548,6 +577,8 @@ class GroupInfo:
         out = serialize_bytes(self.group_context.serialize())
         out += serialize_bytes(self.signature.serialize())
         out += serialize_bytes(self.extensions)
+        out += serialize_bytes(self.confirmation_tag)
+        out += struct.pack("!I", self.signer_leaf_index)
         return out
 
     @classmethod
@@ -555,10 +586,12 @@ class GroupInfo:
         """Parse GroupInfo from bytes produced by serialize()."""
         gc_bytes, rest = deserialize_bytes(data)
         sig_bytes, rest = deserialize_bytes(rest)
-        ext_bytes, _ = deserialize_bytes(rest) if rest else (b"", b"")
+        ext_bytes, rest = deserialize_bytes(rest) if rest else (b"", b"")
+        tag, rest = deserialize_bytes(rest) if rest else (b"", b"")
+        signer = struct.unpack("!I", rest[:4])[0] if rest and len(rest) >= 4 else 0
         group_context = GroupContext.deserialize(gc_bytes)
         signature = Signature.deserialize(sig_bytes)
-        return cls(group_context, signature, ext_bytes)
+        return cls(group_context, signature, ext_bytes, tag, signer)
 
 
 @dataclass(frozen=True)

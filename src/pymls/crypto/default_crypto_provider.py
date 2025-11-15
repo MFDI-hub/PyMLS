@@ -1,4 +1,5 @@
 """Concrete CryptoProvider using the 'cryptography' and 'hpke' Python packages."""
+import struct
 from cryptography.hazmat.primitives import hashes, hmac, serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.asymmetric import (
@@ -187,6 +188,25 @@ class DefaultCryptoProvider(CryptoProvider):
         except InvalidSignature as e:
             raise InvalidSignatureError("invalid signature") from e
         raise UnsupportedCipherSuiteError("Unsupported signature scheme")
+
+    # --- Domain-separated signing (RFC 9420 §5.1.2) ---
+    @staticmethod
+    def _encode_sign_content(label: bytes, content: bytes) -> bytes:
+        """
+        Serialize SignContent := uint32(len(label)) || label || uint32(len(content)) || content
+        Matching protocol.data_structures.SignContent.serialize().
+        """
+        return struct.pack("!L", len(label)) + (label or b"") + struct.pack("!L", len(content)) + (content or b"")
+
+    def sign_with_label(self, private_key: bytes, label: bytes, content: bytes) -> bytes:
+        """Sign serialized SignContent(label, content)."""
+        data = self._encode_sign_content(label, content)
+        return self.sign(private_key, data)
+
+    def verify_with_label(self, public_key: bytes, label: bytes, content: bytes, signature: bytes) -> None:
+        """Verify signature over serialized SignContent(label, content)."""
+        data = self._encode_sign_content(label, content)
+        self.verify(public_key, data, signature)
 
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
         """HPKE seal using the active suite (cryptography backend)."""

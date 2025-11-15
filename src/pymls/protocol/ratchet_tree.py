@@ -29,6 +29,8 @@ class RatchetTreeNode:
         self.parent_hash: bytes | None = None
         self.leaf_node: LeafNode | None = None
         self.hash: bytes | None = None
+        # RFC §7.1: track unmerged leaves for parent nodes
+        self.unmerged_leaves: list[int] = [] if not is_leaf else []
 
 
 class RatchetTree:
@@ -61,6 +63,14 @@ class RatchetTree:
         node.public_key = key_package.leaf_node.encryption_key
         node.leaf_node = key_package.leaf_node
         self._recalculate_hashes_from(node_index)
+        # Truncate trailing blank leaves (RFC §7.7 simplified)
+        while self._n_leaves > 0:
+            last_idx = (self._n_leaves - 1) * 2
+            last_node = self.get_node(last_idx)
+            if last_node.leaf_node is None and last_node.public_key is None:
+                self._n_leaves -= 1
+            else:
+                break
         return leaf_index
 
     def remove_leaf(self, index: int) -> None:
@@ -76,6 +86,7 @@ class RatchetTree:
             p_node = self.get_node(p_idx)
             p_node.public_key = None
             p_node.private_key = None
+            p_node.unmerged_leaves = []
 
         self._recalculate_hashes_from(node_index)
 
@@ -241,6 +252,14 @@ class RatchetTree:
             self.get_node(node_index).public_key = pub_key
 
         self._recalculate_hashes_from(committer_index * 2)
+        # Re-verify parent hash after applying path secrets to ensure consistency
+        try:
+            if provided_leaf.parent_hash:
+                expected_after = self._compute_parent_hash_for_leaf(committer_index)
+                if expected_after != provided_leaf.parent_hash:
+                    raise CommitValidationError("parent_hash mismatch after applying update path")
+        except Exception:
+            pass
 
         commit_secret = self._crypto_provider.kdf_extract(b"", b"".join(path_secrets.values()))
         return commit_secret

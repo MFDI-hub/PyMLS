@@ -247,7 +247,11 @@ class MLSCiphertext:
 
 
 def encrypt_sender_data(
-    sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider, aad: bytes = b""
+    sd: SenderData,
+    key_schedule: KeySchedule,
+    crypto: CryptoProvider,
+    aad: bytes = b"",
+    ciphertext_sample: bytes | None = None,
 ) -> bytes:
     """Encrypt SenderData using sender data key/nonce derived from KeySchedule.
 
@@ -256,45 +260,60 @@ def encrypt_sender_data(
     - key_schedule: Key schedule instance.
     - crypto: Crypto provider for AEAD.
     - aad: Optional additional authenticated data.
+    - ciphertext_sample: Optional sample from ciphertext for RFC §6.3.2 derivation.
 
     Returns
     - AEAD ciphertext bytes.
     """
-    key = key_schedule.sender_data_key()
-    nonce = key_schedule.sender_data_nonce(sd.reuse_guard)
+    if ciphertext_sample is not None:
+        key = key_schedule.sender_data_key_from_sample(ciphertext_sample)
+        nonce = key_schedule.sender_data_nonce_from_sample(ciphertext_sample, sd.reuse_guard)
+    else:
+        # Backward compatibility path (pre-RFC §6.3.2 behavior)
+        key = key_schedule.sender_data_key()
+        nonce = key_schedule.sender_data_nonce(sd.reuse_guard)
     return crypto.aead_encrypt(key, nonce, sd.serialize(), aad)
 
 
 def decrypt_sender_data(
-    enc: bytes, reuse_guard: bytes, key_schedule: KeySchedule, crypto: CryptoProvider, aad: bytes = b""
+    enc: bytes,
+    reuse_guard: bytes,
+    key_schedule: KeySchedule,
+    crypto: CryptoProvider,
+    aad: bytes = b"",
+    ciphertext_sample: bytes | None = None,
 ) -> SenderData:
     """Decrypt SenderData using sender data key/nonce derived from KeySchedule."""
-    key = key_schedule.sender_data_key()
-    nonce = key_schedule.sender_data_nonce(reuse_guard)
+    if ciphertext_sample is not None:
+        key = key_schedule.sender_data_key_from_sample(ciphertext_sample)
+        nonce = key_schedule.sender_data_nonce_from_sample(ciphertext_sample, reuse_guard)
+    else:
+        key = key_schedule.sender_data_key()
+        nonce = key_schedule.sender_data_nonce(reuse_guard)
     ptxt = crypto.aead_decrypt(key, nonce, enc, aad)
     return SenderData.deserialize(ptxt)
 
 
 def encode_encrypted_sender_data(
-    sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider
+    sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider, ciphertext_sample: bytes | None = None
 ) -> bytes:
     """
     Encode encrypted sender data as a single opaque field containing:
       reuse_guard || enc(SenderData)
     """
-    enc = encrypt_sender_data(sd, key_schedule, crypto, aad=b"")
+    enc = encrypt_sender_data(sd, key_schedule, crypto, aad=b"", ciphertext_sample=ciphertext_sample)
     return write_opaque16(sd.reuse_guard + enc)
 
 
 def decode_encrypted_sender_data(
-    data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider
+    data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider, ciphertext_sample: bytes | None = None
 ) -> SenderData:
     """Decode the reuse_guard and inner SenderData from the opaque field."""
     blob, _ = read_opaque16(data, 0)
     # first 4 bytes are reuse_guard, remainder is ciphertext
     reuse_guard = blob[:4]
     enc = blob[4:]
-    return decrypt_sender_data(enc, reuse_guard, key_schedule, crypto, aad=b"")
+    return decrypt_sender_data(enc, reuse_guard, key_schedule, crypto, aad=b"", ciphertext_sample=ciphertext_sample)
 
 
 # AAD and padding helpers
@@ -380,7 +399,8 @@ def sign_authenticated_content(
         authenticated_data=authenticated_data,
         framed_content=framed,
     )
-    sig = crypto.sign(signing_private_key, tbs.serialize())
+    # Domain-separated signing over FramedContentTBS
+    sig = crypto.sign_with_label(signing_private_key, b"FramedContentTBS", tbs.serialize())
     auth = AuthenticatedContent(tbs=tbs, signature=sig, membership_tag=None)
     return MLSPlaintext(auth)
 
@@ -421,7 +441,8 @@ def verify_plaintext(
     - InvalidSignatureError: If signature or membership tag verification fails.
     """
     tbs_ser = plaintext.auth_content.tbs.serialize()
-    crypto.verify(sender_signature_key, tbs_ser, plaintext.auth_content.signature)
+    # Domain-separated signature verification
+    crypto.verify_with_label(sender_signature_key, b"FramedContentTBS", tbs_ser, plaintext.auth_content.signature)
     if membership_key is not None:
         tag = crypto.hmac_sign(membership_key, tbs_ser)
         if plaintext.auth_content.membership_tag is None or plaintext.auth_content.membership_tag != tag:
@@ -440,18 +461,20 @@ def protect_content_handshake(
     crypto: CryptoProvider,
 ) -> MLSCiphertext:
     """
-    Encrypt handshake content using the secret tree handshake branch and sender data secret.
-    Note: This MVP uses a reuse_guard embedded in SenderData and encrypts SenderData using
-    the sender data secret. The derivation matches KeySchedule.sender_data_nonce() usage.
+    Encrypt handshake content using the secret tree handshake branch.
+    Derive SenderData keys from a ciphertext sample (RFC §6.3.2).
     """
     # Obtain per-sender handshake key/nonce and generation
     key, nonce, generation = secret_tree.next_handshake(sender_leaf_index)
+    aad = compute_ciphertext_aad(group_id, epoch, ContentType.COMMIT, authenticated_data)
+    # Encrypt content first to get ciphertext sample
+    ct = crypto.aead_encrypt(key, nonce, content, aad)
+    sample_len = crypto.kdf_hash_len()
+    ciphertext_sample = ct[:sample_len]
     # Random reuse guard to diversify sender-data nonce
     reuse_guard = os.urandom(4)
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
-    aad = compute_ciphertext_aad(group_id, epoch, ContentType.COMMIT, authenticated_data)
-    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto)
-    ct = crypto.aead_encrypt(key, nonce, content, aad)
+    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     return MLSCiphertext(
         group_id=group_id,
         epoch=epoch,
@@ -473,16 +496,21 @@ def protect_content_application(
     crypto: CryptoProvider,
 ) -> MLSCiphertext:
     """
-    Encrypt application content using the secret tree application branch and sender data secret.
+    Encrypt application content using the secret tree application branch.
+    Derive SenderData keys from a ciphertext sample (RFC §6.3.2).
     """
     key, nonce, generation = secret_tree.next_application(sender_leaf_index)
-    reuse_guard = os.urandom(4)
-    sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
-    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto)
     # Apply RFC-style randomized padding to 32-byte boundary (simple scheme: random bytes + 1-byte length)
     padded = apply_application_padding(content, block=32)
+    # Encrypt to obtain ciphertext sample
     ct = crypto.aead_encrypt(key, nonce, padded, aad)
+    sample_len = crypto.kdf_hash_len()
+    ciphertext_sample = ct[:sample_len]
+    # SenderData after ciphertext sample
+    reuse_guard = os.urandom(4)
+    sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
+    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     return MLSCiphertext(
         group_id=group_id,
         epoch=epoch,
@@ -503,9 +531,22 @@ def unprotect_content_handshake(
     Decrypt handshake content and return (sender_leaf_index, plaintext).
     """
     aad = compute_ciphertext_aad(m.group_id, m.epoch, m.content_type, m.authenticated_data)
-    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto)
+    # Derive SenderData keys using ciphertext sample first
+    sample_len = crypto.kdf_hash_len()
+    ciphertext_sample = m.ciphertext[:sample_len]
+    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
     ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
+    # Best-effort wipe of derived materials (receive path stores no secret state)
+    try:
+        ba_k = bytearray(key)
+        ba_n = bytearray(nonce)
+        for i in range(len(ba_k)):
+            ba_k[i] = 0
+        for i in range(len(ba_n)):
+            ba_n[i] = 0
+    except Exception:
+        pass
     return sd.sender, ptxt
 
 
@@ -519,8 +560,19 @@ def unprotect_content_application(
     Decrypt application content and return (sender_leaf_index, plaintext).
     """
     aad = compute_ciphertext_aad(m.group_id, m.epoch, m.content_type, m.authenticated_data)
-    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto)
+    sample_len = crypto.kdf_hash_len()
+    ciphertext_sample = m.ciphertext[:sample_len]
+    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
     ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
+    try:
+        ba_k = bytearray(key)
+        ba_n = bytearray(nonce)
+        for i in range(len(ba_k)):
+            ba_k[i] = 0
+        for i in range(len(ba_n)):
+            ba_n[i] = 0
+    except Exception:
+        pass
     # Strip RFC-style padding
     return sd.sender, remove_application_padding(ptxt)

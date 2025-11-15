@@ -32,11 +32,13 @@ class TranscriptState:
 
     def update_with_handshake(self, plaintext: MLSPlaintext) -> bytes:
         """
-        Update interim transcript hash with the serialized TBS of the handshake message.
+        Update interim transcript hash per RFC §8.2:
+          Interim_i = Hash(Interim_{i-1} || ConfirmedTranscriptHashInput(commit))
+        For MVP, we use the handshake TBS as the input blob.
         """
         tbs = plaintext.auth_content.tbs.serialize()
         prev = self._interim or b""
-        self._interim = self._crypto.kdf_extract(prev, tbs)
+        self._interim = self._crypto.hash(prev + tbs)
         return self._interim
 
     def compute_confirmation_tag(self, confirmation_key: bytes) -> bytes:
@@ -50,11 +52,14 @@ class TranscriptState:
 
     def finalize_confirmed(self, confirmation_tag: bytes) -> bytes:
         """
-        Update confirmed transcript hash by mixing in the confirmation_tag.
+        Update confirmed transcript hash per RFC §8.2:
+          Confirmed_i = Hash(Confirmed_{i-1} || InterimTranscriptHashInput(commit, confirmation_tag))
+        For MVP, we use confirmation_tag directly as the input blob.
         """
         if self._interim is None:
             raise PyMLSError("interim transcript hash is not set")
-        self._confirmed = self._crypto.kdf_extract(self._interim, confirmation_tag)
+        prev_c = self._confirmed or b""
+        self._confirmed = self._crypto.hash(prev_c + confirmation_tag)
         return self._confirmed
 
 

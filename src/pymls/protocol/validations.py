@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Iterable, Set
 
-from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal
+from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType
 from .key_packages import KeyPackage
 from ..extensions.extensions import parse_capabilities_data
 from ..crypto.crypto_provider import CryptoProvider
@@ -71,15 +71,37 @@ def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int
                 raise CommitValidationError("invalid capabilities in key package") from e
 
 
+def validate_proposals_server_rules(proposals: Iterable[Proposal], committer_index: int, n_leaves: int) -> None:
+    """
+    Server-side proposal checks per RFC §12.2 (subset):
+    - Enforce client-side rules.
+    - No Remove of committer.
+    - ReInit cannot be combined with any other proposal.
+    """
+    plist = list(proposals)
+    validate_proposals_client_rules(plist, n_leaves)
+    # No Remove of committer
+    for p in plist:
+        if isinstance(p, RemoveProposal) and p.removed == committer_index:
+            raise CommitValidationError("commit cannot remove the committer")
+    # ReInit cannot be combined with others
+    has_reinit = any(isinstance(p, ReInitProposal) for p in plist)
+    if has_reinit and len(plist) > 1:
+        raise CommitValidationError("ReInit cannot be combined with other proposals")
+
+
 def validate_commit_basic(commit: Commit) -> None:
-    """Basic structural checks for a Commit object."""
-    # Basic structural checks
-    # Path-less commits are allowed by RFC 9420 in several cases (e.g., external commits,
-    # proposal-only commits, and re-initialization). Do not reject solely due to missing path.
-    # If proposal_refs are present, they must be non-empty opaque values
-    for pref in getattr(commit, "proposal_refs", []):
-        if not isinstance(pref, (bytes, bytearray)) or len(pref) == 0:
-            raise CommitValidationError("invalid proposal reference encoding")
+    """Basic structural checks for a Commit object with union proposals list."""
+    # Path-less commits are allowed by RFC 9420 in several cases.
+    # Ensure proposals vector is well-formed.
+    if not isinstance(commit.proposals, list):
+        raise CommitValidationError("commit proposals must be a list")
+    for por in commit.proposals:
+        if not isinstance(por, ProposalOrRef):
+            raise CommitValidationError("invalid proposal entry type")
+        if por.typ == ProposalOrRefType.REFERENCE:
+            if por.reference is None or not isinstance(por.reference, (bytes, bytearray)) or len(por.reference) == 0:
+                raise CommitValidationError("invalid proposal reference encoding")
 
 
 def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, commit_bytes: bytes, tag: bytes) -> None:
@@ -106,11 +128,9 @@ def derive_ops_from_proposals(proposals: Iterable[Proposal]) -> tuple[list[int],
 
 def validate_commit_matches_referenced_proposals(commit: Commit, referenced: Iterable[Proposal]) -> None:
     """
-    If a commit carries proposal references, ensure its removes/adds match
-    the referenced proposals (MVP rule).
+    If a commit carries proposal references, ensure such references exist and are non-empty.
+    Detailed matching of effects is enforced by higher-level processing.
     """
-    ref_removes, ref_adds = derive_ops_from_proposals(referenced)
-    if commit.removes != ref_removes:
-        raise CommitValidationError("commit removes do not match referenced proposals")
-    if commit.adds != ref_adds:
-        raise CommitValidationError("commit adds do not match referenced proposals")
+    has_refs = any(por.typ == ProposalOrRefType.REFERENCE for por in commit.proposals)
+    if has_refs and (referenced is None or len(list(referenced)) == 0):
+        raise CommitValidationError("commit references proposals but none were resolved")

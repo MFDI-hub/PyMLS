@@ -96,6 +96,26 @@ class KeySchedule:
         rg = reuse_guard.rjust(self._crypto_provider.aead_nonce_size(), b"\x00")
         return bytes(a ^ b for a, b in zip(base, rg))
 
+    # --- RFC §6.3.2 SenderData derivation from ciphertext sample ---
+    def sender_data_key_from_sample(self, sample: bytes) -> bytes:
+        """
+        Derive SenderData AEAD key from sender_data_secret and ciphertext sample.
+        """
+        return self._crypto_provider.expand_with_label(
+            self.sender_data_secret, b"sender data key", sample, self._crypto_provider.aead_key_size()
+        )
+
+    def sender_data_nonce_from_sample(self, sample: bytes, reuse_guard: bytes) -> bytes:
+        """
+        Derive SenderData AEAD nonce from sender_data_secret and ciphertext sample,
+        then XOR in the reuse_guard (left-padded) per RFC to prevent nonce reuse.
+        """
+        base = self._crypto_provider.expand_with_label(
+            self.sender_data_secret, b"sender data nonce", sample, self._crypto_provider.aead_nonce_size()
+        )
+        rg = reuse_guard.rjust(self._crypto_provider.aead_nonce_size(), b"\x00")
+        return bytes(a ^ b for a, b in zip(base, rg))
+
     @property
     def encryption_secret(self) -> bytes:
         """Epoch encryption secret feeding message protection contexts."""
