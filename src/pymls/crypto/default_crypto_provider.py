@@ -205,7 +205,8 @@ class DefaultCryptoProvider(CryptoProvider):
 
     def verify_with_label(self, public_key: bytes, label: bytes, content: bytes, signature: bytes) -> None:
         """Verify signature over serialized SignContent(label, content)."""
-        data = self._encode_sign_content(label, content)
+        full = b"MLS 1.0 " + (label or b"")
+        data = self._encode_sign_content(full, content)
         self.verify(public_key, data, signature)
 
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:

@@ -612,4 +612,21 @@ class EncryptedGroupSecrets:
         return cls(kem, ct)
 
 
+@dataclass(frozen=True)
+class GroupSecrets:
+    """Secrets for onboarding new members via Welcome (RFC §12.4.3)."""
+    joiner_secret: bytes
+    psk_secret: bytes | None = None
+
+    def serialize(self) -> bytes:
+        out = serialize_bytes(self.joiner_secret)
+        out += serialize_bytes(self.psk_secret or b"")
+        return out
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "GroupSecrets":
+        js, rest = deserialize_bytes(data)
+        psk, _ = deserialize_bytes(rest) if rest else (b"", b"")
+        return cls(js, psk if psk else None)
+
 

@@ -34,15 +34,18 @@ class KeySchedule:
         self._crypto_provider = crypto_provider
         self._wiped = False
 
-        # Derive epoch secret with RFC-labeled steps
-        # update_secret := Extract(init_secret, commit_secret [+ psk])
-        update_secret = self._crypto_provider.kdf_extract(self._init_secret, self._commit_secret)
+        # Derive epoch secret with RFC-labeled steps (RFC 9420 §8)
+        # joiner_secret_base := Extract(commit_secret, init_secret_prev)
+        joiner_secret_base = self._crypto_provider.kdf_extract(self._commit_secret, self._init_secret)
+        # joiner_secret := Extract(psk_secret or 0, joiner_secret_base)
         if self._psk_secret:
-            update_secret = self._crypto_provider.kdf_extract(update_secret, self._psk_secret)
+            joiner_secret = self._crypto_provider.kdf_extract(self._psk_secret, joiner_secret_base)
+        else:
+            joiner_secret = joiner_secret_base
         hash_len = self._crypto_provider.kdf_hash_len()
-        # epoch_secret := ExpandWithLabel(update_secret, "epoch", GroupContext, Hash.length)
+        # epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Hash.length)
         gc_bytes = self._group_context.serialize()
-        self._epoch_secret = self._crypto_provider.expand_with_label(update_secret, b"epoch", gc_bytes, hash_len)
+        self._epoch_secret = self._crypto_provider.expand_with_label(joiner_secret, b"epoch", gc_bytes, hash_len)
 
         # Derive key schedule branches using labeled derivations
         self._handshake_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"handshake")
@@ -145,6 +148,11 @@ class KeySchedule:
     def resumption_psk(self) -> bytes:
         """Derive resumption PSK for future epochs."""
         return self._crypto_provider.derive_secret(self._epoch_secret, b"resumption")
+
+    @property
+    def epoch_authenticator(self) -> bytes:
+        """Epoch authenticator secret (RFC §8)."""
+        return self._crypto_provider.derive_secret(self._epoch_secret, b"authentication")
 
     @property
     def handshake_secret(self) -> bytes:

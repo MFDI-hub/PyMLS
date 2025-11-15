@@ -31,6 +31,25 @@ class ContentType(IntEnum):
     PROPOSAL = 2
     COMMIT = 3
 
+
+class ProtocolVersion(IntEnum):
+    """Top-level protocol version enum for MLS messages (RFC §6)."""
+    MLS10 = 1
+
+
+class WireFormat(IntEnum):
+    """Wire format discriminator for top-level messages (RFC §6)."""
+    PUBLIC_MESSAGE = 1  # aka mls_public_message
+    PRIVATE_MESSAGE = 2  # aka mls_private_message
+
+
+class SenderType(IntEnum):
+    """Sender type enumeration (RFC §6)."""
+    MEMBER = 1
+    EXTERNAL = 2
+    NEW_MEMBER_PROPOSAL = 3
+    NEW_MEMBER_COMMIT = 4
+
 @dataclass(frozen=True)
 class PSKPreimage:
     """
@@ -467,12 +486,14 @@ def protect_content_handshake(
     # Obtain per-sender handshake key/nonce and generation
     key, nonce, generation = secret_tree.next_handshake(sender_leaf_index)
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.COMMIT, authenticated_data)
+    # Random reuse guard and final content nonce (nonce XOR reuse_guard)
+    reuse_guard = os.urandom(4)
+    rg_padded = reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
     # Encrypt content first to get ciphertext sample
-    ct = crypto.aead_encrypt(key, nonce, content, aad)
+    ct = crypto.aead_encrypt(key, content_nonce, content, aad)
     sample_len = crypto.kdf_hash_len()
     ciphertext_sample = ct[:sample_len]
-    # Random reuse guard to diversify sender-data nonce
-    reuse_guard = os.urandom(4)
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
     enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     return MLSCiphertext(
@@ -501,14 +522,16 @@ def protect_content_application(
     """
     key, nonce, generation = secret_tree.next_application(sender_leaf_index)
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
-    # Apply RFC-style randomized padding to 32-byte boundary (simple scheme: random bytes + 1-byte length)
-    padded = apply_application_padding(content, block=32)
+    # Apply zero padding to 32-byte boundary per RFC (padding MUST be zero)
+    padded = add_zero_padding(content, pad_to=32)
+    # Random reuse guard and final content nonce (nonce XOR reuse_guard)
+    reuse_guard = os.urandom(4)
+    rg_padded = reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
     # Encrypt to obtain ciphertext sample
-    ct = crypto.aead_encrypt(key, nonce, padded, aad)
+    ct = crypto.aead_encrypt(key, content_nonce, padded, aad)
     sample_len = crypto.kdf_hash_len()
     ciphertext_sample = ct[:sample_len]
-    # SenderData after ciphertext sample
-    reuse_guard = os.urandom(4)
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
     enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     return MLSCiphertext(
@@ -536,7 +559,9 @@ def unprotect_content_handshake(
     ciphertext_sample = m.ciphertext[:sample_len]
     sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
-    ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
+    rg_padded = sd.reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
+    ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
     # Best-effort wipe of derived materials (receive path stores no secret state)
     try:
         ba_k = bytearray(key)
@@ -564,7 +589,9 @@ def unprotect_content_application(
     ciphertext_sample = m.ciphertext[:sample_len]
     sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto, ciphertext_sample=ciphertext_sample)
     key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
-    ptxt = crypto.aead_decrypt(key, nonce, m.ciphertext, aad)
+    rg_padded = sd.reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
+    ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
     try:
         ba_k = bytearray(key)
         ba_n = bytearray(nonce)
@@ -574,5 +601,5 @@ def unprotect_content_application(
             ba_n[i] = 0
     except Exception:
         pass
-    # Strip RFC-style padding
-    return sd.sender, remove_application_padding(ptxt)
+    # Strip zero padding (must be all zeros per RFC)
+    return sd.sender, strip_trailing_zeros(ptxt) 

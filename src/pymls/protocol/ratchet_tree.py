@@ -8,6 +8,8 @@ from .key_packages import KeyPackage, LeafNode
 from .data_structures import UpdatePath, Signature
 from . import tree_math
 from ..crypto.crypto_provider import CryptoProvider
+from ..crypto.hpke_labels import encrypt_with_label, decrypt_with_label
+from ..crypto import labels as mls_labels
 from ..mls.exceptions import CommitValidationError
 from ..codec.tls import write_uint8, write_uint16, write_opaque16, read_uint8, read_uint16, read_opaque16
 
@@ -99,7 +101,7 @@ class RatchetTree:
         self._recalculate_hashes_from(node_index)
 
     def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes:
-        """Compute parent hash binding of a leaf to current direct-path nodes (RFC-style)."""
+        """Compute parent hash binding of a leaf to current direct-path nodes (RFC-style approximation)."""
         if self.n_leaves == 0:
             return b""
         leaf_node_index = leaf_index * 2
@@ -108,9 +110,18 @@ class RatchetTree:
         # Collect NodeHash values of parents along the direct path
         path = tree_math.direct_path(leaf_node_index, self.n_leaves)
         concatenated = b"".join((self.get_node(p_idx).hash or b"") for p_idx in path)
-        prk = self._crypto_provider.kdf_extract(b"parent-hash", concatenated)
-        ctx = leaf_index.to_bytes(4, "big") + concatenated
-        return self._crypto_provider.expand_with_label(prk, b"parent hash", ctx, self._crypto_provider.kdf_hash_len())
+        # Include original sibling tree hash for the first copath node if available
+        try:
+            first_parent = path[0] if path else None
+            if first_parent is not None:
+                sibling_idx = tree_math.sibling(first_parent, self.n_leaves)
+                sibling_hash = self.get_node(sibling_idx).hash or b""
+            else:
+                sibling_hash = b""
+        except Exception:
+            sibling_hash = b""
+        blob = write_uint16(leaf_index) + write_opaque16(concatenated) + write_opaque16(sibling_hash)
+        return self._crypto_provider.hash(blob)
 
     def _recalculate_hashes_from(self, start_node_index: int):
         """Recompute hashes from the given node up to the root along the direct path."""
@@ -123,21 +134,22 @@ class RatchetTree:
             self._hash_node(node_index)
 
     def _hash_node(self, node_index: int):
-        """Compute and cache the hash (NodeHash) for a node based on its type and children."""
+        """Compute and cache the hash (NodeHash) for a node using RFC-style TreeHashInput."""
         node = self.get_node(node_index)
         if node.is_leaf:
             if node.leaf_node:
+                # TreeHashInput for leaf: type=1 || opaque16(LeafNode)
                 leaf_ser = node.leaf_node.serialize()
-                prk = self._crypto_provider.kdf_extract(b"node", leaf_ser)
-                node.hash = self._crypto_provider.expand_with_label(prk, b"leaf hash", b"", self._crypto_provider.kdf_hash_len())
+                blob = write_uint8(1) + write_opaque16(leaf_ser)
+                node.hash = self._crypto_provider.hash(blob)
             else:
                 node.hash = None
         else:
             left_child_hash = self.get_node(tree_math.left(node_index)).hash or b""
             right_child_hash = self.get_node(tree_math.right(node_index, self.n_leaves)).hash or b""
-            prk = self._crypto_provider.kdf_extract(b"parent", left_child_hash + right_child_hash)
-            context = (node.public_key or b"") + left_child_hash + right_child_hash
-            node.hash = self._crypto_provider.expand_with_label(prk, b"parent hash", context, self._crypto_provider.kdf_hash_len())
+            # TreeHashInput for parent: type=2 || opaque16(encryption_key) || opaque16(left_hash) || opaque16(right_hash)
+            blob = write_uint8(2) + write_opaque16(node.public_key or b"") + write_opaque16(left_child_hash) + write_opaque16(right_child_hash)
+            node.hash = self._crypto_provider.hash(blob)
 
     def calculate_tree_hash(self) -> bytes:
         """Return the current tree hash (hash of the root), or empty if no leaves."""
@@ -148,7 +160,7 @@ class RatchetTree:
         self._hash_node(root_index)
         return self.get_node(root_index).hash or b""
 
-    def create_update_path(self, committer_index: int, new_leaf_node: LeafNode) -> tuple[UpdatePath, bytes]:
+    def create_update_path(self, committer_index: int, new_leaf_node: LeafNode, group_context_bytes: bytes) -> tuple[UpdatePath, bytes]:
         """Create an UpdatePath for the committer and derive the commit secret.
 
         Generates fresh key pairs along the committer's direct path, encrypts the
@@ -178,7 +190,14 @@ class RatchetTree:
                 recipients = self._collect_subtree_recipients(copath_node_index)
                 blobs: list[bytes] = []
                 for pk in recipients:
-                    enc, ct = self._crypto_provider.hpke_seal(pk, b"", b"", secret)
+                    enc, ct = encrypt_with_label(
+                        self._crypto_provider,
+                        recipient_public_key=pk,
+                        label=mls_labels.HPKE_UPDATE_PATH_NODE,
+                        context=group_context_bytes,
+                        aad=b"",
+                        plaintext=secret,
+                    )
                     # Store as opaque16(enc) || opaque16(ct)
                     from .data_structures import serialize_bytes
                     blobs.append(serialize_bytes(enc) + serialize_bytes(ct))
@@ -199,7 +218,7 @@ class RatchetTree:
         commit_secret = self._crypto_provider.kdf_extract(b"", b"".join(path_secrets.values()))
         return update_path, commit_secret
 
-    def merge_update_path(self, update_path: UpdatePath, committer_index: int) -> bytes:
+    def merge_update_path(self, update_path: UpdatePath, committer_index: int, group_context_bytes: bytes) -> bytes:
         """Merge an UpdatePath from a received commit and return the commit secret.
 
         Verifies the provided leaf's parent hash if present, decrypts applicable
@@ -239,7 +258,15 @@ class RatchetTree:
                         try:
                             enc, rest = deserialize_bytes(blob)
                             ct, _ = deserialize_bytes(rest)
-                            secret = self._crypto_provider.hpke_open(node.private_key, enc, b"", b"", ct)
+                            secret = decrypt_with_label(
+                                self._crypto_provider,
+                                recipient_private_key=node.private_key,
+                                kem_output=enc,
+                                label=mls_labels.HPKE_UPDATE_PATH_NODE,
+                                context=group_context_bytes,
+                                aad=b"",
+                                ciphertext=ct,
+                            )
                             path_secrets[node_index] = secret
                             break
                         except Exception:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Iterable, Set
 
-from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType
+from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal
 from .key_packages import KeyPackage
 from ..extensions.extensions import parse_capabilities_data
 from ..crypto.crypto_provider import CryptoProvider
@@ -88,6 +88,13 @@ def validate_proposals_server_rules(proposals: Iterable[Proposal], committer_ind
     has_reinit = any(isinstance(p, ReInitProposal) for p in plist)
     if has_reinit and len(plist) > 1:
         raise CommitValidationError("ReInit cannot be combined with other proposals")
+    # No duplicate removes for the same leaf
+    seen_removed: Set[int] = set()
+    for p in plist:
+        if isinstance(p, RemoveProposal):
+            if p.removed in seen_removed:
+                raise CommitValidationError(f"duplicate Remove for leaf index {p.removed}")
+            seen_removed.add(p.removed)
 
 
 def validate_commit_basic(commit: Commit) -> None:
@@ -102,6 +109,21 @@ def validate_commit_basic(commit: Commit) -> None:
         if por.typ == ProposalOrRefType.REFERENCE:
             if por.reference is None or not isinstance(por.reference, (bytes, bytearray)) or len(por.reference) == 0:
                 raise CommitValidationError("invalid proposal reference encoding")
+
+
+def commit_path_required(proposals: Iterable[Proposal]) -> bool:
+    """
+    Determine if a Commit MUST carry a non-empty path (RFC §12.4).
+    Path required if proposals vector is empty or contains any of:
+      - Update, Remove, ExternalInit, GroupContextExtensions.
+    """
+    plist = list(proposals)
+    if len(plist) == 0:
+        return True
+    for p in plist:
+        if isinstance(p, (UpdateProposal, RemoveProposal, ExternalInitProposal, GroupContextExtensionsProposal)):
+            return True
+    return False
 
 
 def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, commit_bytes: bytes, tag: bytes) -> None:

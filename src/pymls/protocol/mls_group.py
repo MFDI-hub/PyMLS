@@ -32,6 +32,8 @@ from ..mls.exceptions import (
 )
 from ..crypto.ciphersuites import SignatureScheme
 import struct
+from ..crypto.hpke_labels import encrypt_with_label, decrypt_with_label
+from ..crypto import labels as mls_labels
 
 
 class MLSGroup:
@@ -165,21 +167,32 @@ class MLSGroup:
         - InvalidSignatureError: If a present GroupInfo signature fails validation.
         """
         # Try each secret until one opens
-        epoch_secret = None
+        joiner_secret = None
         for egs in welcome.secrets:
             try:
-                epoch_secret = crypto_provider.hpke_open(hpke_private_key, egs.kem_output, b"welcome secret", b"", egs.ciphertext)
+                pbytes = decrypt_with_label(
+                    crypto_provider,
+                    recipient_private_key=hpke_private_key,
+                    kem_output=egs.kem_output,
+                    label=mls_labels.HPKE_WELCOME,
+                    context=b"",
+                    aad=b"",
+                    ciphertext=egs.ciphertext,
+                )
+                from .data_structures import GroupSecrets as _GroupSecrets
+                gs = _GroupSecrets.deserialize(pbytes)
+                joiner_secret = gs.joiner_secret
                 break
             except Exception:
                 continue
-        if epoch_secret is None:
+        if joiner_secret is None:
             raise CommitValidationError("Unable to open any EncryptedGroupSecret with provided HPKE private key")
 
-        # Decrypt GroupInfo
-        nonce = b"\x00" * crypto_provider.aead_nonce_size()
-        # The GroupInfo is encrypted under the epoch's encryption_secret, derived from epoch_secret.
-        enc_key = crypto_provider.derive_secret(epoch_secret, b"encryption")
-        gi_bytes = crypto_provider.aead_decrypt(enc_key, nonce, welcome.encrypted_group_info, b"")
+        # Decrypt GroupInfo using Welcome key/nonce derived from joiner_secret
+        welcome_secret = crypto_provider.derive_secret(joiner_secret, b"welcome")
+        welcome_key = crypto_provider.expand_with_label(welcome_secret, b"key", b"", crypto_provider.aead_key_size())
+        welcome_nonce = crypto_provider.expand_with_label(welcome_secret, b"nonce", b"", crypto_provider.aead_nonce_size())
+        gi_bytes = crypto_provider.aead_decrypt(welcome_key, welcome_nonce, welcome.encrypted_group_info, b"")
         from .data_structures import GroupInfo as GroupInfoStruct
         gi = GroupInfoStruct.deserialize(gi_bytes)
         # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
@@ -226,7 +239,8 @@ class MLSGroup:
 
         group = cls(gi.group_context.group_id, crypto_provider, -1)
         group._group_context = gi.group_context
-        # Initialize key schedule directly from recovered epoch_secret
+        # Initialize key schedule from derived epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Nh)
+        epoch_secret = crypto_provider.expand_with_label(joiner_secret, b"epoch", gi.group_context.serialize(), crypto_provider.kdf_hash_len())
         group._key_schedule = KeySchedule.from_epoch_secret(epoch_secret, gi.group_context, crypto_provider)
         group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=1)  # will be updated if/when ratchet tree extension is loaded
         # Ratchet tree via GroupInfo extension (if present)
@@ -350,6 +364,11 @@ class MLSGroup:
         """Create and sign an Add proposal referencing the given KeyPackage."""
         if self._group_context is None or self._key_schedule is None:
             raise PyMLSError("group not initialized")
+        # Validate KeyPackage per credential/signature rules
+        try:
+            key_package.verify(self._crypto_provider)
+        except Exception as e:
+            raise CommitValidationError(f"invalid KeyPackage in Add proposal: {e}") from e
         proposal = AddProposal(key_package.serialize())
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -483,8 +502,21 @@ class MLSGroup:
 
         tbs = message.auth_content.tbs
         proposal = Proposal.deserialize(tbs.framed_content.content)
-        # Compute a proposal reference as Hash(MLSPlaintext) per RFC
-        prop_ref = self._crypto_provider.hash(message.serialize())
+        # Validate credentials for Add/Update proposals immediately
+        try:
+            if isinstance(proposal, AddProposal):
+                kp = KeyPackage.deserialize(proposal.key_package)
+                kp.verify(self._crypto_provider)
+            elif isinstance(proposal, UpdateProposal):
+                from .key_packages import LeafNode as _LeafNode
+                leaf = _LeafNode.deserialize(proposal.leaf_node)
+                if leaf.credential is not None and leaf.credential.public_key != leaf.signature_key:
+                    raise CommitValidationError("leaf credential public key does not match signature key")
+        except Exception as e:
+            raise
+        # Compute RFC 9420 §5.2 ProposalRef using RefHashInput("MLS 1.0 Proposal Reference", Proposal)
+        from .refs import make_proposal_ref
+        prop_ref = make_proposal_ref(self._crypto_provider, proposal.serialize())
         self._proposal_cache[prop_ref] = (proposal, sender.sender)
         self._pending_proposals.append(proposal)
 
@@ -545,7 +577,12 @@ class MLSGroup:
                 continue
 
         # Decide whether to include an UpdatePath
-        include_path = has_update_prop or (len(self._pending_proposals) == 0)
+        # RFC §12.4 path requirement
+        try:
+            from .validations import commit_path_required
+            include_path = commit_path_required(self._pending_proposals)
+        except Exception:
+            include_path = has_update_prop or (len(self._pending_proposals) == 0)
         if include_path:
             # Create an update path for the committer (ourselves).
             # If an Update proposal was queued for self, use its LeafNode; otherwise keep current.
@@ -561,7 +598,9 @@ class MLSGroup:
                 except Exception:
                     # Fallback to existing leaf node if deserialization fails
                     pass
-            update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node)
+            # Use current GroupContext serialization as the provisional context for path encryption
+            gc_bytes = self._group_context.serialize() if self._group_context else b""
+            update_path, commit_secret = self._ratchet_tree.create_update_path(self._own_leaf_index, new_leaf_node, gc_bytes)
         else:
             update_path = None
             # Path-less commit: use a neutral commit_secret (RFC flows will bind PSKs/external later)
@@ -640,7 +679,13 @@ class MLSGroup:
             psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
         if self._key_schedule is None:
             raise PyMLSError("group not initialized")
-        self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
+        # Preserve previous init secret (resumption_psk) to build joiner_secret for Welcome
+        prev_init_secret = self._key_schedule.resumption_psk
+        # Compute joiner_secret for Welcome derivations
+        joiner_secret_base = self._crypto_provider.kdf_extract(commit_secret, prev_init_secret)
+        joiner_secret = self._crypto_provider.kdf_extract(psk_secret, joiner_secret_base) if psk_secret else joiner_secret_base
+        # Update epoch key schedule for local state
+        self._key_schedule = KeySchedule(prev_init_secret, commit_secret, new_group_context, psk_secret, self._crypto_provider)
         self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
         self._group_context = new_group_context  # temporary, will be overwritten with confirmed hash
         self._pending_proposals = []
@@ -682,13 +727,25 @@ class MLSGroup:
             # Include confirmation_tag and signer index
             confirm_tag_local = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
             group_info = GroupInfo(self._group_context, Signature(gi_sig), ext_bytes, confirm_tag_local, self._own_leaf_index)
-            enc_group_info = self._crypto_provider.aead_encrypt(
-                self._key_schedule.encryption_secret, b"\x00" * self._crypto_provider.aead_nonce_size(), group_info.serialize(), b""
-            )
+            # Derive Welcome AEAD key/nonce from welcome_secret
+            welcome_secret = self._crypto_provider.derive_secret(joiner_secret, b"welcome")
+            welcome_key = self._crypto_provider.expand_with_label(welcome_secret, b"key", b"", self._crypto_provider.aead_key_size())
+            welcome_nonce = self._crypto_provider.expand_with_label(welcome_secret, b"nonce", b"", self._crypto_provider.aead_nonce_size())
+            enc_group_info = self._crypto_provider.aead_encrypt(welcome_key, welcome_nonce, group_info.serialize(), b"")
             secrets: list[EncryptedGroupSecrets] = []
             for kp in adds_kps:
                 pk = kp.leaf_node.encryption_key
-                enc, ct = self._crypto_provider.hpke_seal(pk, b"welcome secret", b"", self._key_schedule.epoch_secret)
+                # Seal GroupSecrets for each joiner
+                from .data_structures import GroupSecrets
+                gs = GroupSecrets(joiner_secret=joiner_secret, psk_secret=psk_secret)
+                enc, ct = encrypt_with_label(
+                    self._crypto_provider,
+                    recipient_public_key=pk,
+                    label=mls_labels.HPKE_WELCOME,
+                    context=b"",
+                    aad=b"",
+                    plaintext=gs.serialize(),
+                )
                 secrets.append(EncryptedGroupSecrets(enc, ct))
             welcome = Welcome(MLSVersion.MLS10, CipherSuite(self._crypto_provider.active_ciphersuite.kem, self._crypto_provider.active_ciphersuite.kdf, self._crypto_provider.active_ciphersuite.aead), secrets, enc_group_info)
             welcomes.append(welcome)
@@ -747,6 +804,10 @@ class MLSGroup:
         try:
             from .validations import validate_proposals_server_rules
             validate_proposals_server_rules(resolved, sender_index, self._ratchet_tree.n_leaves)
+            # Enforce path-required logic (RFC §12.4)
+            from .validations import commit_path_required
+            if commit_path_required(resolved) and commit.path is None:
+                raise CommitValidationError("commit missing required UpdatePath for proposal set")
         except Exception as _e:
             raise
 
@@ -779,6 +840,9 @@ class MLSGroup:
             try:
                 from .key_packages import LeafNode as _LeafNode
                 leaf = _LeafNode.deserialize(up.leaf_node)
+                # Credential validation
+                if leaf.credential is not None and leaf.credential.public_key != leaf.signature_key:
+                    raise CommitValidationError("leaf credential public key does not match signature key")
                 self._ratchet_tree.update_leaf(proposer_idx, leaf)
             except Exception:
                 continue
@@ -801,7 +865,8 @@ class MLSGroup:
 
         # Derive commit secret
         if commit.path:
-            commit_secret = self._ratchet_tree.merge_update_path(commit.path, sender_index)
+            gc_bytes = self._group_context.serialize() if self._group_context else b""
+            commit_secret = self._ratchet_tree.merge_update_path(commit.path, sender_index, gc_bytes)
         else:
             # Path-less commit: derive a placeholder commit_secret (RFC-compliant flows will supply
             # joiner/psk secrets; this MVP uses a neutral extract)
@@ -900,13 +965,15 @@ class MLSGroup:
                         raise CommitValidationError("invalid PSK binder")
                     psk_secret = self._crypto_provider.kdf_extract(b"psk", preimage)
 
-        # Apply changes (removes/adds)
-        for idx in sorted(commit.removes, reverse=True):
+        # Apply changes (removes/adds) derived from referenced proposals
+        from .validations import derive_ops_from_proposals
+        removes, adds = derive_ops_from_proposals(referenced)
+        for idx in sorted(removes, reverse=True):
             try:
                 self._ratchet_tree.remove_leaf(idx)
             except Exception:
                 continue
-        for kp_bytes in commit.adds:
+        for kp_bytes in adds:
             try:
                 self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
             except Exception:
