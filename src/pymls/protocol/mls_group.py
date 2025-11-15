@@ -478,8 +478,8 @@ class MLSGroup:
 
         tbs = message.auth_content.tbs
         proposal = Proposal.deserialize(tbs.framed_content.content)
-        # Compute a proposal reference from the serialized plaintext (MVP; RFC uses hash of the MLSPlaintext)
-        prop_ref = self._crypto_provider.kdf_extract(b"proposal", message.serialize())
+        # Compute a proposal reference as Hash(MLSPlaintext) per RFC
+        prop_ref = self._crypto_provider.hash(message.serialize())
         self._proposal_cache[prop_ref] = (proposal, sender.sender)
         self._pending_proposals.append(proposal)
 
@@ -893,7 +893,7 @@ class MLSGroup:
         if self._key_schedule is None:
             raise PyMLSError("group not initialized")
         commit_bytes_full = commit.serialize()
-        confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)[:16]
+        confirm_tag = self._crypto_provider.hmac_sign(self._key_schedule.confirmation_key, commit_bytes_full)
         confirmed = self._crypto_provider.kdf_extract(interim, confirm_tag)
         new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
 

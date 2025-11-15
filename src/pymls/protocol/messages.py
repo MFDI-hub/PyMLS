@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from enum import IntEnum
 import os
 
-from .data_structures import Signature
 from ..mls.exceptions import InvalidSignatureError
 from ..codec.tls import (
     write_uint8,
@@ -22,65 +21,6 @@ from ..codec.tls import (
 from .key_schedule import KeySchedule
 from ..crypto.crypto_provider import CryptoProvider
 
-
-@dataclass(frozen=True)
-class PublicMessage:
-    """Public, unauthenticated message container.
-
-    This minimal structure represents a message with a raw content payload and a
-    trailing signature. It is used as a simple building block in places where
-    full MLS framing is not required.
-
-    Fields
-    - content: Payload bytes.
-    - signature: Signature object appended to content.
-    """
-    content: bytes
-    signature: Signature
-
-    def serialize(self) -> bytes:
-        """Serialize as content || signature."""
-        return self.content + self.signature.serialize()
-
-    @classmethod
-    def deserialize(cls, data: bytes) -> "PublicMessage":
-        """Parse a PublicMessage from bytes.
-
-        Notes
-        - This simplified format assumes a fixed 64-byte signature length.
-        """
-        # This is a simplification
-        content = data[:-64]
-        signature = Signature.deserialize(data[-64:])
-        return cls(content, signature)
-
-
-@dataclass(frozen=True)
-class PrivateMessage:
-    """Private message container with AEAD-authenticated ciphertext.
-
-    Fields
-    - ciphertext: Encrypted payload bytes (AEAD).
-    - auth_tag: Authentication tag produced by the AEAD.
-    """
-    ciphertext: bytes
-    auth_tag: bytes
-
-    def serialize(self) -> bytes:
-        """Serialize as ciphertext || auth_tag."""
-        return self.ciphertext + self.auth_tag
-
-    @classmethod
-    def deserialize(cls, data: bytes) -> "PrivateMessage":
-        """Parse a PrivateMessage from bytes.
-
-        Notes
-        - This simplified format assumes a fixed 16-byte authentication tag.
-        """
-        # This is a simplification
-        ciphertext = data[:-16]
-        auth_tag = data[-16:]
-        return cls(ciphertext, auth_tag)
 
 # --- RFC 9420 message framing (new API) ---
 

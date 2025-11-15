@@ -35,6 +35,11 @@ class CryptoProvider(ABC):
         pass
 
     @abstractmethod
+    def hash(self, data: bytes) -> bytes:
+        """Compute a direct hash of data using the ciphersuite's hash algorithm (RFC Hash)."""
+        pass
+
+    @abstractmethod
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
         """AEAD seal."""
         pass

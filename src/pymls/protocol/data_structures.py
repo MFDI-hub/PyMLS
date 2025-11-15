@@ -100,6 +100,7 @@ class ProposalType(IntEnum):
     REINIT = 5
     EXTERNAL_INIT = 6
     GROUP_CONTEXT_EXTENSIONS = 7
+    APP_ACK = 8
 
 
 class Proposal(ABC):
@@ -139,6 +140,8 @@ class Proposal(ABC):
             return ExternalInitProposal.deserialize(content)
         if proposal_type == ProposalType.GROUP_CONTEXT_EXTENSIONS:
             return GroupContextExtensionsProposal.deserialize(content)
+        if proposal_type == ProposalType.APP_ACK:
+            return AppAckProposal.deserialize(content)
 
         raise PyMLSError(f"Unknown proposal type: {proposal_type}")
 
@@ -322,6 +325,32 @@ class GroupContextExtensionsProposal(Proposal):
             data = data[1:]
         ext, _ = deserialize_bytes(data)
         return cls(ext)
+
+@dataclass(frozen=True)
+class AppAckProposal(Proposal):
+    """Application Acknowledgement proposal carrying opaque authenticated_data."""
+    authenticated_data: bytes
+
+    @property
+    def proposal_type(self) -> ProposalType:
+        """Return ProposalType.APP_ACK."""
+        return ProposalType.APP_ACK
+
+    def _serialize_content(self) -> bytes:
+        """Encode authenticated_data as len-delimited bytes."""
+        return serialize_bytes(self.authenticated_data)
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "AppAckProposal":
+        """
+        Parse authenticated_data from len-delimited bytes.
+
+        Accepts either raw content or full encoding with a leading type byte.
+        """
+        if data and data[0] == ProposalType.APP_ACK:
+            data = data[1:]
+        authenticated_data, _ = deserialize_bytes(data)
+        return cls(authenticated_data)
 
 @dataclass(frozen=True)
 class UpdatePath:

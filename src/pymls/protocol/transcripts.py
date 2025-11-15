@@ -45,8 +45,8 @@ class TranscriptState:
         """
         if self._interim is None:
             raise PyMLSError("interim transcript hash is not set")
-        # Truncate to 16 bytes (matches existing MVP tag length)
-        return self._crypto.hmac_sign(confirmation_key, self._interim)[:16]
+        # Return full-length tag per RFC (Nh)
+        return self._crypto.hmac_sign(confirmation_key, self._interim)
 
     def finalize_confirmed(self, confirmation_tag: bytes) -> bytes:
         """

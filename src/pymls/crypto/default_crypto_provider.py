@@ -119,6 +119,12 @@ class DefaultCryptoProvider(CryptoProvider):
         )
         return hkdf.derive(prk)
 
+    def hash(self, data: bytes) -> bytes:
+        """Compute Hash(data) using the active ciphersuite's hash algorithm."""
+        h = hashes.Hash(self._hash_algo())
+        h.update(data)
+        return h.finalize()
+
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
         """Encrypt using the active AEAD implementation."""
         aead = self._aead_impl()

@@ -64,7 +64,7 @@ Run the RFC 9420 test vectors with:
 python -m src.pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
 ```
 
-Supported types include key_schedule, tree_math, secret_tree, message_protection, and welcome_groupinfo. A JSON summary is printed.
+Supported types include key_schedule, tree_math, secret_tree, message_protection, welcome_groupinfo, tree_operations, messages, and encryption. A JSON summary is printed.
 - The legacy DAVE protocol and opcodes were removed. This is a pure MLS library now.
 
 ## Setup with uv

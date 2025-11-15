@@ -12,6 +12,9 @@ from ..protocol import tree_math
 from ..protocol.secret_tree import SecretTree
 from ..protocol.messages import ContentType, FramedContent, AuthenticatedContentTBS
 from ..protocol.data_structures import GroupInfo as GroupInfoStruct, Signature
+from ..protocol.ratchet_tree import RatchetTree
+from ..protocol.key_packages import KeyPackage, LeafNode
+from ..protocol.mls_group import MLSGroup
 
 
 def _run_key_schedule_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
@@ -152,6 +155,87 @@ def _run_welcome_groupinfo_vector(vec: Dict[str, Any], crypto: CryptoProvider) -
         crypto.verify(h(vec["signer_key"]), gi.tbs_serialize(), gi.signature.value)
 
 
+def _run_tree_operations_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
+    """
+    Execute basic tree operations against a RatchetTree and validate the tree hash.
+    Expected keys:
+      - initial_tree: list of hex-encoded serialized KeyPackages (optional)
+      - operation: { type: "add"|"update", index: int (for update), key_package|leaf_node: hex }
+      - expected_tree_hash: hex
+    """
+    def h(b):
+        return bytes.fromhex(b) if isinstance(b, str) else b
+    tree = RatchetTree(crypto)
+    for kp_hex in vec.get("initial_tree", []):
+        try:
+            kp = KeyPackage.deserialize(h(kp_hex))
+            tree.add_leaf(kp)
+        except Exception:
+            continue
+    op = vec.get("operation", {})
+    if op:
+        t = op.get("type", "add").lower()
+        if t == "add":
+            kp_bytes = h(op.get("key_package", ""))
+            if kp_bytes:
+                tree.add_leaf(KeyPackage.deserialize(kp_bytes))
+        elif t == "update":
+            idx = int(op.get("index", 0))
+            ln_bytes = h(op.get("leaf_node", ""))
+            if ln_bytes:
+                tree.update_leaf(idx, LeafNode.deserialize(ln_bytes))
+    got = tree.calculate_tree_hash()
+    exp = h(vec.get("expected_tree_hash", ""))
+    if exp:
+        assert got == exp, "expected_tree_hash mismatch"
+
+
+def _run_encryption_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
+    """
+    Validate AEAD encryption for given inputs.
+    Expected keys: key (hex), nonce (hex), aad (hex), plaintext (hex), expected: { ciphertext (hex) }
+    """
+    def h(b):
+        return bytes.fromhex(b) if isinstance(b, str) else b
+    key = h(vec.get("key", ""))
+    nonce = h(vec.get("nonce", ""))
+    aad = h(vec.get("aad", ""))
+    pt = h(vec.get("plaintext", ""))
+    ct = crypto.aead_encrypt(key, nonce, pt, aad)
+    exp = vec.get("expected", {}).get("ciphertext")
+    if exp is not None:
+        assert ct == h(exp), "ciphertext mismatch"
+
+
+def _run_messages_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
+    """
+    Minimal execution for messages vectors to validate MLS message serialization paths.
+    Expected structure (minimal subset):
+      - setup: { group_id (hex), key_package (hex) }
+      - steps: list of operations where an operation may include:
+          - { op: "protect", data: hex, expect: hex }  # application data protection
+    """
+    def h(b):
+        return bytes.fromhex(b) if isinstance(b, str) else b
+    setup = vec.get("setup", {})
+    group_id = h(setup.get("group_id", ""))
+    kp_bytes = h(setup.get("key_package", ""))
+    if kp_bytes:
+        kp = KeyPackage.deserialize(kp_bytes)
+    else:
+        ln = LeafNode(encryption_key=b"", signature_key=b"", credential=b"", capabilities=b"", parent_hash=b"")
+        kp = KeyPackage(leaf_node=ln, signature=Signature(b""))
+    group = MLSGroup.create(group_id, kp, crypto)
+    for step in vec.get("steps", []):
+        op = step.get("op", "").lower()
+        if op == "protect":
+            data = h(step.get("data", ""))
+            msg = group.protect(data)
+            exp = step.get("expect")
+            if exp is not None:
+                assert msg.serialize() == h(exp), "mls_message mismatch"
+
+
 def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, int]:
     """
     Load JSON test vectors from a directory and run known types.
@@ -181,6 +265,12 @@ def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, 
                 _run_message_protection_vector(data, crypto)
             elif vtype == "welcome_groupinfo":
                 _run_welcome_groupinfo_vector(data, crypto)
+            elif vtype == "tree_operations":
+                _run_tree_operations_vector(data, crypto)
+            elif vtype == "messages":
+                _run_messages_vector(data, crypto)
+            elif vtype == "encryption":
+                _run_encryption_vector(data, crypto)
             else:
                 summary["skipped"] += 1
                 continue

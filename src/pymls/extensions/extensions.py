@@ -22,6 +22,10 @@ class ExtensionType(IntEnum):
     RATCHET_TREE = 5
     EXTERNAL_PUB = 6
     REQUIRED_CAPABILITIES = 7
+    APPLICATION_ID = 8
+    EXTERNAL_SENDERS = 9
+    SUPPORTED_VERSIONS = 10
+    EPOCH_AUTHENTICATOR = 11
 
 
 @dataclass(frozen=True)
