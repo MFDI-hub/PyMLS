@@ -14,3 +14,5 @@ from .protocol.mls_group import MLSGroup  # noqa: E402
 
 __all__ = ["Group", "DefaultCryptoProvider", "MLSGroup"]
 
+__version__ = "0.2.0"
+

@@ -96,6 +96,10 @@ class MLSGroup:
         epoch_secret = os.urandom(crypto_provider.kdf_hash_len())
         group._key_schedule = KeySchedule.from_epoch_secret(epoch_secret, group._group_context, crypto_provider)
         group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves)
+        # Bootstrap initial interim transcript hash per RFC §11 using zero confirmation tag
+        ts = TranscriptState(crypto_provider, interim=None, confirmed=None)
+        group._interim_transcript_hash = ts.bootstrap_initial_interim()
+        group._confirmed_transcript_hash = None
         # Generate external signing key pair based on the active signature scheme
         try:
             sig_scheme = crypto_provider.active_ciphersuite.signature
@@ -539,10 +543,15 @@ class MLSGroup:
         """
         # Mark commit as pending to enforce RFC §15.2 sending restrictions
         self._commit_pending = True
-        # This is a simplification. It handles a self-update and pending proposals.
-        removes = [p.removed for p in self._pending_proposals if isinstance(p, RemoveProposal)]
-        adds_kps = [KeyPackage.deserialize(p.key_package) for p in self._pending_proposals if isinstance(p, AddProposal)]
+        # Partition proposals for RFC §12.3 ordering
+        gce_props = [p for p in self._pending_proposals if isinstance(p, GroupContextExtensionsProposal)]
         update_props = [p for p in self._pending_proposals if isinstance(p, UpdateProposal)]
+        remove_props = [p for p in self._pending_proposals if isinstance(p, RemoveProposal)]
+        add_props = [p for p in self._pending_proposals if isinstance(p, AddProposal)]
+        psk_props = [p for p in self._pending_proposals if isinstance(p, PreSharedKeyProposal)]
+        reinit_prop = next((p for p in self._pending_proposals if isinstance(p, ReInitProposal)), None)
+        removes = [p.removed for p in remove_props]
+        adds_kps = [KeyPackage.deserialize(p.key_package) for p in add_props]
         has_update_prop = len(update_props) > 0
         # Basic validations
         validate_proposals_client_rules(self._pending_proposals, self._ratchet_tree.n_leaves)
@@ -552,7 +561,15 @@ class MLSGroup:
         except Exception as _e:
             # Surface as CommitValidationError
             raise
-        # RFC §12.3 ordering: GroupContextExtensions -> Update -> Remove -> Add
+        # RFC §12.3 ordering: GroupContextExtensions -> Update -> Remove -> Add -> PreSharedKey (ReInit exclusive)
+        # Apply GroupContextExtensions first by preparing to include them in GroupInfo extensions
+        merged_gce_exts = []
+        if gce_props:
+            try:
+                for gp in gce_props:
+                    merged_gce_exts.extend(deserialize_extensions(gp.extensions))
+            except Exception:
+                merged_gce_exts = []
         # Apply Update proposals from other members before generating our path
         if self._proposal_cache:
             for pref, (prop, proposer_idx) in list(self._proposal_cache.items()):
@@ -607,25 +624,36 @@ class MLSGroup:
             commit_secret = self._crypto_provider.kdf_extract(b"", b"")
 
         # Construct and sign the commit
-        # Collect proposal references corresponding to pending proposals and build union proposals list
+        # Collect proposal references corresponding to pending proposals and build union proposals list in RFC order
         pending_refs: list[bytes] = []
         for pref, entry in list(self._proposal_cache.items()):
             prop, _sender_idx = entry
             if prop in self._pending_proposals:
                 pending_refs.append(pref)
         proposals_union: list[ProposalOrRef] = []
-        # Prefer by-reference for proposals found in cache
-        for pref in pending_refs:
-            proposals_union.append(ProposalOrRef(ProposalOrRefType.REFERENCE, reference=pref))
-        # Include any remaining pending proposals by-value
-        for p in self._pending_proposals:
-            # Skip ones already included by reference
-            try:
-                if any((self._proposal_cache.get(pref, (None, -1))[0] is p) for pref in pending_refs):
-                    continue
-            except Exception:
-                pass
-            proposals_union.append(ProposalOrRef(ProposalOrRefType.PROPOSAL, proposal=p))
+        # Helper to append proposals of a given class in order, preferring references
+        def _append_ordered(cls_type):
+            # First by-reference
+            for pref in pending_refs:
+                p, _ = self._proposal_cache.get(pref, (None, -1))
+                if p is not None and isinstance(p, cls_type) and p in self._pending_proposals:
+                    proposals_union.append(ProposalOrRef(ProposalOrRefType.REFERENCE, reference=pref))
+            # Then by-value
+            for p in self._pending_proposals:
+                if isinstance(p, cls_type):
+                    try:
+                        if any((self._proposal_cache.get(pref, (None, -1))[0] is p) for pref in pending_refs):
+                            continue
+                    except Exception:
+                        pass
+                    proposals_union.append(ProposalOrRef(ProposalOrRefType.PROPOSAL, proposal=p))
+        from .data_structures import GroupContextExtensionsProposal as _GCE, UpdateProposal as _UP, RemoveProposal as _RP, AddProposal as _AP, PreSharedKeyProposal as _PSK, ReInitProposal as _RI
+        _append_ordered(_GCE)
+        _append_ordered(_UP)
+        _append_ordered(_RP)
+        _append_ordered(_AP)
+        _append_ordered(_PSK)
+        _append_ordered(_RI)
         # Optionally derive a PSK secret and binder if PSK proposals are present (RFC-style binder)
         psk_ids: list[bytes] = []
         for p in self._pending_proposals:
@@ -661,7 +689,6 @@ class MLSGroup:
         transcripts.update_with_handshake(pt)
 
         # ReInit handling: if a ReInit proposal is present, reset epoch and switch group_id
-        reinit_prop = next((p for p in self._pending_proposals if isinstance(p, ReInitProposal)), None)
         if reinit_prop:
             new_epoch = 0
             new_group_id = reinit_prop.new_group_id
@@ -720,6 +747,12 @@ class MLSGroup:
                 exts.append(Extension(ExtensionType.REQUIRED_CAPABILITIES, build_required_capabilities(req)))
             except Exception:
                 pass
+            # Merge GroupContextExtensions proposals into GroupInfo extensions if present
+            if merged_gce_exts:
+                try:
+                    exts.extend(merged_gce_exts)
+                except Exception:
+                    pass
             ext_bytes = serialize_extensions(exts)
             # Sign GroupInfo with committer's signing key using TBS (context contains confirmed hash)
             gi_unsigned = GroupInfo(self._group_context, Signature(b""), ext_bytes, b"", self._own_leaf_index)

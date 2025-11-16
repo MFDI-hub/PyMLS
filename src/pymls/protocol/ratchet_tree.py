@@ -12,6 +12,7 @@ from ..crypto.hpke_labels import encrypt_with_label, decrypt_with_label
 from ..crypto import labels as mls_labels
 from ..mls.exceptions import CommitValidationError
 from ..codec.tls import write_uint8, write_uint16, write_opaque16, read_uint8, read_uint16, read_opaque16
+import os
 
 
 class RatchetTreeNode:
@@ -163,23 +164,41 @@ class RatchetTree:
     def create_update_path(self, committer_index: int, new_leaf_node: LeafNode, group_context_bytes: bytes) -> tuple[UpdatePath, bytes]:
         """Create an UpdatePath for the committer and derive the commit secret.
 
-        Generates fresh key pairs along the committer's direct path, encrypts the
-        corresponding path secrets for the copath, attaches a parent hash to the
-        new leaf node, and returns (UpdatePath, commit_secret).
+        RFC 9420 §7.4: Generate a fresh path_secret at the leaf and derive
+        subsequent path/node secrets top-down up the direct path. For each
+        direct-path node, derive a deterministic key pair from the node_secret.
+        Encrypt the path_secret for the copath resolution. Attach a parent hash
+        to the new leaf node. Return (UpdatePath, commit_secret), where
+        commit_secret is the final path_secret at the root.
         """
-        # Generate new keypairs for the direct path
-        path_secrets = {}
+        # Enumerate direct path (leaf's parents up to root)
         direct_path = tree_math.direct_path(committer_index * 2, self.n_leaves)
+        if not direct_path:
+            # Single-member tree; no path to update. Derive a neutral commit_secret.
+            update_path = UpdatePath(new_leaf_node.serialize(), {})
+            commit_secret = self._crypto_provider.kdf_extract(b"", b"")
+            return update_path, commit_secret
+
+        # Start with a fresh random path_secret seed at the leaf
+        current_path_secret = os.urandom(self._crypto_provider.kdf_hash_len())
+
+        # For each node on the direct path, derive next path_secret and node keypair
+        # Store (node_index -> path_secret) for encryption to copath recipients
+        path_secret_by_node: dict[int, bytes] = {}
         for node_index in direct_path:
-            priv_key, pub_key = self._crypto_provider.generate_key_pair()
+            # Derive next path_secret for this node
+            current_path_secret = self._crypto_provider.derive_secret(current_path_secret, b"path")
+            path_secret_by_node[node_index] = current_path_secret
+            # Derive node_secret and deterministically derive key pair
+            node_secret = self._crypto_provider.derive_secret(current_path_secret, b"node")
+            priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
             self._nodes[node_index].private_key = priv_key
             self._nodes[node_index].public_key = pub_key
-            path_secrets[node_index] = self._crypto_provider.kdf_extract(b"", priv_key)
 
         # Encrypt path secrets for the copath
         encrypted_path_secrets: dict[int, list[bytes]] = {}
         copath = tree_math.copath(committer_index * 2, self.n_leaves)
-        for node_index, secret in path_secrets.items():
+        for node_index, secret in path_secret_by_node.items():
             # Skip root (has no sibling/parent)
             try:
                 copath_node_index = tree_math.sibling(node_index, self.n_leaves)
@@ -215,15 +234,18 @@ class RatchetTree:
         )
 
         update_path = UpdatePath(leaf_for_path.serialize(), encrypted_path_secrets)
-        commit_secret = self._crypto_provider.kdf_extract(b"", b"".join(path_secrets.values()))
+        # Commit secret is the last path_secret (at the root of the direct path)
+        commit_secret = current_path_secret
         return update_path, commit_secret
 
     def merge_update_path(self, update_path: UpdatePath, committer_index: int, group_context_bytes: bytes) -> bytes:
         """Merge an UpdatePath from a received commit and return the commit secret.
 
-        Verifies the provided leaf's parent hash if present, decrypts applicable
-        path secrets for nodes on the committer copath, updates keys along the
-        direct path, and recomputes affected hashes.
+        RFC 9420 §7.4 receive path:
+        - Verify parent hash binding for provided leaf (if present)
+        - Decrypt exactly one path_secret corresponding to a copath node on our
+          direct path; then derive subsequent path/node secrets upward
+        - Update keys along the direct path and recompute hashes
         """
         # Update leaf node
         provided_leaf = LeafNode.deserialize(update_path.leaf_node)
@@ -236,13 +258,12 @@ class RatchetTree:
                 raise CommitValidationError("parent_hash mismatch for provided leaf node")
         self.update_leaf(committer_index, provided_leaf)
 
-        # Decrypt path secrets
-        path_secrets = {}
+        # Decrypt a single path_secret for the lowest applicable node; then derive upwards
         direct_path = tree_math.direct_path(committer_index * 2, self.n_leaves)
+        decrypted_index: int | None = None
+        current_path_secret: bytes | None = None
         for node_index in direct_path:
-            # We can only decrypt secrets for nodes on our direct path's copath.
-            # The update_path.nodes are indexed by the copath node index.
-            # Skip root, which has no sibling/parent.
+            # Skip root which has no sibling/parent encryption index
             try:
                 if node_index == tree_math.root(self.n_leaves):
                     continue
@@ -252,13 +273,12 @@ class RatchetTree:
             if sibling_index in update_path.nodes:
                 node = self.get_node(node_index)
                 if node.private_key:
-                    # Try each recipient blob until decryption succeeds
                     from .data_structures import deserialize_bytes
                     for blob in update_path.nodes[sibling_index]:
                         try:
                             enc, rest = deserialize_bytes(blob)
                             ct, _ = deserialize_bytes(rest)
-                            secret = decrypt_with_label(
+                            ps = decrypt_with_label(
                                 self._crypto_provider,
                                 recipient_private_key=node.private_key,
                                 kem_output=enc,
@@ -267,14 +287,26 @@ class RatchetTree:
                                 aad=b"",
                                 ciphertext=ct,
                             )
-                            path_secrets[node_index] = secret
+                            decrypted_index = node_index
+                            current_path_secret = ps
                             break
                         except Exception:
                             continue
+                if current_path_secret is not None:
+                    break
 
-        # Update nodes with new public keys from path secrets
-        for node_index, secret in path_secrets.items():
-            priv_key, pub_key = self._crypto_provider.derive_key_pair(secret)
+        if current_path_secret is None:
+            # Unable to decrypt any path secret; derive a neutral commit_secret
+            return self._crypto_provider.kdf_extract(b"", b"")
+
+        # From the decrypted node onward, derive subsequent path/node secrets upward
+        start_idx = direct_path.index(decrypted_index) if decrypted_index in direct_path else 0
+        for node_index in direct_path[start_idx:]:
+            # For the first node, use current_path_secret as decrypted; otherwise, step the ratchet
+            if node_index != decrypted_index:
+                current_path_secret = self._crypto_provider.derive_secret(current_path_secret, b"path")
+            node_secret = self._crypto_provider.derive_secret(current_path_secret, b"node")
+            priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
             self.get_node(node_index).private_key = priv_key
             self.get_node(node_index).public_key = pub_key
 
@@ -288,7 +320,8 @@ class RatchetTree:
         except Exception:
             pass
 
-        commit_secret = self._crypto_provider.kdf_extract(b"", b"".join(path_secrets.values()))
+        # Commit secret is the final path_secret at the root of the direct path
+        commit_secret = current_path_secret
         return commit_secret
 
     def _collect_subtree_recipients(self, node_index: int) -> list[bytes]:

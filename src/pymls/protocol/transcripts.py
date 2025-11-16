@@ -62,4 +62,17 @@ class TranscriptState:
         self._confirmed = self._crypto.hash(prev_c + confirmation_tag)
         return self._confirmed
 
+    # --- RFC 9420 §11 bootstrap helper ---
+    def bootstrap_initial_interim(self) -> bytes:
+        """
+        Initialize the interim transcript hash at epoch 0 using an all-zero
+        confirmation tag of suite hash length, hashed with previous confirmed
+        (empty at creation). This mirrors the confirmed hash update shape and
+        yields a non-empty interim value before the first commit.
+        """
+        zero_tag = bytes(self._crypto.kdf_hash_len())
+        prev_c = self._confirmed or b""
+        self._interim = self._crypto.hash(prev_c + zero_tag)
+        return self._interim
+
 

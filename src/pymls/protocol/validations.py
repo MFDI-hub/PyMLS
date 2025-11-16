@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Iterable, Set
 
-from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal
+from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal, ReInitProposal
 from .key_packages import KeyPackage
 from ..extensions.extensions import parse_capabilities_data
 from ..crypto.crypto_provider import CryptoProvider

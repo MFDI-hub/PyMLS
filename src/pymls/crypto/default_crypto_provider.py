@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidSignature
+import math
 
 from .hpke_backend import hpke_seal as _hpke_seal_backend, hpke_open as _hpke_open_backend
 
@@ -275,18 +276,77 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported KEM")
 
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
-        """Derive a deterministic KEM key pair when supported by the active suite."""
-        if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
-            sk = x25519.X25519PrivateKey.from_private_bytes(seed)
+        """
+        Derive a deterministic KEM key pair for the active suite.
+        Implements an HPKE-style DeriveKeyPair approximation using the suite's KDF:
+          prk = HKDF-Extract("dkp_prk", seed)
+          skm = HKDF-Expand(prk, "sk", Nsk)
+          map skm -> private key (with curve-specific clamping/mod reduction)
+        """
+        kem = self._suite.kem
+        if kem == KEM.DHKEM_X25519_HKDF_SHA256:
+            # 32-byte scalar, clamp per RFC 7748
+            prk = self.kdf_extract(b"dkp_prk", seed)
+            skm = self.kdf_expand(prk, b"sk", 32)
+            skm = bytearray(skm)
+            skm[0] &= 248
+            skm[31] &= 127
+            skm[31] |= 64
+            sk = x25519.X25519PrivateKey.from_private_bytes(bytes(skm))
             pk = sk.public_key()
             return sk.private_bytes_raw(), pk.public_bytes_raw()
-        if self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
-            sk = x448.X448PrivateKey.from_private_bytes(seed)  # type: ignore[assignment]
+        if kem == KEM.DHKEM_X448_HKDF_SHA512:
+            # 56-byte scalar, clamp per RFC 7748
+            prk = self.kdf_extract(b"dkp_prk", seed)
+            skm = self.kdf_expand(prk, b"sk", 56)
+            skm = bytearray(skm)
+            skm[0] &= 252
+            skm[55] |= 128
+            sk = x448.X448PrivateKey.from_private_bytes(bytes(skm))  # type: ignore[assignment]
             pk = sk.public_key()
             return sk.private_bytes_raw(), pk.public_bytes_raw()
-        # For EC (P-256/521), deriving a private key from an arbitrary seed requires
-        # KEM-specific DeriveKeyPair. Defer to higher-level logic for these suites.
-        raise NotImplementedError("derive_key_pair not implemented for EC KEMs")
+        if kem == KEM.DHKEM_P256_HKDF_SHA256:
+            # Reduce to [1, n-1] and derive on P-256
+            prk = self.kdf_extract(b"dkp_prk", seed)
+            okm = self.kdf_expand(prk, b"sk", 48)  # extra bytes for wide entropy
+            x = int.from_bytes(okm, "big")
+            n = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
+            d = (x % (n - 1)) + 1
+            sk = ec.derive_private_key(d, ec.SECP256R1())
+            from cryptography.hazmat.primitives import serialization as _ser
+            pk = sk.public_key()
+            return (
+                sk.private_bytes(
+                    _ser.Encoding.DER,
+                    _ser.PrivateFormat.PKCS8,
+                    _ser.NoEncryption(),
+                ),
+                pk.public_bytes(
+                    _ser.Encoding.DER,
+                    _ser.PublicFormat.SubjectPublicKeyInfo,
+                ),
+            )
+        if kem == KEM.DHKEM_P521_HKDF_SHA512:
+            prk = self.kdf_extract(b"dkp_prk", seed)
+            okm = self.kdf_expand(prk, b"sk", 96)
+            x = int.from_bytes(okm, "big")
+            n = int("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+            d = (x % (n - 1)) + 1
+            sk = ec.derive_private_key(d, ec.SECP521R1())
+            from cryptography.hazmat.primitives import serialization as _ser
+            pk = sk.public_key()
+            return (
+                sk.private_bytes(
+                    _ser.Encoding.DER,
+                    _ser.PrivateFormat.PKCS8,
+                    _ser.NoEncryption(),
+                ),
+                pk.public_bytes(
+                    _ser.Encoding.DER,
+                    _ser.PublicFormat.SubjectPublicKeyInfo,
+                ),
+            )
+        raise UnsupportedCipherSuiteError("Unsupported KEM for derive_key_pair")
 
     def kem_pk_size(self) -> int:
         """Return the raw public key size for KEMs with fixed-length encodings."""
