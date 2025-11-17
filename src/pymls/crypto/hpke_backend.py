@@ -19,27 +19,27 @@ Note:
 """
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Tuple, Any
+import importlib
 
 from ..mls.exceptions import ConfigurationError
 from .ciphersuites import KEM, KDF, AEAD
 
 
 # Attempt to import HPKE primitives from cryptography. Guard use at runtime.
-try:
-    from cryptography.hazmat.primitives.hpke import (  # type: ignore[attr-defined]
-        HPKE as _HPKE,
-        KEM as _HPKE_KEM,
-        KDF as _HPKE_KDF,
-        AEAD as _HPKE_AEAD,
-        Mode as _HPKE_Mode,
-    )
+try:  # pragma: no cover - import guard
+    _hpke_mod: Any = importlib.import_module("cryptography.hazmat.primitives.hpke")
+    _HPKE: Any = getattr(_hpke_mod, "HPKE", None)
+    _HPKE_KEM: Any = getattr(_hpke_mod, "KEM", None)
+    _HPKE_KDF: Any = getattr(_hpke_mod, "KDF", None)
+    _HPKE_AEAD: Any = getattr(_hpke_mod, "AEAD", None)
+    _HPKE_Mode: Any = getattr(_hpke_mod, "Mode", None)
 except Exception:  # pragma: no cover - import guard
-    _HPKE = None  # type: ignore[assignment]
-    _HPKE_KEM = None  # type: ignore[assignment]
-    _HPKE_KDF = None  # type: ignore[assignment]
-    _HPKE_AEAD = None  # type: ignore[assignment]
-    _HPKE_Mode = None  # type: ignore[assignment]
+    _HPKE = None
+    _HPKE_KEM = None
+    _HPKE_KDF = None
+    _HPKE_AEAD = None
+    _HPKE_Mode = None
 
 
 def _ensure_hpke_available() -> None:
@@ -50,27 +50,27 @@ def _ensure_hpke_available() -> None:
         )
 
 
-def _map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple["_HPKE_KEM", "_HPKE_KDF", "_HPKE_AEAD"]:  # type: ignore[name-defined]
+def _map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple[Any, Any, Any]:
     """Map internal MLS enums to cryptography.hazmat.primitives.hpke enums."""
     # KEM mapping
     kem_map = {
-        KEM.DHKEM_X25519_HKDF_SHA256: _HPKE_KEM.DHKEM_X25519_HKDF_SHA256,  # type: ignore[attr-defined]
-        KEM.DHKEM_X448_HKDF_SHA512: _HPKE_KEM.DHKEM_X448_HKDF_SHA512,  # type: ignore[attr-defined]
-        KEM.DHKEM_P256_HKDF_SHA256: _HPKE_KEM.DHKEM_P256_HKDF_SHA256,  # type: ignore[attr-defined]
-        KEM.DHKEM_P384_HKDF_SHA384: _HPKE_KEM.DHKEM_P384_HKDF_SHA384,  # type: ignore[attr-defined]
-        KEM.DHKEM_P521_HKDF_SHA512: _HPKE_KEM.DHKEM_P521_HKDF_SHA512,  # type: ignore[attr-defined]
+        KEM.DHKEM_X25519_HKDF_SHA256: _HPKE_KEM.DHKEM_X25519_HKDF_SHA256,
+        KEM.DHKEM_X448_HKDF_SHA512: _HPKE_KEM.DHKEM_X448_HKDF_SHA512,
+        KEM.DHKEM_P256_HKDF_SHA256: _HPKE_KEM.DHKEM_P256_HKDF_SHA256,
+        KEM.DHKEM_P384_HKDF_SHA384: _HPKE_KEM.DHKEM_P384_HKDF_SHA384,
+        KEM.DHKEM_P521_HKDF_SHA512: _HPKE_KEM.DHKEM_P521_HKDF_SHA512,
     }
     # KDF mapping
     kdf_map = {
-        KDF.HKDF_SHA256: _HPKE_KDF.HKDF_SHA256,  # type: ignore[attr-defined]
-        KDF.HKDF_SHA384: _HPKE_KDF.HKDF_SHA384,  # type: ignore[attr-defined]
-        KDF.HKDF_SHA512: _HPKE_KDF.HKDF_SHA512,  # type: ignore[attr-defined]
+        KDF.HKDF_SHA256: _HPKE_KDF.HKDF_SHA256,
+        KDF.HKDF_SHA384: _HPKE_KDF.HKDF_SHA384,
+        KDF.HKDF_SHA512: _HPKE_KDF.HKDF_SHA512,
     }
     # AEAD mapping
     aead_map = {
-        AEAD.AES_128_GCM: _HPKE_AEAD.AES_128_GCM,  # type: ignore[attr-defined]
-        AEAD.AES_256_GCM: _HPKE_AEAD.AES_256_GCM,  # type: ignore[attr-defined]
-        AEAD.CHACHA20_POLY1305: _HPKE_AEAD.CHACHA20_POLY1305,  # type: ignore[attr-defined]
+        AEAD.AES_128_GCM: _HPKE_AEAD.AES_128_GCM,
+        AEAD.AES_256_GCM: _HPKE_AEAD.AES_256_GCM,
+        AEAD.CHACHA20_POLY1305: _HPKE_AEAD.CHACHA20_POLY1305,
     }
     try:
         return kem_map[kem], kdf_map[kdf], aead_map[aead]
@@ -120,8 +120,8 @@ def hpke_seal(
     """
     _ensure_hpke_available()
     _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
-    hpke = _HPKE(_kem, _kdf, _aead, mode=_HPKE_Mode.BASE)  # type: ignore[operator]
-    enc, ciphertext = hpke.seal(  # type: ignore[attr-defined]
+    hpke = _HPKE(_kem, _kdf, _aead, mode=_HPKE_Mode.BASE)
+    enc, ciphertext = hpke.seal(
         recipient_public_key=recipient_public_key,
         info=info,
         aad=aad,
@@ -176,8 +176,8 @@ def hpke_open(
     """
     _ensure_hpke_available()
     _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
-    hpke = _HPKE(_kem, _kdf, _aead, mode=_HPKE_Mode.BASE)  # type: ignore[operator]
-    plaintext = hpke.open(  # type: ignore[attr-defined]
+    hpke = _HPKE(_kem, _kdf, _aead, mode=_HPKE_Mode.BASE)
+    plaintext = hpke.open(
         recipient_private_key=recipient_private_key,
         kem_output=kem_output,
         info=info,

@@ -34,13 +34,17 @@ def _make_key_package(identity: bytes) -> tuple[KeyPackage, bytes, bytes]:
     leaf = LeafNode(encryption_key=kem_pk, signature_key=sig_pk, credential=cred, capabilities=b"", parent_hash=b"")
     # Sign the leaf to form a KeyPackage signature
     crypto = DefaultCryptoProvider()
-    sig = crypto.sign(sig_sk, leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
+    sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", leaf.serialize())
+    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
     return kp, kem_sk, sig_sk
 
 
 class TestGroupFlow(unittest.TestCase):
     def test_add_join_and_message(self):
+        try:
+            import cryptography.hazmat.primitives.hpke  # noqa: F401
+        except Exception:
+            self.skipTest("HPKE support not available in this cryptography build")
         crypto = DefaultCryptoProvider()
         # Creator A
         kp_a, kem_sk_a, sig_sk_a = _make_key_package(b"userA")

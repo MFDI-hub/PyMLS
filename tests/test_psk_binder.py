@@ -27,8 +27,8 @@ def _make_key_package(identity: bytes) -> tuple[KeyPackage, bytes, bytes]:
     cred = Credential(identity=identity, public_key=sig_pk)
     leaf = LeafNode(encryption_key=kem_pk, signature_key=sig_pk, credential=cred, capabilities=b"", parent_hash=b"")
     crypto = DefaultCryptoProvider()
-    sig = crypto.sign(sig_sk, leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
+    sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", leaf.serialize())
+    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
     return kp, kem_sk, sig_sk
 
 

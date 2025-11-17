@@ -346,7 +346,8 @@ class DefaultCryptoProvider(CryptoProvider):
         Returns:
             Signature bytes.
         """
-        data = self._encode_sign_content(label, content)
+        full = b"MLS 1.0 " + (label or b"")
+        data = self._encode_sign_content(full, content)
         return self.sign(private_key, data)
 
     def verify_with_label(self, public_key: bytes, label: bytes, content: bytes, signature: bytes) -> None:
@@ -498,9 +499,9 @@ class DefaultCryptoProvider(CryptoProvider):
             skm[0] &= 248
             skm[31] &= 127
             skm[31] |= 64
-            sk = x25519.X25519PrivateKey.from_private_bytes(bytes(skm))
-            pk = sk.public_key()
-            return sk.private_bytes_raw(), pk.public_bytes_raw()
+            sk25519 = x25519.X25519PrivateKey.from_private_bytes(bytes(skm))
+            pk25519 = sk25519.public_key()
+            return sk25519.private_bytes_raw(), pk25519.public_bytes_raw()
         if kem == KEM.DHKEM_X448_HKDF_SHA512:
             # 56-byte scalar, clamp per RFC 7748
             prk = self.kdf_extract(b"dkp_prk", seed)
@@ -508,9 +509,9 @@ class DefaultCryptoProvider(CryptoProvider):
             skm = bytearray(skm)
             skm[0] &= 252
             skm[55] |= 128
-            sk = x448.X448PrivateKey.from_private_bytes(bytes(skm))  # type: ignore[assignment]
-            pk = sk.public_key()
-            return sk.private_bytes_raw(), pk.public_bytes_raw()
+            sk448 = x448.X448PrivateKey.from_private_bytes(bytes(skm))
+            pk448 = sk448.public_key()
+            return sk448.private_bytes_raw(), pk448.public_bytes_raw()
         if kem == KEM.DHKEM_P256_HKDF_SHA256:
             # Reduce to [1, n-1] and derive on P-256
             prk = self.kdf_extract(b"dkp_prk", seed)
@@ -518,16 +519,16 @@ class DefaultCryptoProvider(CryptoProvider):
             x = int.from_bytes(okm, "big")
             n = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
             d = (x % (n - 1)) + 1
-            sk = ec.derive_private_key(d, ec.SECP256R1())
+            sk_ec256 = ec.derive_private_key(d, ec.SECP256R1())
             from cryptography.hazmat.primitives import serialization as _ser
-            pk = sk.public_key()
+            pk_ec256 = sk_ec256.public_key()
             return (
-                sk.private_bytes(
+                sk_ec256.private_bytes(
                     _ser.Encoding.DER,
                     _ser.PrivateFormat.PKCS8,
                     _ser.NoEncryption(),
                 ),
-                pk.public_bytes(
+                pk_ec256.public_bytes(
                     _ser.Encoding.DER,
                     _ser.PublicFormat.SubjectPublicKeyInfo,
                 ),
@@ -538,16 +539,16 @@ class DefaultCryptoProvider(CryptoProvider):
             x = int.from_bytes(okm, "big")
             n = int("01FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
             d = (x % (n - 1)) + 1
-            sk = ec.derive_private_key(d, ec.SECP521R1())
+            sk_ec521 = ec.derive_private_key(d, ec.SECP521R1())
             from cryptography.hazmat.primitives import serialization as _ser
-            pk = sk.public_key()
+            pk_ec521 = sk_ec521.public_key()
             return (
-                sk.private_bytes(
+                sk_ec521.private_bytes(
                     _ser.Encoding.DER,
                     _ser.PrivateFormat.PKCS8,
                     _ser.NoEncryption(),
                 ),
-                pk.public_bytes(
+                pk_ec521.public_bytes(
                     _ser.Encoding.DER,
                     _ser.PublicFormat.SubjectPublicKeyInfo,
                 ),

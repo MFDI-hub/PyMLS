@@ -122,10 +122,10 @@ def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem
 
     # Validity period with leeway
     import datetime as _dt
-    now = _dt.datetime.utcnow()
-    if leaf.not_valid_before - _dt.timedelta(seconds=policy.not_before_leeway_s) > now:
+    now = _dt.datetime.now(_dt.timezone.utc)
+    if leaf.not_valid_before_utc - _dt.timedelta(seconds=policy.not_before_leeway_s) > now:
         raise CredentialValidationError("certificate not yet valid")
-    if leaf.not_valid_after + _dt.timedelta(seconds=policy.not_after_leeway_s) < now:
+    if leaf.not_valid_after_utc + _dt.timedelta(seconds=policy.not_after_leeway_s) < now:
         raise CredentialValidationError("certificate expired")
 
     # Key Usage (require digitalSignature when requested)

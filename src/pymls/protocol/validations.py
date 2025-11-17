@@ -22,13 +22,15 @@ def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
     """
     try:
         kp = KeyPackage.deserialize(kp_bytes)
-        cred = kp.leaf_node.credential
-        if cred is not None:
-            identity = cred.identity
-            try:
-                return identity.decode("utf-8")
-            except Exception:
-                return identity.hex()
+        ln = kp.leaf_node
+        if ln is not None:
+            cred = ln.credential
+            if cred is not None:
+                identity = cred.identity
+                try:
+                    return identity.decode("utf-8")
+                except Exception:
+                    return identity.hex()
     except Exception:
         # Not a full KeyPackage; treat kp_bytes as identity
         try:
@@ -65,7 +67,7 @@ def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int
             # Validate that capabilities payload (if present in LeafNode) parses
             try:
                 kp = KeyPackage.deserialize(p.key_package)
-                if kp.leaf_node.capabilities:
+                if kp.leaf_node and kp.leaf_node.capabilities:
                     parse_capabilities_data(kp.leaf_node.capabilities)
             except Exception as e:
                 raise CommitValidationError("invalid capabilities in key package") from e

@@ -8,7 +8,7 @@ sending via next_* helpers.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple
 from collections import OrderedDict
 
@@ -36,10 +36,10 @@ class _LeafState:
     # Receive-side state (windowed skipped-keys cache)
     app_recv_generation: int = 0
     app_recv_secret: bytes | None = None
-    app_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = OrderedDict()
+    app_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = field(default_factory=OrderedDict)
     hs_recv_generation: int = 0
     hs_recv_secret: bytes | None = None
-    hs_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = OrderedDict()
+    hs_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = field(default_factory=OrderedDict)
 
 
 class SecretTree:
@@ -182,8 +182,9 @@ class SecretTree:
         if self._window_size > 0 and generation > st.app_recv_generation:
             # Step and cache from current to generation-1
             temp_secret = st.app_recv_secret
+            assert temp_secret is not None
             for g in range(st.app_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(temp_secret)  # type: ignore[arg-type]
+                k, n, temp_secret = self._ratchet_step(temp_secret)
                 st.app_skipped[g] = (k, n)
                 # Evict oldest if exceeding window
                 while len(st.app_skipped) > self._window_size:
@@ -191,7 +192,8 @@ class SecretTree:
             st.app_recv_secret = temp_secret
 
         # Derive key/nonce for the requested generation and advance cursor
-        key, nonce, next_secret = self._ratchet_step(st.app_recv_secret)  # type: ignore[arg-type]
+        assert st.app_recv_secret is not None
+        key, nonce, next_secret = self._ratchet_step(st.app_recv_secret)
         st.app_recv_secret = next_secret
         st.app_recv_generation = generation + 1
         return key, nonce, generation
@@ -239,14 +241,16 @@ class SecretTree:
 
         if self._window_size > 0 and generation > st.hs_recv_generation:
             temp_secret = st.hs_recv_secret
+            assert temp_secret is not None
             for g in range(st.hs_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(temp_secret)  # type: ignore[arg-type]
+                k, n, temp_secret = self._ratchet_step(temp_secret)
                 st.hs_skipped[g] = (k, n)
                 while len(st.hs_skipped) > self._window_size:
                     st.hs_skipped.popitem(last=False)
             st.hs_recv_secret = temp_secret
 
-        key, nonce, next_secret = self._ratchet_step(st.hs_recv_secret)  # type: ignore[arg-type]
+        assert st.hs_recv_secret is not None
+        key, nonce, next_secret = self._ratchet_step(st.hs_recv_secret)
         st.hs_recv_secret = next_secret
         st.hs_recv_generation = generation + 1
         return key, nonce, generation

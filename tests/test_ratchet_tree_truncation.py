@@ -1,12 +1,12 @@
-from src.pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from src.pymls.protocol.ratchet_tree import RatchetTree
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
+from pymls.protocol.ratchet_tree import RatchetTree
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
 
 
 def _make_dummy_leaf(enc_key: bytes, sig_key: bytes) -> LeafNode:
     # Minimal credential matching signature key
-    cred = Credential(public_key=sig_key)
+    cred = Credential(identity=b"user", public_key=sig_key)
     return LeafNode(encryption_key=enc_key, signature_key=sig_key, credential=cred, capabilities=b"")
 
 

@@ -20,8 +20,9 @@ def make_kp(identity: bytes):
         capabilities=b"",
         parent_hash=b"",
     )
-    sig = sk_sig.sign(leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
+    crypto = DefaultCryptoProvider()
+    sig = crypto.sign_with_label(sk_sig.private_bytes_raw(), b"KeyPackageTBS", leaf.serialize())
+    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
     return kp
 
 
@@ -43,9 +44,9 @@ class TestRatchetTreeOps(unittest.TestCase):
         self.tree.add_leaf(kp1)
         self.tree.add_leaf(kp2)
         ln = self.tree.get_node(0).leaf_node
-        path, secret = self.tree.create_update_path(0, ln)
+        path, secret = self.tree.create_update_path(0, ln, b"")
         self.assertTrue(secret)
-        commit_secret = self.tree.merge_update_path(path, 0)
+        commit_secret = self.tree.merge_update_path(path, 0, b"")
         self.assertTrue(commit_secret)
 
     def test_welcome_tree_extension_roundtrip(self):

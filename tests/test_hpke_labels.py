@@ -10,9 +10,18 @@ from pymls import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 
+try:
+    import cryptography.hazmat.primitives.hpke  # noqa: F401
+    _HAS_HPKE = True
+except Exception:
+    _HAS_HPKE = False
+
+
 class TestHPKELabels(unittest.TestCase):
     def setUp(self):
         self.crypto = DefaultCryptoProvider()
+        if not _HAS_HPKE:
+            self.skipTest("HPKE support not available in this cryptography build")
 
     def test_encode_encrypt_context_empty(self):
         """Test encoding EncryptContext with empty label and context."""

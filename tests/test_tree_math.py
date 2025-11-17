@@ -174,14 +174,15 @@ class TestTreeMath(unittest.TestCase):
         for leaf in range(0, n, 2):
             dp = direct_path(leaf, n)
             cp = copath(leaf, n)
-            
+
             # Copath should have same length as direct_path
             self.assertEqual(len(cp), len(dp))
-            
-            # Each copath node should be sibling of corresponding direct_path node
-            for i, dp_node in enumerate(dp):
-                cp_node = cp[i]
-                self.assertEqual(sibling(dp_node, n), cp_node)
+
+            # Each copath[i] should be the sibling of the node on the path at the same "height":
+            # cp[0] is sibling(leaf), cp[i] is sibling(dp[i-1]) for i > 0.
+            for i in range(len(dp)):
+                expected = sibling(leaf if i == 0 else dp[i - 1], n)
+                self.assertEqual(cp[i], expected)
 
 
 if __name__ == "__main__":

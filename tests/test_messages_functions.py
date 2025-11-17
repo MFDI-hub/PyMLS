@@ -26,7 +26,7 @@ class TestMessagesFunctions(unittest.TestCase):
         self.pk_bytes = self.pk.public_bytes_raw()
         self.gc = GroupContext(b"gid", 1, b"tree", b"cth")
         self.ks = KeySchedule(b"init", b"commit", self.gc, None, self.crypto)
-        self.st = SecretTree(self.ks.application_secret, self.ks.handshake_secret, self.crypto)
+        self.st = SecretTree(self.ks.encryption_secret, self.crypto, n_leaves=1)
 
     def test_sign_verify_and_membership(self):
         pt = sign_authenticated_content(

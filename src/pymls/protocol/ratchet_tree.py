@@ -63,6 +63,8 @@ class RatchetTree:
 
         node_index = leaf_index * 2
         node = self.get_node(node_index)
+        if key_package.leaf_node is None:
+            raise ValueError("KeyPackage.leaf_node must be present to add a leaf")
         node.public_key = key_package.leaf_node.encryption_key
         node.leaf_node = key_package.leaf_node
         self._recalculate_hashes_from(node_index)
@@ -422,7 +424,7 @@ class RatchetTree:
             blob, off = read_opaque16(data, off)
             if blob:
                 leaf = LeafNode.deserialize(blob)
-                self.add_leaf(KeyPackage(leaf, signature=Signature(b"")))  # signature not validated here
+                self.add_leaf(KeyPackage(leaf_node=leaf, signature=Signature(b"")))  # signature not validated here
             else:
                 # Even if blank, we need to advance the leaf count
                 self._n_leaves += 1

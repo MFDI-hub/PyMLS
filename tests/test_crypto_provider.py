@@ -1,9 +1,15 @@
 """Comprehensive tests for pymls.DefaultCryptoProvider."""
 import unittest
 from pymls import DefaultCryptoProvider
-from pymls.mls.exceptions import UnsupportedCipherSuiteError, InvalidSignatureError
+from pymls.mls.exceptions import UnsupportedCipherSuiteError, InvalidSignatureError, ConfigurationError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.exceptions import InvalidTag
+
+try:
+    import cryptography.hazmat.primitives.hpke  # noqa: F401
+    _HAS_HPKE = True
+except Exception:
+    _HAS_HPKE = False
 
 
 class TestCryptoProvider(unittest.TestCase):
@@ -215,6 +221,8 @@ class TestCryptoProvider(unittest.TestCase):
 
     def test_hpke_roundtrip(self):
         """Test HPKE seal/open roundtrip."""
+        if not _HAS_HPKE:
+            self.skipTest("HPKE support not available in this cryptography build")
         sk, pk = self.crypto.generate_key_pair()
         info = b"info"
         aad = b"aad"
@@ -229,6 +237,8 @@ class TestCryptoProvider(unittest.TestCase):
 
     def test_hpke_different_info(self):
         """Test that different info produces different ciphertext."""
+        if not _HAS_HPKE:
+            self.skipTest("HPKE support not available in this cryptography build")
         sk, pk = self.crypto.generate_key_pair()
         pt = b"plaintext"
         
@@ -251,9 +261,10 @@ class TestCryptoProvider(unittest.TestCase):
         self.assertGreater(len(pk), 0)
         
         # Should be able to use for HPKE
-        enc, ct = self.crypto.hpke_seal(pk, b"info", b"", b"test")
-        out = self.crypto.hpke_open(sk, enc, b"info", b"", ct)
-        self.assertEqual(out, b"test")
+        if _HAS_HPKE:
+            enc, ct = self.crypto.hpke_seal(pk, b"info", b"", b"test")
+            out = self.crypto.hpke_open(sk, enc, b"info", b"", ct)
+            self.assertEqual(out, b"test")
 
     def test_derive_key_pair(self):
         """Test derive_key_pair method."""

@@ -20,8 +20,9 @@ def member(identity: bytes):
         capabilities=b"",
         parent_hash=b"",
     )
-    sig = sk_sig.sign(leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
+    crypto = DefaultCryptoProvider()
+    sig = crypto.sign_with_label(sk_sig.private_bytes_raw(), b"KeyPackageTBS", leaf.serialize())
+    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
     return kp, sk_kem.private_bytes_raw(), sk_sig.private_bytes_raw()
 
 

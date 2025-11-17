@@ -94,7 +94,7 @@ def _run_secret_tree_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None
         return bytes.fromhex(b) if isinstance(b, str) else b
     leaf = int(vec.get("leaf", 0))
     n_leaves = int(vec.get("n_leaves", max(leaf + 1, 1)))
-    st = SecretTree(h(vec["application_secret"]), h(vec["handshake_secret"]), crypto, n_leaves=n_leaves)
+    st = SecretTree(h(vec["application_secret"]), crypto, n_leaves=n_leaves)
     gen = int(vec.get("generation", 0))
     app_key, app_nonce, _ = st.application_for(leaf, gen)
     hs_key, hs_nonce, _ = st.handshake_for(leaf, gen)
@@ -223,7 +223,7 @@ def _run_messages_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
     if kp_bytes:
         kp = KeyPackage.deserialize(kp_bytes)
     else:
-        ln = LeafNode(encryption_key=b"", signature_key=b"", credential=b"", capabilities=b"", parent_hash=b"")
+        ln = LeafNode(encryption_key=b"", signature_key=b"", credential=None, capabilities=b"", parent_hash=b"")
         kp = KeyPackage(leaf_node=ln, signature=Signature(b""))
     group = MLSGroup.create(group_id, kp, crypto)
     for step in vec.get("steps", []):

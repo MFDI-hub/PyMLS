@@ -21,7 +21,7 @@ class TestGroupInfoVerification(unittest.TestCase):
             capabilities=b"",
             parent_hash=b"",
         )
-        kp = KeyPackage(leaf, signature=Signature(b""))
+        kp = KeyPackage(leaf_node=leaf, signature=Signature(b""))
         tree = RatchetTree(crypto)
         tree.add_leaf(kp)
         rt_bytes = tree.serialize_tree_for_welcome()

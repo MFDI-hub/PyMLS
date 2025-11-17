@@ -7,25 +7,16 @@ for managing MLS groups.
 Main exports:
     - Group: High-level API for MLS group operations
     - DefaultCryptoProvider: Concrete crypto provider using cryptography library
-    - MLSGroup: Low-level protocol implementation (deprecated, use Group instead)
+    - MLSGroup: Low-level protocol implementation
 
 Example:
     >>> from pymls import Group, DefaultCryptoProvider
     >>> crypto = DefaultCryptoProvider()
     >>> group = Group.create(b"group1", key_package, crypto)
 """
-import warnings
-
 from .mls.group import Group  # High-level API
 from .crypto.default_crypto_provider import DefaultCryptoProvider
-
-# Deprecated adapter
-warnings.warn(
-    "MLSGroup is deprecated; use pymls.Group instead. MLSGroup will be removed in a future release.",
-    DeprecationWarning,
-    stacklevel=2,
-)
-from .protocol.mls_group import MLSGroup  # noqa: E402
+from .protocol.mls_group import MLSGroup  # Low-level protocol implementation
 
 __all__ = ["Group", "DefaultCryptoProvider", "MLSGroup"]
 

@@ -22,7 +22,7 @@ def _member(identity: bytes):
         parent_hash=b"",
     )
     sig = sk_sig.sign(leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
+    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
     return kp, sk_kem.private_bytes_raw(), sk_sig.private_bytes_raw()
 
 
@@ -37,9 +37,9 @@ class TestNegative(unittest.TestCase):
         # Create a normal commit (no proposals) to get a valid commit container
         pt, welcomes = group.commit(sig_sk_a)
         # Tamper plaintext framed content by appending a fake reference in the commit body
-        from pymls.protocol.data_structures import Commit
+        from pymls.protocol.data_structures import Commit, ProposalOrRef, ProposalOrRefType
         commit = Commit.deserialize(pt.auth_content.tbs.framed_content.content)
-        tampered = Commit(commit.path, commit.removes, commit.adds, commit.proposal_refs + [b"\x01"], commit.signature)
+        tampered = Commit(commit.path, commit.proposals + [ProposalOrRef(ProposalOrRefType.REFERENCE, reference=b"\x01")], commit.signature)
         from pymls.protocol.messages import sign_authenticated_content, attach_membership_tag, ContentType
         pt_tampered = sign_authenticated_content(
             group_id=group.group_id,

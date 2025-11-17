@@ -313,7 +313,7 @@ class MLSGroup:
                 for leaf in range(group._ratchet_tree.n_leaves):
                     node = group._ratchet_tree.get_node(leaf * 2)
                     if node.leaf_node and node.leaf_node.parent_hash:
-                        expected_ph = group._ratchet_tree._compute_parent_hash_for_leaf(leaf)  # type: ignore[attr-defined]
+                        expected_ph = group._ratchet_tree._compute_parent_hash_for_leaf(leaf)
                         if expected_ph != node.leaf_node.parent_hash:
                             raise CommitValidationError("invalid parent_hash for leaf in Welcome tree")
                 # Basic leaf validation (credential/signature key consistency)
@@ -819,6 +819,8 @@ class MLSGroup:
             enc_group_info = self._crypto_provider.aead_encrypt(welcome_key, welcome_nonce, group_info.serialize(), b"")
             secrets: list[EncryptedGroupSecrets] = []
             for kp in adds_kps:
+                if kp.leaf_node is None:
+                    continue
                 pk = kp.leaf_node.encryption_key
                 # Seal GroupSecrets for each joiner
                 from .data_structures import GroupSecrets
@@ -879,11 +881,11 @@ class MLSGroup:
                 if isinstance(prop, UpdateProposal):
                     update_tuples.append((prop, proposer_idx))
             else:
-                prop = por.proposal
-                if prop is not None:
-                    resolved.append(prop)
-                    if isinstance(prop, UpdateProposal):
-                        update_tuples.append((prop, sender_index))
+                p_local = por.proposal
+                if p_local is not None:
+                    resolved.append(p_local)
+                    if isinstance(p_local, UpdateProposal):
+                        update_tuples.append((p_local, sender_index))
         validate_commit_matches_referenced_proposals(commit, referenced)
         # Server-side validations on resolved proposals
         try:
@@ -1079,7 +1081,8 @@ class MLSGroup:
         # ReInit handling on receive (external): if a ReInit proposal is referenced, reset epoch and switch group_id
         if self._group_context is None:
             raise PyMLSError("group not initialized")
-        reinit_prop = next((p for p in referenced if isinstance(p, ReInitProposal)), None) if commit.proposal_refs else None
+        # The Commit structure carries a union 'proposals'; rely on the resolved list instead.
+        reinit_prop = next((p for p in referenced if isinstance(p, ReInitProposal)), None)
         if reinit_prop:
             new_epoch = 0
             new_group_id = reinit_prop.new_group_id
@@ -1287,10 +1290,10 @@ class MLSGroup:
             # Rebuild secret tree with correct n_leaves
             try:
                 group._secret_tree = SecretTree(
-                    ks.application_secret,
-                    ks.handshake_secret,
+                    ks.encryption_secret,
                     crypto_provider,
                     n_leaves=group._ratchet_tree.n_leaves,
+                    window_size=group._secret_tree_window_size,
                 )
             except Exception:
                 group._secret_tree = None
@@ -1302,7 +1305,8 @@ class MLSGroup:
                     off += 2
                     group._pending_proposals = []
                     for _ in range(n_props):
-                        p_bytes, off = deserialize_bytes(props_blob[off:])
+                        p_bytes, rem = deserialize_bytes(props_blob[off:])
+                        off += len(props_blob[off:]) - len(rem)
                         group._pending_proposals.append(Proposal.deserialize(p_bytes))
             except Exception:
                 group._pending_proposals = []

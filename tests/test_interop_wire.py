@@ -7,8 +7,14 @@ from pymls.interop.wire import (
     encode_application,
     decode_application,
 )
-from pymls.protocol.messages import MLSPlaintext, MLSCiphertext, ContentType, SenderType, WireFormat
-from pymls.protocol.data_structures import Sender, FramedContent, AuthenticatedContent
+from pymls.protocol.messages import (
+    MLSPlaintext,
+    MLSCiphertext,
+    ContentType,
+    FramedContent,
+    AuthenticatedContentTBS,
+    AuthenticatedContent,
+)
 from pymls import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
@@ -40,40 +46,27 @@ class TestInteropWire(unittest.TestCase):
     def test_encode_decode_handshake_roundtrip(self):
         """Test encode_handshake and decode_handshake roundtrip."""
         
-        # Create a minimal MLSPlaintext
+        # Create a minimal MLSPlaintext via messages API
         group_id = b"test_group"
         epoch = 0
-        sender = Sender(SenderType.MEMBER, 0)
-        
-        framed = FramedContent(
+        framed = FramedContent(content_type=ContentType.APPLICATION, content=b"test_content")
+        tbs = AuthenticatedContentTBS(
             group_id=group_id,
             epoch=epoch,
-            sender=sender,
-            content_type=ContentType.APPLICATION,
+            sender_leaf_index=0,
             authenticated_data=b"",
-            content=b"test_content",
+            framed_content=framed,
         )
-        
-        auth_content = AuthenticatedContent(
-            wire_format=WireFormat.MLS_PLAINTEXT,
-            content=framed,
-            signature=Signature(b"dummy_sig"),
-        )
-        
-        plaintext = MLSPlaintext(
-            group_id=group_id,
-            epoch=epoch,
-            content_type=ContentType.APPLICATION,
-            authenticated_content=auth_content,
-        )
+        auth_content = AuthenticatedContent(tbs=tbs, signature=b"dummy_sig", membership_tag=None)
+        plaintext = MLSPlaintext(auth_content=auth_content)
         
         # Encode and decode
         encoded = encode_handshake(plaintext)
         decoded = decode_handshake(encoded)
         
-        self.assertEqual(decoded.group_id, plaintext.group_id)
-        self.assertEqual(decoded.epoch, plaintext.epoch)
-        self.assertEqual(decoded.content_type, plaintext.content_type)
+        self.assertEqual(decoded.auth_content.tbs.group_id, plaintext.auth_content.tbs.group_id)
+        self.assertEqual(decoded.auth_content.tbs.epoch, plaintext.auth_content.tbs.epoch)
+        self.assertEqual(decoded.auth_content.tbs.framed_content.content_type, plaintext.auth_content.tbs.framed_content.content_type)
 
     def test_encode_decode_application_roundtrip(self):
         """Test encode_application and decode_application roundtrip."""
@@ -85,6 +78,7 @@ class TestInteropWire(unittest.TestCase):
             group_id=group_id,
             epoch=epoch,
             content_type=ContentType.APPLICATION,
+            authenticated_data=b"",
             encrypted_sender_data=b"encrypted_sender",
             ciphertext=b"encrypted_content",
         )
@@ -104,33 +98,22 @@ class TestInteropWire(unittest.TestCase):
         group_id = b"test_group"
         epoch = 1
         
-        framed = FramedContent(
+        framed = FramedContent(content_type=ContentType.COMMIT, content=b"commit_content")
+        tbs = AuthenticatedContentTBS(
             group_id=group_id,
             epoch=epoch,
-            sender=Sender(SenderType.MEMBER, 0),
-            content_type=ContentType.COMMIT,
+            sender_leaf_index=0,
             authenticated_data=b"",
-            content=b"commit_content",
+            framed_content=framed,
         )
-        
-        auth_content = AuthenticatedContent(
-            wire_format=WireFormat.MLS_PLAINTEXT,
-            content=framed,
-            signature=Signature(b"sig"),
-        )
-        
-        plaintext = MLSPlaintext(
-            group_id=group_id,
-            epoch=epoch,
-            content_type=ContentType.COMMIT,
-            authenticated_content=auth_content,
-        )
+        auth_content = AuthenticatedContent(tbs=tbs, signature=b"sig", membership_tag=None)
+        plaintext = MLSPlaintext(auth_content=auth_content)
         
         encoded = encode_handshake(plaintext)
         # Should be able to deserialize
         decoded = decode_handshake(encoded)
-        self.assertEqual(decoded.group_id, group_id)
-        self.assertEqual(decoded.epoch, epoch)
+        self.assertEqual(decoded.auth_content.tbs.group_id, group_id)
+        self.assertEqual(decoded.auth_content.tbs.epoch, epoch)
 
     def test_encode_application_preserves_structure(self):
         """Test that encode_application preserves message structure."""
@@ -138,6 +121,7 @@ class TestInteropWire(unittest.TestCase):
             group_id=b"group",
             epoch=5,
             content_type=ContentType.APPLICATION,
+            authenticated_data=b"",
             encrypted_sender_data=b"sender_data",
             ciphertext=b"ciphertext_data",
         )
