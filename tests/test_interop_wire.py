@@ -7,7 +7,7 @@ from pymls.interop.wire import (
     encode_application,
     decode_application,
 )
-from pymls.protocol.messages import MLSPlaintext, MLSCiphertext, ContentType, SenderType, ProtocolVersion, WireFormat
+from pymls.protocol.messages import MLSPlaintext, MLSCiphertext, ContentType, SenderType, WireFormat
 from pymls.protocol.data_structures import Sender, FramedContent, AuthenticatedContent
 from pymls import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -39,7 +39,6 @@ class TestInteropWire(unittest.TestCase):
 
     def test_encode_decode_handshake_roundtrip(self):
         """Test encode_handshake and decode_handshake roundtrip."""
-        kp = self._make_key_package(b"test")
         
         # Create a minimal MLSPlaintext
         group_id = b"test_group"
@@ -55,7 +54,6 @@ class TestInteropWire(unittest.TestCase):
             content=b"test_content",
         )
         
-        sig_sk = Ed25519PrivateKey.generate()
         auth_content = AuthenticatedContent(
             wire_format=WireFormat.MLS_PLAINTEXT,
             content=framed,
@@ -103,7 +101,6 @@ class TestInteropWire(unittest.TestCase):
 
     def test_encode_handshake_preserves_structure(self):
         """Test that encode_handshake preserves message structure."""
-        kp = self._make_key_package(b"test")
         group_id = b"test_group"
         epoch = 1
         

@@ -18,7 +18,7 @@ Rationale:
   external commit, and application protection (§9).
 - Provides both high-level (Group) and low-level (MLSGroup) APIs.
 """
-from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets, ProposalOrRef, ProposalOrRefType
+from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, GroupContextExtensionsProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets, ProposalOrRef, ProposalOrRefType
 from .key_packages import KeyPackage, LeafNode
 from .messages import (
     MLSPlaintext,
@@ -568,6 +568,7 @@ class MLSGroup:
                 if leaf.credential is not None and leaf.credential.public_key != leaf.signature_key:
                     raise CommitValidationError("leaf credential public key does not match signature key")
         except Exception as e:
+            print(f"Error validating proposal: {e}")
             raise
         # Compute RFC 9420 §5.2 ProposalRef using RefHashInput("MLS 1.0 Proposal Reference", Proposal)
         from .refs import make_proposal_ref
@@ -599,7 +600,7 @@ class MLSGroup:
         update_props = [p for p in self._pending_proposals if isinstance(p, UpdateProposal)]
         remove_props = [p for p in self._pending_proposals if isinstance(p, RemoveProposal)]
         add_props = [p for p in self._pending_proposals if isinstance(p, AddProposal)]
-        psk_props = [p for p in self._pending_proposals if isinstance(p, PreSharedKeyProposal)]
+        # psk_props = [p for p in self._pending_proposals if isinstance(p, PreSharedKeyProposal)]
         reinit_prop = next((p for p in self._pending_proposals if isinstance(p, ReInitProposal)), None)
         removes = [p.removed for p in remove_props]
         adds_kps = [KeyPackage.deserialize(p.key_package) for p in add_props]

@@ -126,7 +126,6 @@ class TestHPKELabels(unittest.TestCase):
         """Test that different labels produce different ciphertexts."""
         sk = X25519PrivateKey.generate()
         pk = sk.public_key()
-        sk_bytes = sk.private_bytes_raw()
         pk_bytes = pk.public_bytes_raw()
         
         context = b"context"

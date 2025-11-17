@@ -1,6 +1,5 @@
 from pymls.protocol.validations import commit_path_required
 from pymls.protocol.data_structures import (
-    AddProposal,
     UpdateProposal,
     RemoveProposal,
     PreSharedKeyProposal,

@@ -12,13 +12,9 @@ from pymls.codec.mls import (
 from pymls.protocol.data_structures import (
     Welcome,
     Commit,
-    Proposal,
     AddProposal,
-    UpdateProposal,
-    RemoveProposal,
     Signature,
     EncryptedGroupSecrets,
-    GroupSecrets,
     GroupInfo,
     GroupContext,
     CipherSuite,
@@ -54,13 +50,10 @@ class TestCodecMLS(unittest.TestCase):
     def test_encode_decode_welcome_roundtrip(self):
         """Test Welcome encoding and decoding roundtrip."""
         # Create a minimal Welcome message
-        leaf = self._make_leaf_node(b"test")
         sig_sk = Ed25519PrivateKey.generate()
         sig_pk = sig_sk.public_key()
-        sig = sig_sk.sign(leaf.serialize())
         
         # Create encrypted group secrets
-        kem_sk, kem_pk = X25519PrivateKey.generate(), X25519PrivateKey.generate().public_key()
         enc_secrets = EncryptedGroupSecrets(
             key_package_hash=b"\x00" * 32,
             encrypted_group_secrets=b"encrypted_data",
@@ -103,7 +96,6 @@ class TestCodecMLS(unittest.TestCase):
         # Create a minimal Commit
         leaf = self._make_leaf_node(b"test")
         sig_sk = Ed25519PrivateKey.generate()
-        sig_pk = sig_sk.public_key()
         sig_bytes = sig_sk.sign(b"test_data")
         
         update_path = UpdatePath(
@@ -131,11 +123,9 @@ class TestCodecMLS(unittest.TestCase):
         leaf2 = self._make_leaf_node(b"user2")
         
         sig_sk1 = Ed25519PrivateKey.generate()
-        sig_pk1 = sig_sk1.public_key()
         sig1 = sig_sk1.sign(leaf1.serialize())
         
         sig_sk2 = Ed25519PrivateKey.generate()
-        sig_pk2 = sig_sk2.public_key()
         sig2 = sig_sk2.sign(leaf2.serialize())
         
         from pymls.protocol.key_packages import KeyPackage

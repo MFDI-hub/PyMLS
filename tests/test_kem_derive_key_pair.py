@@ -1,5 +1,3 @@
-import pytest
-
 from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
 
 
