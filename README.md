@@ -93,6 +93,19 @@ uv run pytest -q
 
 Planned next: broaden RFC vector coverage and interop CLI, full X.509 policy and revocation, extended negative/fuzz tests, and API stabilization timeline.
 
+### Secret tree skipped-keys window
+
+Out-of-order application/handshake decryption is supported via a sliding window of skipped keys. By default, a per-leaf window of 128 generations is enabled.
+
+- Configure at group level: `MLSGroup(..., secret_tree_window_size=128)`
+- Programmatic construction: `SecretTree(encryption_secret, crypto, n_leaves, window_size=128)`
+
+Older behavior (on-demand derivation without caching) is preserved for generations outside the window, so existing applications remain compatible.
+
+### Ratchet tree truncation (normative §7.7)
+
+The ratchet tree now truncates immediately when the rightmost leaf (and all trailing leaves) are blank after a removal. This reduces sparse tails and keeps the tree hash consistent with RFC expectations.
+
 ## Interop CLI (RFC wire)
 
 The interop CLI exposes RFC-wire encode/decode helpers for handshake and application messages:

@@ -12,6 +12,8 @@ Enhancements
 - Proposal Ordering: Commit creation now partitions and orders proposals according to RFC §12.3 (GroupContextExtensions → Update → Remove → Add → PreSharedKey). ReInit proposals remain exclusive.
 - PSK Handling: PSK proposals are bound via a commit binder and integrated into the epoch key schedule when present.
 - Transcript Bootstrap: The interim transcript hash is initialized at group creation using an all‑zero confirmation tag per RFC §11.
+- Secret Tree window: Out-of-order receive support via a sliding skipped-keys window is enabled by default (128). Configure with `MLSGroup(..., secret_tree_window_size=128)` or `SecretTree(..., window_size=128)`.
+- Ratchet Tree truncation: The tree now truncates immediately after Remove if the rightmost leaves are blank (normative RFC §7.7), reducing sparse tails and aligning tree hash expectations.
 
 Notes
 

@@ -92,6 +92,14 @@ class RatchetTree:
             p_node.unmerged_leaves = []
 
         self._recalculate_hashes_from(node_index)
+        # Truncate trailing blank leaves immediately (RFC §7.7)
+        while self._n_leaves > 0:
+            last_idx = (self._n_leaves - 1) * 2
+            last_node = self.get_node(last_idx)
+            if last_node.leaf_node is None and last_node.public_key is None:
+                self._n_leaves -= 1
+            else:
+                break
 
     def update_leaf(self, index: int, leaf_node: LeafNode) -> None:
         """Replace the leaf node metadata and recompute affected hashes."""

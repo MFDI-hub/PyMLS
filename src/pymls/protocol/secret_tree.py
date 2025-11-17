@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Tuple
+from collections import OrderedDict
 
 from ..crypto.crypto_provider import CryptoProvider
 from . import tree_math
@@ -32,6 +33,13 @@ class _LeafState:
     hs_generation: int = 0
     app_secret: bytes | None = None
     hs_secret: bytes | None = None
+    # Receive-side state (windowed skipped-keys cache)
+    app_recv_generation: int = 0
+    app_recv_secret: bytes | None = None
+    app_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = OrderedDict()
+    hs_recv_generation: int = 0
+    hs_recv_secret: bytes | None = None
+    hs_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = OrderedDict()
 
 
 class SecretTree:
@@ -45,13 +53,17 @@ class SecretTree:
     Per-generation sender (key, nonce) are derived from the branch ratchet
     secret and a generation counter.
 
-    This implementation derives receive keys on-demand (no cache).
+    This implementation supports a sliding window of skipped receive keys for
+    out-of-order delivery. Older behavior (on-demand derivation without cache)
+    is preserved as a fallback when a requested generation falls outside of
+    the configured window.
     """
 
-    def __init__(self, encryption_secret: bytes, crypto: CryptoProvider, n_leaves: int = 1):
+    def __init__(self, encryption_secret: bytes, crypto: CryptoProvider, n_leaves: int = 1, window_size: int = 128):
         self._root_secret = encryption_secret
         self._crypto = crypto
         self._n_leaves = max(1, int(n_leaves))
+        self._window_size = max(0, int(window_size))
         self._leaves: Dict[int, _LeafState] = {}
 
     def _get_leaf_state(self, leaf: int) -> _LeafState:
@@ -143,11 +155,45 @@ class SecretTree:
 
     def application_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
         """Return (key, nonce, generation) for a specific application generation (receive path)."""
-        leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-        secret = self._crypto.derive_secret(leaf_secret, b"application")
-        key = nonce = b""
-        for _ in range(generation + 1):
-            key, nonce, secret = self._ratchet_step(secret)
+        st = self._get_leaf_state(leaf)
+        # Initialize receive-side branch if needed
+        if st.app_recv_secret is None:
+            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
+            st.app_recv_secret = self._crypto.derive_secret(leaf_secret, b"application")
+            st.app_recv_generation = 0
+
+        # If requested generation is older than our current receive counter,
+        # attempt to serve it from the skipped cache; otherwise fall back to
+        # on-demand derivation (preserves pre-window behavior).
+        if generation < st.app_recv_generation:
+            if generation in st.app_skipped:
+                key, nonce = st.app_skipped.pop(generation)
+                return key, nonce, generation
+            # Fallback: derive on-demand without affecting receive cursor
+            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
+            secret = self._crypto.derive_secret(leaf_secret, b"application")
+            key = nonce = b""
+            for _ in range(generation + 1):
+                key, nonce, secret = self._ratchet_step(secret)
+            return key, nonce, generation
+
+        # Derive and cache intermediate generations (current .. generation-1)
+        # for out-of-order decryption, respecting the sliding window size.
+        if self._window_size > 0 and generation > st.app_recv_generation:
+            # Step and cache from current to generation-1
+            temp_secret = st.app_recv_secret
+            for g in range(st.app_recv_generation, generation):
+                k, n, temp_secret = self._ratchet_step(temp_secret)  # type: ignore[arg-type]
+                st.app_skipped[g] = (k, n)
+                # Evict oldest if exceeding window
+                while len(st.app_skipped) > self._window_size:
+                    st.app_skipped.popitem(last=False)
+            st.app_recv_secret = temp_secret
+
+        # Derive key/nonce for the requested generation and advance cursor
+        key, nonce, next_secret = self._ratchet_step(st.app_recv_secret)  # type: ignore[arg-type]
+        st.app_recv_secret = next_secret
+        st.app_recv_generation = generation + 1
         return key, nonce, generation
 
     # Handshake traffic
@@ -172,11 +218,37 @@ class SecretTree:
 
     def handshake_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
         """Return (key, nonce, generation) for a specific handshake generation (receive path)."""
-        leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-        secret = self._crypto.derive_secret(leaf_secret, b"handshake")
-        key = nonce = b""
-        for _ in range(generation + 1):
-            key, nonce, secret = self._ratchet_step(secret)
+        st = self._get_leaf_state(leaf)
+        # Initialize receive-side branch if needed
+        if st.hs_recv_secret is None:
+            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
+            st.hs_recv_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
+            st.hs_recv_generation = 0
+
+        if generation < st.hs_recv_generation:
+            if generation in st.hs_skipped:
+                key, nonce = st.hs_skipped.pop(generation)
+                return key, nonce, generation
+            # Fallback on-demand derivation for older gens outside window
+            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
+            secret = self._crypto.derive_secret(leaf_secret, b"handshake")
+            key = nonce = b""
+            for _ in range(generation + 1):
+                key, nonce, secret = self._ratchet_step(secret)
+            return key, nonce, generation
+
+        if self._window_size > 0 and generation > st.hs_recv_generation:
+            temp_secret = st.hs_recv_secret
+            for g in range(st.hs_recv_generation, generation):
+                k, n, temp_secret = self._ratchet_step(temp_secret)  # type: ignore[arg-type]
+                st.hs_skipped[g] = (k, n)
+                while len(st.hs_skipped) > self._window_size:
+                    st.hs_skipped.popitem(last=False)
+            st.hs_recv_secret = temp_secret
+
+        key, nonce, next_secret = self._ratchet_step(st.hs_recv_secret)  # type: ignore[arg-type]
+        st.hs_recv_secret = next_secret
+        st.hs_recv_generation = generation + 1
         return key, nonce, generation
 
 
@@ -190,6 +262,34 @@ class SecretTree:
             if isinstance(val, (bytes, bytearray)) and val:
                 ba = bytearray(val)
                 secure_wipe(ba)
+            # Wipe per-leaf secrets and cached keys
+            for st in self._leaves.values():
+                for name in ("app_secret", "hs_secret", "app_recv_secret", "hs_recv_secret"):
+                    sval = getattr(st, name, None)
+                    if isinstance(sval, (bytes, bytearray)) and sval:
+                        try:
+                            ba = bytearray(sval)
+                            secure_wipe(ba)
+                        except Exception:
+                            pass
+                # Best-effort wipe cached keys/nonces
+                try:
+                    for _g, (k, n) in list(st.app_skipped.items()):
+                        if isinstance(k, (bytes, bytearray)):
+                            ba = bytearray(k)
+                            secure_wipe(ba)
+                        if isinstance(n, (bytes, bytearray)):
+                            ba = bytearray(n)
+                            secure_wipe(ba)
+                    for _g, (k, n) in list(st.hs_skipped.items()):
+                        if isinstance(k, (bytes, bytearray)):
+                            ba = bytearray(k)
+                            secure_wipe(ba)
+                        if isinstance(n, (bytes, bytearray)):
+                            ba = bytearray(n)
+                            secure_wipe(ba)
+                except Exception:
+                    pass
         except Exception:
             pass
         self._leaves.clear()

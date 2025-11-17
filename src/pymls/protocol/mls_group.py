@@ -44,7 +44,7 @@ class MLSGroup:
     and application messages. The implementation targets RFC 9420 semantics
     with some MVP simplifications noted in method docs.
     """
-    def __init__(self, group_id: bytes, crypto_provider: CryptoProvider, own_leaf_index: int):
+    def __init__(self, group_id: bytes, crypto_provider: CryptoProvider, own_leaf_index: int, secret_tree_window_size: int = 128):
         """Initialize a new MLSGroup wrapper around cryptographic providers.
 
         Parameters
@@ -70,6 +70,7 @@ class MLSGroup:
         self._trust_roots: list[bytes] = []
         self._strict_psk_binders: bool = True
         self._x509_policy = None
+        self._secret_tree_window_size: int = int(secret_tree_window_size)
 
     @classmethod
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto_provider: CryptoProvider) -> "MLSGroup":
@@ -95,7 +96,7 @@ class MLSGroup:
         # From random epoch secret
         epoch_secret = os.urandom(crypto_provider.kdf_hash_len())
         group._key_schedule = KeySchedule.from_epoch_secret(epoch_secret, group._group_context, crypto_provider)
-        group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves)
+        group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves, window_size=group._secret_tree_window_size)
         # Bootstrap initial interim transcript hash per RFC §11 using zero confirmation tag
         ts = TranscriptState(crypto_provider, interim=None, confirmed=None)
         group._interim_transcript_hash = ts.bootstrap_initial_interim()
@@ -309,7 +310,7 @@ class MLSGroup:
         # Ensure secret tree reflects actual group size (after loading ratchet tree)
         try:
             if group._secret_tree is not None:
-                group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves)
+                group._secret_tree = SecretTree(group._key_schedule.encryption_secret, crypto_provider, n_leaves=group._ratchet_tree.n_leaves, window_size=group._secret_tree_window_size)
         except Exception:
             pass
         return group
@@ -713,7 +714,7 @@ class MLSGroup:
         joiner_secret = self._crypto_provider.kdf_extract(psk_secret, joiner_secret_base) if psk_secret else joiner_secret_base
         # Update epoch key schedule for local state
         self._key_schedule = KeySchedule(prev_init_secret, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
+        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves, window_size=self._secret_tree_window_size)
         self._group_context = new_group_context  # temporary, will be overwritten with confirmed hash
         self._pending_proposals = []
         # Clear referenced proposals from cache
@@ -925,7 +926,7 @@ class MLSGroup:
         if self._key_schedule is None:
             raise PyMLSError("group not initialized")
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
+        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves, window_size=self._secret_tree_window_size)
         self._group_context = new_group_context  # temporary
         # Compute and apply confirmation tag over interim transcript
         confirm_tag = transcripts.compute_confirmation_tag(self._key_schedule.confirmation_key)
@@ -1038,7 +1039,7 @@ class MLSGroup:
         new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, confirmed)
 
         self._key_schedule = KeySchedule(self._key_schedule.resumption_psk, commit_secret, new_group_context, psk_secret, self._crypto_provider)
-        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves)
+        self._secret_tree = SecretTree(self._key_schedule.encryption_secret, self._crypto_provider, n_leaves=self._ratchet_tree.n_leaves, window_size=self._secret_tree_window_size)
         self._group_context = new_group_context
         self._interim_transcript_hash = interim
         self._confirmed_transcript_hash = confirmed
