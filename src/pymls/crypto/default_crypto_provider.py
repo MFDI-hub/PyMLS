@@ -1,4 +1,14 @@
-"""Concrete CryptoProvider using the 'cryptography' and 'hpke' Python packages."""
+"""Concrete CryptoProvider using the 'cryptography' and 'hpke' Python packages.
+
+This module provides DefaultCryptoProvider, a concrete implementation of
+CryptoProvider that uses the cryptography library for all cryptographic
+operations. It supports all RFC 9420 §16.3 ciphersuites and uses HPKE
+from cryptography when available.
+
+The provider automatically selects appropriate algorithms based on the
+active ciphersuite and handles key generation, derivation, encryption,
+decryption, signing, and verification operations.
+"""
 import struct
 from cryptography.hazmat.primitives import hashes, hmac, serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -38,8 +48,31 @@ from ..mls.exceptions import (
 
 
 class DefaultCryptoProvider(CryptoProvider):
+    """Concrete CryptoProvider implementation using the cryptography library.
+
+    This provider supports all RFC 9420 §16.3 ciphersuites and uses HPKE
+    from cryptography when available. It provides implementations for all
+    cryptographic operations required by MLS.
+
+    Args:
+        suite_id: RFC 9420 ciphersuite ID (default: 0x0001).
+
+    Raises:
+        UnsupportedCipherSuiteError: If the ciphersuite ID is not supported.
+
+    Example:
+        >>> crypto = DefaultCryptoProvider(suite_id=0x0001)
+        >>> # Use MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+    """
     def __init__(self, suite_id: int = 0x0001):
-        """Initialize with the given MLS ciphersuite id."""
+        """Initialize with the given MLS ciphersuite id.
+
+        Args:
+            suite_id: RFC 9420 ciphersuite ID (default: 0x0001).
+
+        Raises:
+            UnsupportedCipherSuiteError: If the ciphersuite ID is not supported.
+        """
         cs = get_ciphersuite_by_id(suite_id)
         if not cs:
             raise UnsupportedCipherSuiteError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
@@ -47,17 +80,32 @@ class DefaultCryptoProvider(CryptoProvider):
 
     @property
     def supported_ciphersuites(self):
-        """RFC suite ids supported by this provider."""
+        """RFC suite ids supported by this provider.
+
+        Returns:
+            List of RFC 9420 ciphersuite IDs supported by this provider.
+        """
         # Return RFC suite ids
         return [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008]
 
     @property
     def active_ciphersuite(self) -> MlsCiphersuite:
-        """Active ciphersuite object."""
+        """Active ciphersuite object.
+
+        Returns:
+            The currently selected MlsCiphersuite instance.
+        """
         return self._suite
 
     def set_ciphersuite(self, suite_id: int) -> None:
-        """Select a different active ciphersuite by id."""
+        """Select a different active ciphersuite by id.
+
+        Args:
+            suite_id: RFC 9420 ciphersuite ID to select.
+
+        Raises:
+            UnsupportedCipherSuiteError: If the ciphersuite ID is not supported.
+        """
         cs = get_ciphersuite_by_id(suite_id)
         if not cs:
             raise UnsupportedCipherSuiteError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
@@ -102,7 +150,15 @@ class DefaultCryptoProvider(CryptoProvider):
                 raise PyMLSError("Invalid EC public key encoding (expect DER/PEM)") from e
 
     def kdf_extract(self, salt: bytes, ikm: bytes) -> bytes:
-        """HKDF-Extract using the active hash algorithm."""
+        """HKDF-Extract using the active hash algorithm.
+
+        Args:
+            salt: Salt value for extraction.
+            ikm: Input keying material.
+
+        Returns:
+            Pseudorandom key (PRK) of length 32 bytes.
+        """
         hkdf = HKDF(
             algorithm=self._hash_algo(),
             length=32,
@@ -112,7 +168,16 @@ class DefaultCryptoProvider(CryptoProvider):
         return hkdf.derive(ikm)
 
     def kdf_expand(self, prk: bytes, info: bytes, length: int) -> bytes:
-        """HKDF-Expand using the active hash algorithm."""
+        """HKDF-Expand using the active hash algorithm.
+
+        Args:
+            prk: Pseudorandom key from HKDF-Extract.
+            info: Context and application specific information.
+            length: Desired output length in bytes.
+
+        Returns:
+            Expanded key material of the requested length.
+        """
         hkdf = HKDF(
             algorithm=self._hash_algo(),
             length=length,
@@ -122,35 +187,97 @@ class DefaultCryptoProvider(CryptoProvider):
         return hkdf.derive(prk)
 
     def hash(self, data: bytes) -> bytes:
-        """Compute Hash(data) using the active ciphersuite's hash algorithm."""
+        """Compute Hash(data) using the active ciphersuite's hash algorithm.
+
+        Args:
+            data: Input data to hash.
+
+        Returns:
+            Hash digest (length depends on active hash algorithm).
+        """
         h = hashes.Hash(self._hash_algo())
         h.update(data)
         return h.finalize()
 
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
-        """Encrypt using the active AEAD implementation."""
+        """Encrypt using the active AEAD implementation.
+
+        Args:
+            key: AEAD encryption key.
+            nonce: Nonce for encryption.
+            plaintext: Plaintext to encrypt.
+            aad: Additional authenticated data.
+
+        Returns:
+            Ciphertext (includes authentication tag).
+
+        Raises:
+            UnsupportedCipherSuiteError: If AEAD is not supported.
+        """
         aead = self._aead_impl()
         return aead(key).encrypt(nonce, plaintext, aad)
 
     def aead_decrypt(self, key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> bytes:
-        """Decrypt using the active AEAD implementation."""
+        """Decrypt using the active AEAD implementation.
+
+        Args:
+            key: AEAD decryption key.
+            nonce: Nonce used for encryption.
+            ciphertext: Ciphertext to decrypt (includes authentication tag).
+            aad: Additional authenticated data.
+
+        Returns:
+            Decrypted plaintext.
+
+        Raises:
+            UnsupportedCipherSuiteError: If AEAD is not supported.
+            InvalidTag: If authentication fails.
+        """
         aead = self._aead_impl()
         return aead(key).decrypt(nonce, ciphertext, aad)
 
     def hmac_sign(self, key: bytes, data: bytes) -> bytes:
-        """Compute HMAC over data."""
+        """Compute HMAC over data.
+
+        Args:
+            key: HMAC key.
+            data: Data to authenticate.
+
+        Returns:
+            HMAC tag.
+        """
         h = hmac.HMAC(key, self._hash_algo())
         h.update(data)
         return h.finalize()
 
     def hmac_verify(self, key: bytes, data: bytes, tag: bytes) -> None:
-        """Verify HMAC tag, raising on mismatch."""
+        """Verify HMAC tag, raising on mismatch.
+
+        Args:
+            key: HMAC key.
+            data: Data that was authenticated.
+            tag: HMAC tag to verify.
+
+        Raises:
+            InvalidSignature: If verification fails.
+        """
         h = hmac.HMAC(key, self._hash_algo())
         h.update(data)
         h.verify(tag)
 
     def sign(self, private_key: bytes, data: bytes) -> bytes:
-        """Sign data according to the active signature scheme."""
+        """Sign data according to the active signature scheme.
+
+        Args:
+            private_key: Private key bytes (format depends on signature scheme).
+            data: Data to sign.
+
+        Returns:
+            Signature bytes.
+
+        Raises:
+            UnsupportedCipherSuiteError: If signature scheme is not supported.
+        """
         scheme = self._suite.signature
         if scheme == SignatureScheme.ED25519:
             sk = Ed25519PrivateKey.from_private_bytes(private_key)
@@ -167,7 +294,17 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported signature scheme")
 
     def verify(self, public_key: bytes, data: bytes, signature: bytes) -> None:
-        """Verify signature according to the active signature scheme."""
+        """Verify signature according to the active signature scheme.
+
+        Args:
+            public_key: Public key bytes (format depends on signature scheme).
+            data: Data that was signed.
+            signature: Signature bytes to verify.
+
+        Raises:
+            InvalidSignatureError: If signature verification fails.
+            UnsupportedCipherSuiteError: If signature scheme is not supported.
+        """
         scheme = self._suite.signature
         try:
             if scheme == SignatureScheme.ED25519:
@@ -200,18 +337,52 @@ class DefaultCryptoProvider(CryptoProvider):
         return struct.pack("!L", len(label)) + (label or b"") + struct.pack("!L", len(content)) + (content or b"")
 
     def sign_with_label(self, private_key: bytes, label: bytes, content: bytes) -> bytes:
-        """Sign serialized SignContent(label, content)."""
+        """Sign serialized SignContent(label, content) per RFC 9420 §5.1.2.
+
+        Args:
+            private_key: Private key bytes.
+            label: Domain separation label.
+            content: Content to sign.
+
+        Returns:
+            Signature bytes.
+        """
         data = self._encode_sign_content(label, content)
         return self.sign(private_key, data)
 
     def verify_with_label(self, public_key: bytes, label: bytes, content: bytes, signature: bytes) -> None:
-        """Verify signature over serialized SignContent(label, content)."""
+        """Verify signature over serialized SignContent(label, content) per RFC 9420 §5.1.2.
+
+        Args:
+            public_key: Public key bytes.
+            label: Domain separation label (prefixed with "MLS 1.0 ").
+            content: Content that was signed.
+            signature: Signature bytes to verify.
+
+        Raises:
+            InvalidSignatureError: If signature verification fails.
+        """
         full = b"MLS 1.0 " + (label or b"")
         data = self._encode_sign_content(full, content)
         self.verify(public_key, data, signature)
 
     def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
-        """HPKE seal using the active suite (cryptography backend)."""
+        """HPKE seal using the active suite (cryptography backend).
+
+        Implements HPKE Base mode seal (RFC 9180) using the cryptography library.
+
+        Args:
+            public_key: Recipient's HPKE public key.
+            info: Application-specific context information.
+            aad: Additional authenticated data.
+            ptxt: Plaintext to encrypt.
+
+        Returns:
+            Tuple of (encapsulated key (enc), ciphertext).
+
+        Raises:
+            ConfigurationError: If HPKE is not available in cryptography.
+        """
         return _hpke_seal_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -223,7 +394,24 @@ class DefaultCryptoProvider(CryptoProvider):
         )
 
     def hpke_open(self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
-        """HPKE open using the active suite (cryptography backend)."""
+        """HPKE open using the active suite (cryptography backend).
+
+        Implements HPKE Base mode open (RFC 9180) using the cryptography library.
+
+        Args:
+            private_key: Recipient's HPKE private key.
+            kem_output: Encapsulated key (enc) from seal operation.
+            info: Application-specific context information.
+            aad: Additional authenticated data.
+            ctxt: Ciphertext to decrypt.
+
+        Returns:
+            Decrypted plaintext.
+
+        Raises:
+            ConfigurationError: If HPKE is not available in cryptography.
+            InvalidTag: If decryption or authentication fails.
+        """
         return _hpke_open_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -236,7 +424,14 @@ class DefaultCryptoProvider(CryptoProvider):
         )
 
     def generate_key_pair(self) -> tuple[bytes, bytes]:
-        """Generate a KEM key pair compatible with the active suite."""
+        """Generate a KEM key pair compatible with the active suite.
+
+        Returns:
+            Tuple of (private_key_bytes, public_key_bytes).
+
+        Raises:
+            UnsupportedCipherSuiteError: If KEM is not supported.
+        """
         if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
             sk = x25519.X25519PrivateKey.generate()
             pk = sk.public_key()
@@ -276,12 +471,24 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported KEM")
 
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
-        """
-        Derive a deterministic KEM key pair for the active suite.
+        """Derive a deterministic KEM key pair for the active suite.
+
         Implements an HPKE-style DeriveKeyPair approximation using the suite's KDF:
-          prk = HKDF-Extract("dkp_prk", seed)
-          skm = HKDF-Expand(prk, "sk", Nsk)
-          map skm -> private key (with curve-specific clamping/mod reduction)
+        - prk = HKDF-Extract("dkp_prk", seed)
+        - skm = HKDF-Expand(prk, "sk", Nsk)
+        - map skm -> private key (with curve-specific clamping/mod reduction)
+
+        For X25519/X448, applies RFC 7748 clamping. For P-256/P-521, uses
+        modular reduction to ensure valid private key range.
+
+        Args:
+            seed: Seed bytes for deterministic key generation.
+
+        Returns:
+            Tuple of (private_key_bytes, public_key_bytes).
+
+        Raises:
+            UnsupportedCipherSuiteError: If KEM is not supported for derivation.
         """
         kem = self._suite.kem
         if kem == KEM.DHKEM_X25519_HKDF_SHA256:
@@ -349,7 +556,14 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported KEM for derive_key_pair")
 
     def kem_pk_size(self) -> int:
-        """Return the raw public key size for KEMs with fixed-length encodings."""
+        """Return the raw public key size for KEMs with fixed-length encodings.
+
+        Returns:
+            Public key size in bytes for fixed-length KEMs (X25519/X448).
+
+        Raises:
+            NotImplementedError: For EC KEMs with DER encoding (variable length).
+        """
         if self._suite.kem == KEM.DHKEM_X25519_HKDF_SHA256:
             return 32
         if self._suite.kem == KEM.DHKEM_X448_HKDF_SHA512:
@@ -363,6 +577,14 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported KEM")
 
     def aead_key_size(self) -> int:
+        """Return the key size in bytes for the active AEAD.
+
+        Returns:
+            Key size in bytes (16 for AES-128-GCM, 32 for AES-256-GCM/ChaCha20Poly1305).
+
+        Raises:
+            UnsupportedCipherSuiteError: If AEAD is not supported.
+        """
         if self._suite.aead == AEAD.AES_128_GCM:
             return 16
         if self._suite.aead in (AEAD.AES_256_GCM, AEAD.CHACHA20_POLY1305):
@@ -370,20 +592,53 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unsupported AEAD")
 
     def aead_nonce_size(self) -> int:
+        """Return the nonce size in bytes for the active AEAD.
+
+        Returns:
+            Nonce size in bytes (all RFC-defined AEADs use 96-bit/12-byte nonces).
+        """
         # All RFC-defined AEADs use 96-bit nonces
         return 12
 
     def kdf_hash_len(self) -> int:
-        """Digest length for the active KDF's hash function (bytes)."""
+        """Return the digest length for the active KDF's hash function.
+
+        Returns:
+            Hash digest length in bytes.
+        """
         return self._hash_algo().digest_size
 
     # --- RFC 9420 labeled helpers ---
     def expand_with_label(self, secret: bytes, label: bytes, context: bytes, length: int) -> bytes:
+        """HKDF-Expand with RFC 9420 label formatting.
+
+        Formats info as: uint16(length) || opaque8("MLS 1.0 " + label) || opaque16(context)
+
+        Args:
+            secret: Secret to expand.
+            label: Label for domain separation.
+            context: Context bytes.
+            length: Desired output length in bytes.
+
+        Returns:
+            Expanded secret of the requested length.
+        """
         # info := uint16(length) || opaque8("MLS 1.0 " + label) || opaque16(context)
         full_label = b"MLS 1.0 " + (label or b"")
         info = _write_uint16(length) + _write_opaque8(full_label) + _write_opaque16(context or b"")
         return self.kdf_expand(secret, info, length)
 
     def derive_secret(self, secret: bytes, label: bytes) -> bytes:
-        """Expand with RFC label to Hash.length with empty context."""
+        """Expand with RFC label to Hash.length with empty context.
+
+        Convenience wrapper for expand_with_label with empty context and
+        length equal to the hash digest size.
+
+        Args:
+            secret: Secret to derive from.
+            label: Label for domain separation.
+
+        Returns:
+            Derived secret of length Hash.length.
+        """
         return self.expand_with_label(secret, label, b"", self.kdf_hash_len())

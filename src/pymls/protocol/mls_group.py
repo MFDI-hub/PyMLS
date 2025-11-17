@@ -1,9 +1,22 @@
-"""
-Core group state machine for MLS.
+"""Core group state machine for MLS.
+
+This module implements the core MLS group state machine as specified in RFC 9420.
+It handles group creation, proposal processing, commit creation and processing,
+external commits, and application message protection.
+
+The MLSGroup class encapsulates:
+- Ratchet tree management
+- Key schedule derivation
+- Transcript hash maintenance
+- Pending proposal queue
+- Proposal reference caching
+- External signing key management
+- X.509 trust root configuration
 
 Rationale:
 - Implements RFC 9420 §8 (Group operations), including commit processing,
-  external commit (MVP), and application protection (§9).
+  external commit, and application protection (§9).
+- Provides both high-level (Group) and low-level (MLSGroup) APIs.
 """
 from .data_structures import Proposal, Welcome, GroupContext, AddProposal, UpdateProposal, RemoveProposal, PreSharedKeyProposal, ExternalInitProposal, ReInitProposal, Sender, Signature, Commit, MLSVersion, CipherSuite, GroupInfo, EncryptedGroupSecrets, ProposalOrRef, ProposalOrRefType
 from .key_packages import KeyPackage, LeafNode
@@ -41,17 +54,33 @@ class MLSGroup:
 
     This class encapsulates the ratchet tree, key schedule, transcript hashes,
     pending proposals, and helpers for producing and consuming MLS handshake
-    and application messages. The implementation targets RFC 9420 semantics
-    with some MVP simplifications noted in method docs.
+    and application messages. The implementation targets RFC 9420 semantics.
+
+    The class manages:
+    - Ratchet tree: Binary tree of HPKE key pairs for group members
+    - Key schedule: Epoch secret derivation and branch secrets
+    - Secret tree: Per-sender encryption keys for application/handshake traffic
+    - Transcript hashes: Interim and confirmed transcript hashes
+    - Pending proposals: Queue of proposals awaiting commit
+    - Proposal cache: Map of proposal references to proposals
+    - External keys: Key pair for external commits
+
+    Most users should use the high-level `Group` API instead of this class
+    directly. This class is exposed for advanced use cases requiring direct
+    access to protocol-level operations.
+
+    See RFC 9420 §8 (Group operations) for the complete specification.
     """
     def __init__(self, group_id: bytes, crypto_provider: CryptoProvider, own_leaf_index: int, secret_tree_window_size: int = 128):
         """Initialize a new MLSGroup wrapper around cryptographic providers.
 
-        Parameters
-        - group_id: Application-chosen identifier for the group.
-        - crypto_provider: Active CryptoProvider instance.
-        - own_leaf_index: Local member's leaf index in the group ratchet tree,
-          or -1 for groups created from a Welcome before inserting self.
+        Args:
+            group_id: Application-chosen identifier for the group.
+            crypto_provider: Active CryptoProvider instance.
+            own_leaf_index: Local member's leaf index in the group ratchet tree,
+                or -1 for groups created from a Welcome before inserting self.
+            secret_tree_window_size: Size of the skipped-keys window for
+                out-of-order decryption (default: 128).
         """
         self._group_id = group_id
         self._crypto_provider = crypto_provider
@@ -76,14 +105,20 @@ class MLSGroup:
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto_provider: CryptoProvider) -> "MLSGroup":
         """Create a new group with an initial member represented by key_package.
 
-        Parameters
-        - group_id: New group identifier.
-        - key_package: Joiner's KeyPackage to insert as the first leaf.
-        - crypto_provider: Active CryptoProvider.
+        Creates a new MLS group with epoch 0, initializes the ratchet tree with
+        the provided key package, derives initial group secrets, and bootstraps
+        the transcript hash per RFC §11.
 
-        Returns
-        - Initialized MLSGroup instance with epoch 0 and derived secrets.
+        Args:
+            group_id: New group identifier.
+            key_package: Joiner's KeyPackage to insert as the first leaf.
+            crypto_provider: Active CryptoProvider.
 
+        Returns:
+            Initialized MLSGroup instance with epoch 0 and derived secrets.
+
+        Raises:
+            PyMLSError: If group creation fails.
         """
         group = cls(group_id, crypto_provider, 0)
         # Insert initial member
@@ -151,25 +186,25 @@ class MLSGroup:
 
     @classmethod
     def from_welcome(cls, welcome: Welcome, hpke_private_key: bytes, crypto_provider: CryptoProvider) -> "MLSGroup":
-        """Join a group using a Welcome message (MVP flow).
+        """Join a group using a Welcome message.
 
-        Steps
-        - Attempt to open each EncryptedGroupSecrets with the provided HPKE private key.
-        - Decrypt GroupInfo using the recovered epoch secret.
-        - Optionally verify GroupInfo using external or tree-provided public keys.
-        - Initialize GroupContext, KeySchedule, SecretTree, and optional ratchet tree.
+        Processes a Welcome message to join an existing MLS group. The method:
+        1. Attempts to open each EncryptedGroupSecrets with the provided HPKE private key
+        2. Decrypts GroupInfo using the recovered joiner secret
+        3. Verifies GroupInfo signature using external or tree-provided public keys
+        4. Initializes GroupContext, KeySchedule, SecretTree, and ratchet tree
 
-        Parameters
-        - welcome: Welcome structure received out-of-band.
-        - hpke_private_key: Private key for HPKE to recover the epoch secret.
-        - crypto_provider: Active CryptoProvider.
+        Args:
+            welcome: Welcome structure received out-of-band.
+            hpke_private_key: Private key for HPKE to recover the joiner secret.
+            crypto_provider: Active CryptoProvider.
 
-        Returns
-        - MLSGroup instance initialized from the Welcome.
+        Returns:
+            MLSGroup instance initialized from the Welcome.
 
-        Raises
-        - CommitValidationError: If no EncryptedGroupSecrets can be opened.
-        - InvalidSignatureError: If a present GroupInfo signature fails validation.
+        Raises:
+            CommitValidationError: If no EncryptedGroupSecrets can be opened.
+            InvalidSignatureError: If GroupInfo signature verification fails.
         """
         # Try each secret until one opens
         joiner_secret = None
@@ -334,18 +369,21 @@ class MLSGroup:
     def external_commit(self, key_package: KeyPackage, kem_public_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create and sign a path-less external commit adding a new member.
 
-        Queues an ExternalInit proposal and an Add proposal, then emits a Commit
-        without an UpdatePath, signed with the group's external signing key.
+        Creates an external commit that allows an external party (not currently
+        a member) to join the group. The commit includes an ExternalInit proposal
+        and an Add proposal, but no UpdatePath (since the external party has no
+        existing leaf node). The commit is signed with the group's external
+        signing key.
 
-        Parameters
-        - key_package: KeyPackage of the member to add.
-        - kem_public_key: External HPKE public key to include in ExternalInit.
+        Args:
+            key_package: KeyPackage of the member to add.
+            kem_public_key: External HPKE public key to include in ExternalInit.
 
-        Returns
-        - (MLSPlaintext commit, list of Welcome messages for new members)
+        Returns:
+            Tuple of (MLSPlaintext commit, list of Welcome messages for new members).
 
-        Raises
-        - ConfigurationError: If no external private key is configured.
+        Raises:
+            ConfigurationError: If no external private key is configured.
         """
         if not self._external_private_key:
             raise ConfigurationError("no external private key configured for this group")
@@ -443,7 +481,19 @@ class MLSGroup:
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
     def create_psk_proposal(self, psk_id: bytes, signing_key: bytes) -> MLSPlaintext:
-        """Create and sign a PreSharedKey proposal identified by psk_id."""
+        """Create and sign a PreSharedKey proposal identified by psk_id.
+
+        Creates a PSK proposal that will be bound to a commit via a PSK binder
+        when included in a commit. The PSK will be integrated into the epoch
+        key schedule.
+
+        Args:
+            psk_id: Identifier for the PSK.
+            signing_key: Private signing key for authenticating the proposal.
+
+        Returns:
+            MLSPlaintext containing the PSK proposal.
+        """
         if self._group_context is None or self._key_schedule is None:
             raise PyMLSError("group not initialized")
         proposal = PreSharedKeyProposal(psk_id)
@@ -942,8 +992,17 @@ class MLSGroup:
     def process_external_commit(self, message: MLSPlaintext) -> None:
         """Process a commit authenticated by the group's external signing key.
 
-        Verifies signature using the configured external public key and proceeds
-        without membership tag verification (not required for external commits).
+        Processes an external commit received from an external party. Verifies
+        the signature using the configured external public key (membership tag
+        verification is not required for external commits per RFC 9420).
+
+        Args:
+            message: MLSPlaintext containing the external commit.
+
+        Raises:
+            ConfigurationError: If no external public key is configured.
+            CommitValidationError: If commit validation fails.
+            InvalidSignatureError: If signature verification fails.
         """
         if not self._external_public_key:
             raise ConfigurationError("no external public key configured for this group")
@@ -1045,18 +1104,52 @@ class MLSGroup:
         self._confirmed_transcript_hash = confirmed
 
     def reinit_group_to(self, new_group_id: bytes, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
-        """Queue a ReInit proposal and create a commit (with update path)."""
+        """Queue a ReInit proposal and create a commit (with update path).
+
+        Creates a re-initialization commit that migrates the group to a new
+        group_id and resets the epoch to 0. The commit includes an update path.
+
+        Args:
+            new_group_id: New group identifier for the reinitialized group.
+            signing_key: Private signing key for authenticating the commit.
+
+        Returns:
+            Tuple of (MLSPlaintext commit, list of Welcome messages).
+        """
         self._pending_proposals.append(ReInitProposal(new_group_id))
         return self.create_commit(signing_key)
 
     def get_resumption_psk(self) -> bytes:
-        """Export current resumption PSK from the key schedule."""
+        """Export current resumption PSK from the key schedule.
+
+        Returns the resumption PSK for the current epoch, which can be used
+        to resume the group in a future epoch.
+
+        Returns:
+            Resumption PSK bytes.
+
+        Raises:
+            PyMLSError: If group is not initialized.
+        """
         if self._key_schedule is None:
             raise PyMLSError("group not initialized")
         return self._key_schedule.resumption_psk
 
     def protect(self, app_data: bytes) -> MLSCiphertext:
-        """Encrypt application data into MLSCiphertext for the current epoch."""
+        """Encrypt application data into MLSCiphertext for the current epoch.
+
+        Encrypts application data using the current epoch's application secret
+        and the secret tree. The ciphertext includes sender authentication.
+
+        Args:
+            app_data: Plaintext application data to encrypt.
+
+        Returns:
+            MLSCiphertext containing the encrypted data.
+
+        Raises:
+            PyMLSError: If group is not initialized or a commit is pending.
+        """
         if self._group_context is None or self._key_schedule is None or self._secret_tree is None:
             raise PyMLSError("group not initialized")
         if self._commit_pending or self._received_commit_unapplied:
@@ -1073,7 +1166,20 @@ class MLSGroup:
         )
 
     def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:
-        """Decrypt an MLSCiphertext and return (sender_leaf_index, plaintext)."""
+        """Decrypt MLSCiphertext and return (sender_leaf_index, plaintext).
+
+        Decrypts application ciphertext using the secret tree and returns the
+        sender index and plaintext.
+
+        Args:
+            message: MLSCiphertext to decrypt.
+
+        Returns:
+            Tuple of (sender_leaf_index, plaintext).
+
+        Raises:
+            PyMLSError: If decryption fails or group is not initialized.
+        """
         if self._key_schedule is None or self._secret_tree is None:
             raise PyMLSError("group not initialized")
         return unprotect_content_application(

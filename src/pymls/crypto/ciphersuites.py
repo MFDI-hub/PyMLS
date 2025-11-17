@@ -1,4 +1,10 @@
-"""MLS ciphersuite registry and helpers (RFC 9420 §16.3)."""
+"""MLS ciphersuite registry and helpers (RFC 9420 §16.3).
+
+This module provides the ciphersuite registry for MLS, including definitions
+for all RFC 9420 §16.3 ciphersuites. It includes enums for KEM, KDF, AEAD,
+and signature schemes, as well as lookup functions for ciphersuites by ID
+or name.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +13,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 
 class KEM(IntEnum):
-    """Key Encapsulation Mechanisms used by MLS ciphersuites (RFC 9420 §16.3)."""
+    """Key Encapsulation Mechanisms used by MLS ciphersuites (RFC 9420 §16.3).
+
+    Enumeration of KEM algorithms supported by MLS ciphersuites.
+    """
     DHKEM_P256_HKDF_SHA256 = 0x0010
     DHKEM_P384_HKDF_SHA384 = 0x0011
     DHKEM_P521_HKDF_SHA512 = 0x0012
@@ -16,14 +25,20 @@ class KEM(IntEnum):
 
 
 class KDF(IntEnum):
-    """Key Derivation Functions used by MLS ciphersuites (RFC 9420 §16.3)."""
+    """Key Derivation Functions used by MLS ciphersuites (RFC 9420 §16.3).
+
+    Enumeration of KDF algorithms (all use HKDF with various hash functions).
+    """
     HKDF_SHA256 = 0x0001
     HKDF_SHA384 = 0x0002
     HKDF_SHA512 = 0x0003
 
 
 class AEAD(IntEnum):
-    """AEAD algorithms used by MLS ciphersuites (RFC 9420 §16.3)."""
+    """AEAD algorithms used by MLS ciphersuites (RFC 9420 §16.3).
+
+    Enumeration of authenticated encryption algorithms supported by MLS.
+    """
     AES_128_GCM = 0x0001
     AES_256_GCM = 0x0002
     CHACHA20_POLY1305 = 0x0003
@@ -43,9 +58,23 @@ class SignatureScheme(Enum):
 
 @dataclass(frozen=True)
 class MlsCiphersuite:
-    """
-    MLS ciphersuite definition combining KEM, KDF, AEAD, and signature scheme.
-    See RFC 9420 §16.3.
+    """MLS ciphersuite definition combining KEM, KDF, AEAD, and signature scheme.
+
+    A ciphersuite defines the complete set of cryptographic algorithms used
+    by an MLS group. See RFC 9420 §16.3 for the complete specification.
+
+    Attributes:
+        suite_id: RFC 9420 ciphersuite identifier (e.g., 0x0001).
+        name: Canonical name of the ciphersuite.
+        kem: Key Encapsulation Mechanism.
+        kdf: Key Derivation Function.
+        aead: Authenticated Encryption with Associated Data algorithm.
+        signature: Signature scheme.
+
+    Example:
+        >>> suite = get_ciphersuite_by_id(0x0001)
+        >>> print(suite.name)
+        MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
     """
 
     suite_id: int
@@ -57,7 +86,11 @@ class MlsCiphersuite:
 
     @property
     def triple(self) -> Tuple[KEM, KDF, AEAD]:
-        """Return (KEM, KDF, AEAD) tuple for convenience comparisons."""
+        """Return (KEM, KDF, AEAD) tuple for convenience comparisons.
+
+        Returns:
+            Tuple of (KEM, KDF, AEAD) components.
+        """
         return (self.kem, self.kdf, self.aead)
 
 
@@ -136,32 +169,73 @@ _REGISTRY_BY_NAME: Dict[str, MlsCiphersuite] = {
 
 
 def get_ciphersuite_by_id(suite_id: int) -> Optional[MlsCiphersuite]:
-    """Look up a ciphersuite by RFC suite id."""
+    """Look up a ciphersuite by RFC suite id.
+
+    Args:
+        suite_id: RFC 9420 ciphersuite identifier (e.g., 0x0001).
+
+    Returns:
+        MlsCiphersuite instance if found, None otherwise.
+
+    Example:
+        >>> suite = get_ciphersuite_by_id(0x0001)
+        >>> print(suite.name)
+    """
     return _REGISTRY_BY_ID.get(suite_id)
 
 
 def get_ciphersuite_by_name(name: str) -> Optional[MlsCiphersuite]:
-    """Look up a ciphersuite by its canonical name."""
+    """Look up a ciphersuite by its canonical name.
+
+    Args:
+        name: Canonical ciphersuite name (e.g., "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519").
+
+    Returns:
+        MlsCiphersuite instance if found, None otherwise.
+    """
     return _REGISTRY_BY_NAME.get(name)
 
 
 def all_ciphersuites() -> Iterable[MlsCiphersuite]:
-    """Iterable over registered ciphersuites (by id ascending)."""
+    """Iterable over registered ciphersuites (by id ascending).
+
+    Returns:
+        Iterable of all registered MlsCiphersuite instances, sorted by suite_id.
+    """
     return _REGISTRY_BY_ID.values()
 
 
 def list_ciphersuite_ids() -> List[int]:
-    """List of all registered RFC suite ids (sorted)."""
+    """List of all registered RFC suite ids (sorted).
+
+    Returns:
+        Sorted list of all registered ciphersuite IDs.
+    """
     return sorted(_REGISTRY_BY_ID.keys())
 
 
 def list_ciphersuite_names() -> List[str]:
-    """List of all registered ciphersuite names (sorted)."""
+    """List of all registered ciphersuite names (sorted).
+
+    Returns:
+        Sorted list of all registered ciphersuite names.
+    """
     return sorted(_REGISTRY_BY_NAME.keys())
 
 
 def find_by_triple(triple: Tuple[KEM, KDF, AEAD]) -> Optional[MlsCiphersuite]:
-    """Find a ciphersuite matching the given (KEM, KDF, AEAD) triple."""
+    """Find a ciphersuite matching the given (KEM, KDF, AEAD) triple.
+
+    Args:
+        triple: Tuple of (KEM, KDF, AEAD) to search for.
+
+    Returns:
+        MlsCiphersuite instance if a matching ciphersuite is found, None otherwise.
+
+    Example:
+        >>> triple = (KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM)
+        >>> suite = find_by_triple(triple)
+    """
     kem, kdf, aead = triple
     for cs in _REGISTRY_BY_ID.values():
         if (cs.kem, cs.kdf, cs.aead) == (kem, kdf, aead):

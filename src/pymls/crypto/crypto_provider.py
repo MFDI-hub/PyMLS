@@ -1,10 +1,35 @@
-"""Abstract cryptographic provider interface used by the protocol layer."""
+"""Abstract cryptographic provider interface used by the protocol layer.
+
+This module defines the CryptoProvider abstract base class, which specifies
+all cryptographic operations required by MLS. Implementations must provide
+concrete implementations for all abstract methods.
+
+The CryptoProvider interface abstracts away the specific cryptographic library
+used, allowing different backends (e.g., cryptography, OpenSSL bindings) to
+be used interchangeably.
+"""
 from abc import ABC, abstractmethod
 from .ciphersuites import MlsCiphersuite
 
 
 class CryptoProvider(ABC):
-    """Interface for all cryptographic operations required by PyMLS."""
+    """Abstract interface for all cryptographic operations required by PyMLS.
+
+    This class defines the interface that all cryptographic providers must
+    implement. It includes methods for:
+    - Ciphersuite management
+    - Key derivation (HKDF)
+    - Hashing
+    - Authenticated encryption (AEAD)
+    - HMAC operations
+    - Digital signatures
+    - HPKE operations
+    - Key generation and derivation
+
+    Subclasses should implement all abstract methods to provide concrete
+    cryptographic functionality. See DefaultCryptoProvider for a reference
+    implementation using the cryptography library.
+    """
     @property
     @abstractmethod
     def supported_ciphersuites(self):

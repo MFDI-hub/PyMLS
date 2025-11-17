@@ -11,48 +11,155 @@ from ..mls.exceptions import CommitValidationError
 
 class Group:
     """
-    Ergonomic wrapper around the protocol MLSGroup.
+    High-level API for MLS group operations (RFC 9420).
 
-    Rationale:
-    - Implements RFC 9420 group lifecycle interfaces, delegating to `protocol.MLSGroup`.
-    - See RFC 9420 §8 (Group operations) and Appendix C/D (tree representations).
+    This class provides an ergonomic wrapper around the protocol-level MLSGroup,
+    implementing RFC 9420 group lifecycle interfaces. It delegates to `protocol.MLSGroup`
+    for core functionality while providing a simpler API surface.
+
+    See RFC 9420 §8 (Group operations) and Appendix C/D (tree representations).
+
+    Example:
+        >>> crypto = DefaultCryptoProvider()
+        >>> group = Group.create(b"group1", key_package, crypto)
+        >>> proposal = group.add(other_key_package, signing_key)
+        >>> commit, welcomes = group.commit(signing_key)
     """
 
     def __init__(self, inner: _ProtocolMLSGroup):
+        """Initialize a Group wrapper around a protocol MLSGroup.
+
+        Args:
+            inner: The underlying protocol MLSGroup instance.
+        """
         self._inner = inner
 
     @classmethod
     def create(cls, group_id: bytes, key_package: KeyPackage, crypto: CryptoProvider) -> "Group":
-        """Create a new Group with the initial member from a KeyPackage."""
+        """Create a new MLS group with an initial member.
+
+        Creates a new group with epoch 0, initializes the ratchet tree with the
+        provided key package, and derives initial group secrets.
+
+        Args:
+            group_id: Application-chosen identifier for the group.
+            key_package: KeyPackage of the initial member to add.
+            crypto: CryptoProvider instance for cryptographic operations.
+
+        Returns:
+            A new Group instance with the initial member.
+
+        Raises:
+            PyMLSError: If group creation fails.
+        """
         return cls(_ProtocolMLSGroup.create(group_id=group_id, key_package=key_package, crypto_provider=crypto))
 
     @classmethod
     def join_from_welcome(cls, welcome: Welcome, hpke_private_key: bytes, crypto: CryptoProvider) -> "Group":
-        """Join an existing group using a Welcome and HPKE private key."""
+        """Join an existing group using a Welcome message.
+
+        Processes a Welcome message received out-of-band, decrypts the GroupInfo,
+        verifies signatures, and initializes group state.
+
+        Args:
+            welcome: Welcome message containing encrypted group secrets.
+            hpke_private_key: HPKE private key for decrypting EncryptedGroupSecrets.
+            crypto: CryptoProvider instance for cryptographic operations.
+
+        Returns:
+            A new Group instance initialized from the Welcome.
+
+        Raises:
+            CommitValidationError: If no EncryptedGroupSecrets can be opened.
+            InvalidSignatureError: If GroupInfo signature verification fails.
+        """
         return cls(_ProtocolMLSGroup.from_welcome(welcome=welcome, hpke_private_key=hpke_private_key, crypto_provider=crypto))
 
     def add(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
-        """Create an Add proposal for the provided KeyPackage."""
+        """Create an Add proposal to add a new member to the group.
+
+        Args:
+            key_package: KeyPackage of the member to add.
+            signing_key: Private signing key for authenticating the proposal.
+
+        Returns:
+            MLSPlaintext containing the Add proposal.
+
+        Raises:
+            CommitValidationError: If the KeyPackage is invalid.
+        """
         return self._inner.create_add_proposal(key_package, signing_key)
 
     def update(self, leaf_node: LeafNode, signing_key: bytes) -> MLSPlaintext:
-        """Create an Update proposal with the provided LeafNode."""
+        """Create an Update proposal to refresh the sender's leaf node.
+
+        Args:
+            leaf_node: New LeafNode with updated keys.
+            signing_key: Private signing key for authenticating the proposal.
+
+        Returns:
+            MLSPlaintext containing the Update proposal.
+        """
         return self._inner.create_update_proposal(leaf_node, signing_key)
 
     def remove(self, removed_index: int, signing_key: bytes) -> MLSPlaintext:
-        """Create a Remove proposal for the member at removed_index."""
+        """Create a Remove proposal to remove a member from the group.
+
+        Args:
+            removed_index: Leaf index of the member to remove.
+            signing_key: Private signing key for authenticating the proposal.
+
+        Returns:
+            MLSPlaintext containing the Remove proposal.
+        """
         return self._inner.create_remove_proposal(removed_index, signing_key)
 
     def process_proposal(self, message: MLSPlaintext, sender_leaf_index: int) -> None:
-        """Verify and enqueue a received proposal from sender_leaf_index."""
+        """Verify and enqueue a received proposal.
+
+        Verifies the proposal's signature and membership tag, validates credentials
+        if applicable, and caches it for inclusion in a future commit.
+
+        Args:
+            message: MLSPlaintext containing the proposal.
+            sender_leaf_index: Leaf index of the proposal sender.
+
+        Raises:
+            CommitValidationError: If verification fails or sender is invalid.
+            InvalidSignatureError: If signature or membership tag verification fails.
+        """
         return self._inner.process_proposal(message, Sender(sender_leaf_index))
 
     def commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
-        """Create and return a Commit along with Welcome messages for additions."""
+        """Create a commit with all pending proposals.
+
+        Creates a commit message that includes all pending proposals, generates
+        an update path if needed, and produces Welcome messages for new members.
+
+        Args:
+            signing_key: Private signing key for authenticating the commit.
+
+        Returns:
+            Tuple of (commit MLSPlaintext, list of Welcome messages for new members).
+
+        Raises:
+            PyMLSError: If group is not initialized or commit creation fails.
+        """
         return self._inner.create_commit(signing_key)
 
     def apply_commit(self, message: MLSPlaintext, sender_leaf_index: int) -> None:
-        """Verify and apply a Commit from sender_leaf_index."""
+        """Verify and apply a received commit.
+
+        Verifies the commit's signature and membership tag, validates proposal
+        references, applies changes to the ratchet tree, and updates group state.
+
+        Args:
+            message: MLSPlaintext containing the commit.
+            sender_leaf_index: Leaf index of the commit sender.
+
+        Raises:
+            ValueError: If commit validation fails (converted from CommitValidationError).
+        """
         try:
             return self._inner.process_commit(message, sender_leaf_index)
         except CommitValidationError as e:
@@ -60,20 +167,54 @@ class Group:
             raise ValueError(str(e)) from e
 
     def protect(self, application_data: bytes) -> MLSCiphertext:
-        """Encrypt application_data as MLSCiphertext for this group."""
+        """Encrypt application data for this group.
+
+        Encrypts application data using the current epoch's application secret
+        and the secret tree.
+
+        Args:
+            application_data: Plaintext application data to encrypt.
+
+        Returns:
+            MLSCiphertext containing the encrypted data.
+
+        Raises:
+            PyMLSError: If group is not initialized or a commit is pending.
+        """
         return self._inner.protect(application_data)
 
     def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:
-        """Decrypt MLSCiphertext and return (sender_leaf_index, plaintext)."""
+        """Decrypt application ciphertext.
+
+        Decrypts MLSCiphertext using the secret tree and returns the sender
+        index and plaintext.
+
+        Args:
+            message: MLSCiphertext to decrypt.
+
+        Returns:
+            Tuple of (sender_leaf_index, plaintext).
+
+        Raises:
+            PyMLSError: If decryption fails or group is not initialized.
+        """
         return self._inner.unprotect(message)
 
     @property
     def epoch(self) -> int:
-        """Current group epoch."""
+        """Current group epoch.
+
+        Returns:
+            The current epoch number (starts at 0).
+        """
         return self._inner.get_epoch()
 
     @property
     def group_id(self) -> bytes:
-        """Group identifier."""
+        """Group identifier.
+
+        Returns:
+            The group identifier bytes.
+        """
         return self._inner.get_group_id()
 

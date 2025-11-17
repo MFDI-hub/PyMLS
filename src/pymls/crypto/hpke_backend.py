@@ -1,13 +1,21 @@
 """HPKE backend wrapper using cryptography (RFC 9180) if available.
 
-This module provides a minimal interface used by DefaultCryptoProvider:
-- hpke_seal(...)
-- hpke_open(...)
+This module provides HPKE (Hybrid Public Key Encryption) operations using
+the cryptography library when available. It implements RFC 9180 Base mode
+for HPKE seal and open operations.
+
+The module provides a minimal interface used by DefaultCryptoProvider:
+- hpke_seal(...): Encrypt data using HPKE Base mode
+- hpke_open(...): Decrypt data using HPKE Base mode
 
 Behavior:
 - If cryptography exposes HPKE primitives for the active environment/version,
   these functions will use them.
-- Otherwise, they raise ConfigurationError with guidance.
+- Otherwise, they raise ConfigurationError with guidance to upgrade cryptography.
+
+Note:
+    HPKE support requires cryptography >= 41.0.0. The library will fail
+    fast with a clear error message if HPKE is not available.
 """
 from __future__ import annotations
 
@@ -79,9 +87,36 @@ def hpke_seal(
     aad: bytes,
     plaintext: bytes,
 ) -> Tuple[bytes, bytes]:
-    """
-    HPKE base mode seal: returns (enc, ciphertext).
-    This implementation uses cryptography's HPKE (RFC 9180) Base mode.
+    """HPKE base mode seal: returns (enc, ciphertext).
+
+    Implements HPKE Base mode seal operation (RFC 9180) using the cryptography
+    library. Encrypts plaintext for the recipient using their public key.
+
+    Args:
+        kem: Key Encapsulation Mechanism to use.
+        kdf: Key Derivation Function to use.
+        aead: Authenticated Encryption algorithm to use.
+        recipient_public_key: Recipient's HPKE public key.
+        info: Application-specific context information.
+        aad: Additional authenticated data.
+        plaintext: Plaintext to encrypt.
+
+    Returns:
+        Tuple of (encapsulated key (enc), ciphertext).
+
+    Raises:
+        ConfigurationError: If HPKE is not available in cryptography.
+
+    Example:
+        >>> enc, ciphertext = hpke_seal(
+        ...     kem=KEM.DHKEM_X25519_HKDF_SHA256,
+        ...     kdf=KDF.HKDF_SHA256,
+        ...     aead=AEAD.AES_128_GCM,
+        ...     recipient_public_key=pk_bytes,
+        ...     info=b"context",
+        ...     aad=b"",
+        ...     plaintext=b"secret"
+        ... )
     """
     _ensure_hpke_available()
     _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
@@ -105,9 +140,39 @@ def hpke_open(
     aad: bytes,
     ciphertext: bytes,
 ) -> bytes:
-    """
-    HPKE base mode open: returns plaintext.
-    This implementation uses cryptography's HPKE (RFC 9180) Base mode.
+    """HPKE base mode open: returns plaintext.
+
+    Implements HPKE Base mode open operation (RFC 9180) using the cryptography
+    library. Decrypts ciphertext using the recipient's private key.
+
+    Args:
+        kem: Key Encapsulation Mechanism used for encryption.
+        kdf: Key Derivation Function used for encryption.
+        aead: Authenticated Encryption algorithm used for encryption.
+        recipient_private_key: Recipient's HPKE private key.
+        kem_output: Encapsulated key (enc) from seal operation.
+        info: Application-specific context information (must match seal).
+        aad: Additional authenticated data (must match seal).
+        ciphertext: Ciphertext to decrypt.
+
+    Returns:
+        Decrypted plaintext.
+
+    Raises:
+        ConfigurationError: If HPKE is not available in cryptography.
+        InvalidTag: If decryption or authentication fails.
+
+    Example:
+        >>> plaintext = hpke_open(
+        ...     kem=KEM.DHKEM_X25519_HKDF_SHA256,
+        ...     kdf=KDF.HKDF_SHA256,
+        ...     aead=AEAD.AES_128_GCM,
+        ...     recipient_private_key=sk_bytes,
+        ...     kem_output=enc,
+        ...     info=b"context",
+        ...     aad=b"",
+        ...     ciphertext=ciphertext
+        ... )
     """
     _ensure_hpke_available()
     _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
