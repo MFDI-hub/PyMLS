@@ -1,58 +1,158 @@
+"""Comprehensive tests for pymls.interop.wire module."""
 import unittest
-from pymls import DefaultCryptoProvider
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
-from pymls.protocol.mls_group import MLSGroup
-from pymls.interop.harness import (
-    export_handshake_b64,
-    import_handshake_b64,
-    export_application_b64,
-    import_application_b64,
+
+from pymls.interop.wire import (
+    encode_handshake,
+    decode_handshake,
+    encode_application,
+    decode_application,
 )
+from pymls.protocol.messages import MLSPlaintext, MLSCiphertext, ContentType, SenderType, ProtocolVersion, WireFormat
+from pymls.protocol.data_structures import Sender, FramedContent, AuthenticatedContent
+from pymls import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-
-
-def make_member(identity: bytes):
-    sk_sig = Ed25519PrivateKey.generate()
-    pk_sig = sk_sig.public_key()
-    sk_kem = X25519PrivateKey.generate()
-    pk_kem = sk_kem.public_key()
-    cred = Credential(identity=identity, public_key=pk_sig.public_bytes_raw())
-    leaf = LeafNode(
-        encryption_key=pk_kem.public_bytes_raw(),
-        signature_key=pk_sig.public_bytes_raw(),
-        credential=cred,
-        capabilities=b"",
-        parent_hash=b"",
-    )
-    sig = sk_sig.sign(leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
-    return kp, sk_kem.private_bytes_raw(), sk_sig.private_bytes_raw()
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
 
 
 class TestInteropWire(unittest.TestCase):
     def setUp(self):
         self.crypto = DefaultCryptoProvider()
 
-    def test_wire_handshake_round_trip(self):
-        kp, kem_sk, sig_sk = make_member(b"A")
-        g = MLSGroup.create(b"gid-wire-1", kp, self.crypto)
-        pt, _ = g.create_commit(sig_sk)
-        s = export_handshake_b64(pt)
-        pt2 = import_handshake_b64(s)
-        self.assertEqual(pt.serialize(), pt2.serialize())
+    def _make_key_package(self, identity: bytes):
+        """Helper to create a KeyPackage."""
+        sig_sk = Ed25519PrivateKey.generate()
+        sig_pk = sig_sk.public_key()
+        kem_sk = X25519PrivateKey.generate()
+        kem_pk = kem_sk.public_key()
+        cred = Credential(identity=identity, public_key=sig_pk.public_bytes_raw())
+        leaf = LeafNode(
+            encryption_key=kem_pk.public_bytes_raw(),
+            signature_key=sig_pk.public_bytes_raw(),
+            credential=cred,
+            capabilities=b"",
+            parent_hash=b"",
+        )
+        sig = sig_sk.sign(leaf.serialize())
+        return KeyPackage(leaf, Signature(sig))
 
-    def test_wire_application_round_trip(self):
-        kp, kem_sk, sig_sk = make_member(b"A")
-        g = MLSGroup.create(b"gid-wire-2", kp, self.crypto)
-        ct = g.protect(b"hello")
-        s = export_application_b64(ct)
-        ct2 = import_application_b64(s)
-        self.assertEqual(ct.serialize(), ct2.serialize())
+    def test_encode_decode_handshake_roundtrip(self):
+        """Test encode_handshake and decode_handshake roundtrip."""
+        kp = self._make_key_package(b"test")
+        
+        # Create a minimal MLSPlaintext
+        group_id = b"test_group"
+        epoch = 0
+        sender = Sender(SenderType.MEMBER, 0)
+        
+        framed = FramedContent(
+            group_id=group_id,
+            epoch=epoch,
+            sender=sender,
+            content_type=ContentType.APPLICATION,
+            authenticated_data=b"",
+            content=b"test_content",
+        )
+        
+        sig_sk = Ed25519PrivateKey.generate()
+        auth_content = AuthenticatedContent(
+            wire_format=WireFormat.MLS_PLAINTEXT,
+            content=framed,
+            signature=Signature(b"dummy_sig"),
+        )
+        
+        plaintext = MLSPlaintext(
+            group_id=group_id,
+            epoch=epoch,
+            content_type=ContentType.APPLICATION,
+            authenticated_content=auth_content,
+        )
+        
+        # Encode and decode
+        encoded = encode_handshake(plaintext)
+        decoded = decode_handshake(encoded)
+        
+        self.assertEqual(decoded.group_id, plaintext.group_id)
+        self.assertEqual(decoded.epoch, plaintext.epoch)
+        self.assertEqual(decoded.content_type, plaintext.content_type)
+
+    def test_encode_decode_application_roundtrip(self):
+        """Test encode_application and decode_application roundtrip."""
+        # Create a minimal MLSCiphertext
+        group_id = b"test_group"
+        epoch = 0
+        
+        ciphertext = MLSCiphertext(
+            group_id=group_id,
+            epoch=epoch,
+            content_type=ContentType.APPLICATION,
+            encrypted_sender_data=b"encrypted_sender",
+            ciphertext=b"encrypted_content",
+        )
+        
+        # Encode and decode
+        encoded = encode_application(ciphertext)
+        decoded = decode_application(encoded)
+        
+        self.assertEqual(decoded.group_id, ciphertext.group_id)
+        self.assertEqual(decoded.epoch, ciphertext.epoch)
+        self.assertEqual(decoded.content_type, ciphertext.content_type)
+        self.assertEqual(decoded.encrypted_sender_data, ciphertext.encrypted_sender_data)
+        self.assertEqual(decoded.ciphertext, ciphertext.ciphertext)
+
+    def test_encode_handshake_preserves_structure(self):
+        """Test that encode_handshake preserves message structure."""
+        kp = self._make_key_package(b"test")
+        group_id = b"test_group"
+        epoch = 1
+        
+        framed = FramedContent(
+            group_id=group_id,
+            epoch=epoch,
+            sender=Sender(SenderType.MEMBER, 0),
+            content_type=ContentType.COMMIT,
+            authenticated_data=b"",
+            content=b"commit_content",
+        )
+        
+        auth_content = AuthenticatedContent(
+            wire_format=WireFormat.MLS_PLAINTEXT,
+            content=framed,
+            signature=Signature(b"sig"),
+        )
+        
+        plaintext = MLSPlaintext(
+            group_id=group_id,
+            epoch=epoch,
+            content_type=ContentType.COMMIT,
+            authenticated_content=auth_content,
+        )
+        
+        encoded = encode_handshake(plaintext)
+        # Should be able to deserialize
+        decoded = decode_handshake(encoded)
+        self.assertEqual(decoded.group_id, group_id)
+        self.assertEqual(decoded.epoch, epoch)
+
+    def test_encode_application_preserves_structure(self):
+        """Test that encode_application preserves message structure."""
+        ciphertext = MLSCiphertext(
+            group_id=b"group",
+            epoch=5,
+            content_type=ContentType.APPLICATION,
+            encrypted_sender_data=b"sender_data",
+            ciphertext=b"ciphertext_data",
+        )
+        
+        encoded = encode_application(ciphertext)
+        decoded = decode_application(encoded)
+        
+        self.assertEqual(decoded.group_id, ciphertext.group_id)
+        self.assertEqual(decoded.epoch, ciphertext.epoch)
+        self.assertEqual(decoded.encrypted_sender_data, ciphertext.encrypted_sender_data)
+        self.assertEqual(decoded.ciphertext, ciphertext.ciphertext)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

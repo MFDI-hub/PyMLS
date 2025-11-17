@@ -27,7 +27,6 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidSignature
-import math
 
 from .hpke_backend import hpke_seal as _hpke_seal_backend, hpke_open as _hpke_open_backend
 

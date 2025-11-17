@@ -1,8 +1,8 @@
 import os
 from collections import OrderedDict
 
-from src.pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from src.pymls.protocol.secret_tree import SecretTree
+from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
+from pymls.protocol.secret_tree import SecretTree
 
 
 def _derive_reference_app(crypto, encryption_secret: bytes, leaf: int, generation: int):
