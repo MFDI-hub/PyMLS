@@ -1,7 +1,7 @@
 """Comprehensive tests for pymls.DefaultCryptoProvider."""
 import unittest
 from pymls import DefaultCryptoProvider
-from pymls.mls.exceptions import UnsupportedCipherSuiteError, InvalidSignatureError, ConfigurationError
+from pymls.mls.exceptions import UnsupportedCipherSuiteError, InvalidSignatureError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.exceptions import InvalidTag
 

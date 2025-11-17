@@ -60,7 +60,6 @@ class TestCodecMLS(unittest.TestCase):
         group_context = GroupContext(group_id=b"test_group", epoch=0, tree_hash=b"\x00" * 32, confirmed_transcript_hash=b"\x00" * 32)
         group_info = GroupInfo(group_context=group_context, signature=Signature(sig_pk.public_bytes_raw()), extensions=b"", confirmation_tag=b"\x00" * 32, signer_leaf_index=0)
         
-        from pymls.crypto.ciphersuites import KEM, KDF, AEAD
         cs = CipherSuite(self.crypto.active_ciphersuite.kem, self.crypto.active_ciphersuite.kdf, self.crypto.active_ciphersuite.aead)
         # In this codec, Welcome carries encrypted_group_info bytes; keep it simple
         welcome = Welcome(version=MLSVersion.MLS10, cipher_suite=cs, secrets=[enc_secrets], encrypted_group_info=group_info.serialize())
