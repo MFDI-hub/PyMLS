@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
   "cryptography>=42",
   "certifi>=2024.7.4",
+  "rfc9180>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,10 @@ dev = [
 
 [project.scripts]
 pymls-interop = "src.pymls.interop.cli:main"
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pymls"]
@@ -55,4 +60,7 @@ warn_unused_configs = true
 strict_optional = true
 check_untyped_defs = true
 disallow_untyped_defs = false
+
+[tool.uv.sources]
+rfc9180 = { index = "testpypi" }
 
