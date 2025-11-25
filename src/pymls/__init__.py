@@ -17,8 +17,9 @@ Example:
 from .mls.group import Group  # High-level API
 from .crypto.default_crypto_provider import DefaultCryptoProvider
 from .protocol.mls_group import MLSGroup  # Low-level protocol implementation
+from .api import MLSGroupSession
 
-__all__ = ["Group", "DefaultCryptoProvider", "MLSGroup"]
+__all__ = ["Group", "DefaultCryptoProvider", "MLSGroup", "MLSGroupSession"]
 
 __version__ = "0.2.0"
 

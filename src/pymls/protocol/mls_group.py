@@ -1356,3 +1356,40 @@ class MLSGroup:
             group._interim_transcript_hash = ith if ith else None
             group._external_public_key = ext_pub if ext_pub else None
             return group
+
+    # --- High-level getters / exporter passthroughs for API layer ---
+    def export_secret(self, label: bytes, context: bytes, length: int) -> bytes:
+        """
+        Export external keying material for applications using the MLS exporter.
+
+        Args:
+            label: Application-defined exporter label.
+            context: Application-defined context bytes.
+            length: Desired output length in bytes.
+
+        Returns:
+            Exported secret of requested length.
+        """
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
+        return self._key_schedule.export(label, context, length)
+
+    def get_exporter_secret(self) -> bytes:
+        """Return the current epoch's exporter secret."""
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
+        return self._key_schedule.exporter_secret
+
+    def get_encryption_secret(self) -> bytes:
+        """Return the current epoch's encryption secret (root of SecretTree)."""
+        if self._key_schedule is None:
+            raise PyMLSError("group not initialized")
+        return self._key_schedule.encryption_secret
+
+    def get_own_leaf_index(self) -> int:
+        """Return this member's leaf index."""
+        return int(self._own_leaf_index)
+
+    def get_member_count(self) -> int:
+        """Return the number of current group members (leaves)."""
+        return int(self._ratchet_tree.n_leaves)

@@ -20,57 +20,36 @@ Note:
 from __future__ import annotations
 
 from typing import Tuple, Any
-import importlib
+# import importlib
 
 from ..mls.exceptions import ConfigurationError
 from .ciphersuites import KEM, KDF, AEAD
+from cryptography.hazmat.primitives.hpke import HPKE, KEM, KDF, AEAD, Mode
 
 
-# Attempt to import HPKE primitives from cryptography. Guard use at runtime.
-try:  # pragma: no cover - import guard
-    _hpke_mod: Any = importlib.import_module("cryptography.hazmat.primitives.hpke")
-    _HPKE: Any = getattr(_hpke_mod, "HPKE", None)
-    _HPKE_KEM: Any = getattr(_hpke_mod, "KEM", None)
-    _HPKE_KDF: Any = getattr(_hpke_mod, "KDF", None)
-    _HPKE_AEAD: Any = getattr(_hpke_mod, "AEAD", None)
-    _HPKE_Mode: Any = getattr(_hpke_mod, "Mode", None)
-except Exception:  # pragma: no cover - import guard
-    _HPKE = None
-    _HPKE_KEM = None
-    _HPKE_KDF = None
-    _HPKE_AEAD = None
-    _HPKE_Mode = None
-
-
-def _ensure_hpke_available() -> None:
-    if _HPKE is None or _HPKE_KEM is None or _HPKE_KDF is None or _HPKE_AEAD is None or _HPKE_Mode is None:
-        raise ConfigurationError(
-            "HPKE via 'cryptography' is not available in this environment. "
-            "Upgrade 'cryptography' to a version that provides HPKE support."
-        )
 
 
 def _map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple[Any, Any, Any]:
     """Map internal MLS enums to cryptography.hazmat.primitives.hpke enums."""
     # KEM mapping
     kem_map = {
-        KEM.DHKEM_X25519_HKDF_SHA256: _HPKE_KEM.DHKEM_X25519_HKDF_SHA256,
-        KEM.DHKEM_X448_HKDF_SHA512: _HPKE_KEM.DHKEM_X448_HKDF_SHA512,
-        KEM.DHKEM_P256_HKDF_SHA256: _HPKE_KEM.DHKEM_P256_HKDF_SHA256,
-        KEM.DHKEM_P384_HKDF_SHA384: _HPKE_KEM.DHKEM_P384_HKDF_SHA384,
-        KEM.DHKEM_P521_HKDF_SHA512: _HPKE_KEM.DHKEM_P521_HKDF_SHA512,
+        KEM.DHKEM_X25519_HKDF_SHA256: KEM.DHKEM_X25519_HKDF_SHA256,
+        KEM.DHKEM_X448_HKDF_SHA512: KEM.DHKEM_X448_HKDF_SHA512,
+        KEM.DHKEM_P256_HKDF_SHA256: KEM.DHKEM_P256_HKDF_SHA256,
+        KEM.DHKEM_P384_HKDF_SHA384: KEM.DHKEM_P384_HKDF_SHA384,
+        KEM.DHKEM_P521_HKDF_SHA512: KEM.DHKEM_P521_HKDF_SHA512,
     }
     # KDF mapping
     kdf_map = {
-        KDF.HKDF_SHA256: _HPKE_KDF.HKDF_SHA256,
-        KDF.HKDF_SHA384: _HPKE_KDF.HKDF_SHA384,
-        KDF.HKDF_SHA512: _HPKE_KDF.HKDF_SHA512,
+        KDF.HKDF_SHA256: KDF.HKDF_SHA256,
+        KDF.HKDF_SHA384: KDF.HKDF_SHA384,
+        KDF.HKDF_SHA512: KDF.HKDF_SHA512,
     }
     # AEAD mapping
     aead_map = {
-        AEAD.AES_128_GCM: _HPKE_AEAD.AES_128_GCM,
-        AEAD.AES_256_GCM: _HPKE_AEAD.AES_256_GCM,
-        AEAD.CHACHA20_POLY1305: _HPKE_AEAD.CHACHA20_POLY1305,
+        AEAD.AES_128_GCM: AEAD.AES_128_GCM,
+        AEAD.AES_256_GCM: AEAD.AES_256_GCM,
+        AEAD.CHACHA20_POLY1305: AEAD.CHACHA20_POLY1305,
     }
     try:
         return kem_map[kem], kdf_map[kdf], aead_map[aead]
@@ -118,9 +97,8 @@ def hpke_seal(
         ...     plaintext=b"secret"
         ... )
     """
-    _ensure_hpke_available()
     _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
-    hpke = _HPKE(_kem, _kdf, _aead, mode=_HPKE_Mode.BASE)
+    hpke = HPKE(_kem, _kdf, _aead, mode=Mode.BASE)
     enc, ciphertext = hpke.seal(
         recipient_public_key=recipient_public_key,
         info=info,
@@ -174,9 +152,8 @@ def hpke_open(
         ...     ciphertext=ciphertext
         ... )
     """
-    _ensure_hpke_available()
     _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
-    hpke = _HPKE(_kem, _kdf, _aead, mode=_HPKE_Mode.BASE)
+    hpke = HPKE(_kem, _kdf, _aead, mode=Mode.BASE)
     plaintext = hpke.open(
         recipient_private_key=recipient_private_key,
         kem_output=kem_output,

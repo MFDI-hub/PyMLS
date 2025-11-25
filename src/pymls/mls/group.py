@@ -218,3 +218,38 @@ class Group:
         """
         return self._inner.get_group_id()
 
+    # --- Added high-level exports and properties ---
+    def export_secret(self, label: bytes, context: bytes, length: int) -> bytes:
+        """Export external keying material using the MLS exporter."""
+        return self._inner.export_secret(label, context, length)
+
+    @property
+    def exporter_secret(self) -> bytes:
+        """Current epoch exporter secret."""
+        return self._inner.get_exporter_secret()
+
+    @property
+    def encryption_secret(self) -> bytes:
+        """Current epoch encryption secret (root of SecretTree)."""
+        return self._inner.get_encryption_secret()
+
+    @property
+    def own_leaf_index(self) -> int:
+        """Local member's leaf index."""
+        return self._inner.get_own_leaf_index()
+
+    @property
+    def member_count(self) -> int:
+        """Number of members (leaves) in the group."""
+        return self._inner.get_member_count()
+
+    # --- Persistence passthroughs ---
+    def to_bytes(self) -> bytes:
+        """Serialize the group state."""
+        return self._inner.to_bytes()
+
+    @classmethod
+    def from_bytes(cls, data: bytes, crypto: CryptoProvider) -> "Group":
+        """Deserialize group state into a Group instance."""
+        return cls(_ProtocolMLSGroup.from_bytes(data, crypto))
+
