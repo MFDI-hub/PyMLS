@@ -1,55 +1,41 @@
-"""HPKE backend wrapper using cryptography (RFC 9180) if available.
+"""HPKE backend wrapper using rfc9180.
 
 This module provides HPKE (Hybrid Public Key Encryption) operations using
-the cryptography library when available. It implements RFC 9180 Base mode
-for HPKE seal and open operations.
-
-The module provides a minimal interface used by DefaultCryptoProvider:
-- hpke_seal(...): Encrypt data using HPKE Base mode
-- hpke_open(...): Decrypt data using HPKE Base mode
-
-Behavior:
-- If cryptography exposes HPKE primitives for the active environment/version,
-  these functions will use them.
-- Otherwise, they raise ConfigurationError with guidance to upgrade cryptography.
-
-Note:
-    HPKE support requires cryptography >= 41.0.0. The library will fail
-    fast with a clear error message if HPKE is not available.
+the rfc9180 library.
 """
 from __future__ import annotations
 
-from typing import Tuple, Any
-# import importlib
+from typing import Tuple
+
+from rfc9180 import HPKE, KEMID, KDFID, AEADID
+from rfc9180.exceptions import OpenError
+from cryptography.exceptions import InvalidTag
 
 from ..mls.exceptions import ConfigurationError
 from .ciphersuites import KEM, KDF, AEAD
-from cryptography.hazmat.primitives.hpke import HPKE, KEM, KDF, AEAD, Mode
 
 
-
-
-def _map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple[Any, Any, Any]:
-    """Map internal MLS enums to cryptography.hazmat.primitives.hpke enums."""
+def map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple[KEMID, KDFID, AEADID]:
+    """Map internal MLS enums to rfc9180 enums."""
     # KEM mapping
     kem_map = {
-        KEM.DHKEM_X25519_HKDF_SHA256: KEM.DHKEM_X25519_HKDF_SHA256,
-        KEM.DHKEM_X448_HKDF_SHA512: KEM.DHKEM_X448_HKDF_SHA512,
-        KEM.DHKEM_P256_HKDF_SHA256: KEM.DHKEM_P256_HKDF_SHA256,
-        KEM.DHKEM_P384_HKDF_SHA384: KEM.DHKEM_P384_HKDF_SHA384,
-        KEM.DHKEM_P521_HKDF_SHA512: KEM.DHKEM_P521_HKDF_SHA512,
+        KEM.DHKEM_X25519_HKDF_SHA256: KEMID.DHKEM_X25519_HKDF_SHA256,
+        KEM.DHKEM_X448_HKDF_SHA512: KEMID.DHKEM_X448_HKDF_SHA512,
+        KEM.DHKEM_P256_HKDF_SHA256: KEMID.DHKEM_P256_HKDF_SHA256,
+        KEM.DHKEM_P384_HKDF_SHA384: KEMID.DHKEM_P384_HKDF_SHA384,
+        KEM.DHKEM_P521_HKDF_SHA512: KEMID.DHKEM_P521_HKDF_SHA512,
     }
     # KDF mapping
     kdf_map = {
-        KDF.HKDF_SHA256: KDF.HKDF_SHA256,
-        KDF.HKDF_SHA384: KDF.HKDF_SHA384,
-        KDF.HKDF_SHA512: KDF.HKDF_SHA512,
+        KDF.HKDF_SHA256: KDFID.HKDF_SHA256,
+        KDF.HKDF_SHA384: KDFID.HKDF_SHA384,
+        KDF.HKDF_SHA512: KDFID.HKDF_SHA512,
     }
     # AEAD mapping
     aead_map = {
-        AEAD.AES_128_GCM: AEAD.AES_128_GCM,
-        AEAD.AES_256_GCM: AEAD.AES_256_GCM,
-        AEAD.CHACHA20_POLY1305: AEAD.CHACHA20_POLY1305,
+        AEAD.AES_128_GCM: AEADID.AES_128_GCM,
+        AEAD.AES_256_GCM: AEADID.AES_256_GCM,
+        AEAD.CHACHA20_POLY1305: AEADID.CHACHA20_POLY1305,
     }
     try:
         return kem_map[kem], kdf_map[kdf], aead_map[aead]
@@ -66,46 +52,10 @@ def hpke_seal(
     aad: bytes,
     plaintext: bytes,
 ) -> Tuple[bytes, bytes]:
-    """HPKE base mode seal: returns (enc, ciphertext).
-
-    Implements HPKE Base mode seal operation (RFC 9180) using the cryptography
-    library. Encrypts plaintext for the recipient using their public key.
-
-    Args:
-        kem: Key Encapsulation Mechanism to use.
-        kdf: Key Derivation Function to use.
-        aead: Authenticated Encryption algorithm to use.
-        recipient_public_key: Recipient's HPKE public key.
-        info: Application-specific context information.
-        aad: Additional authenticated data.
-        plaintext: Plaintext to encrypt.
-
-    Returns:
-        Tuple of (encapsulated key (enc), ciphertext).
-
-    Raises:
-        ConfigurationError: If HPKE is not available in cryptography.
-
-    Example:
-        >>> enc, ciphertext = hpke_seal(
-        ...     kem=KEM.DHKEM_X25519_HKDF_SHA256,
-        ...     kdf=KDF.HKDF_SHA256,
-        ...     aead=AEAD.AES_128_GCM,
-        ...     recipient_public_key=pk_bytes,
-        ...     info=b"context",
-        ...     aad=b"",
-        ...     plaintext=b"secret"
-        ... )
-    """
-    _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
-    hpke = HPKE(_kem, _kdf, _aead, mode=Mode.BASE)
-    enc, ciphertext = hpke.seal(
-        recipient_public_key=recipient_public_key,
-        info=info,
-        aad=aad,
-        plaintext=plaintext,
-    )
-    return enc, ciphertext
+    """HPKE base mode seal: returns (enc, ciphertext)."""
+    kem_id, kdf_id, aead_id = map_hpke_enums(kem, kdf, aead)
+    hpke = HPKE(kem_id, kdf_id, aead_id)
+    return hpke.seal_base(recipient_public_key, info, aad, plaintext)
 
 
 def hpke_open(
@@ -118,49 +68,11 @@ def hpke_open(
     aad: bytes,
     ciphertext: bytes,
 ) -> bytes:
-    """HPKE base mode open: returns plaintext.
-
-    Implements HPKE Base mode open operation (RFC 9180) using the cryptography
-    library. Decrypts ciphertext using the recipient's private key.
-
-    Args:
-        kem: Key Encapsulation Mechanism used for encryption.
-        kdf: Key Derivation Function used for encryption.
-        aead: Authenticated Encryption algorithm used for encryption.
-        recipient_private_key: Recipient's HPKE private key.
-        kem_output: Encapsulated key (enc) from seal operation.
-        info: Application-specific context information (must match seal).
-        aad: Additional authenticated data (must match seal).
-        ciphertext: Ciphertext to decrypt.
-
-    Returns:
-        Decrypted plaintext.
-
-    Raises:
-        ConfigurationError: If HPKE is not available in cryptography.
-        InvalidTag: If decryption or authentication fails.
-
-    Example:
-        >>> plaintext = hpke_open(
-        ...     kem=KEM.DHKEM_X25519_HKDF_SHA256,
-        ...     kdf=KDF.HKDF_SHA256,
-        ...     aead=AEAD.AES_128_GCM,
-        ...     recipient_private_key=sk_bytes,
-        ...     kem_output=enc,
-        ...     info=b"context",
-        ...     aad=b"",
-        ...     ciphertext=ciphertext
-        ... )
-    """
-    _kem, _kdf, _aead = _map_hpke_enums(kem, kdf, aead)
-    hpke = HPKE(_kem, _kdf, _aead, mode=Mode.BASE)
-    plaintext = hpke.open(
-        recipient_private_key=recipient_private_key,
-        kem_output=kem_output,
-        info=info,
-        aad=aad,
-        ciphertext=ciphertext,
-    )
-    return plaintext
-
-
+    """HPKE base mode open: returns plaintext."""
+    kem_id, kdf_id, aead_id = map_hpke_enums(kem, kdf, aead)
+    hpke = HPKE(kem_id, kdf_id, aead_id)
+    try:
+        return hpke.open_base(kem_output, recipient_private_key, info, aad, ciphertext)
+    except OpenError as e:
+        # Map rfc9180 OpenError to cryptography InvalidTag for compatibility with pymls exceptions
+        raise InvalidTag("Decryption failed") from e
