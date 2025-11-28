@@ -23,9 +23,9 @@ PyMLS is a minimal, pragmatic implementation of the Messaging Layer Security pro
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from src.pymls import Group, DefaultCryptoProvider
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from pymls import Group, DefaultCryptoProvider
+from pymls.protocol.key_packages import KeyPackage, LeafNode
+from pymls.protocol.data_structures import Credential, Signature
 
 crypto = DefaultCryptoProvider()  # MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
 
@@ -173,7 +173,7 @@ Out-of-order application/handshake decryption is supported via a sliding window 
 Configure at group creation:
 
 ```python
-from src.pymls.protocol.mls_group import MLSGroup
+from pymls.protocol.mls_group import MLSGroup
 
 group = MLSGroup.create(
     group_id=b"group1",
@@ -194,7 +194,7 @@ The ratchet tree truncates immediately when the rightmost leaf (and all trailing
 KeyPackage verification checks that the credential public key matches the leaf signature key. X.509 credential containers are supported:
 
 ```python
-from src.pymls.crypto.x509 import X509Credential
+from pymls.crypto.x509 import X509Credential
 
 # Verify X.509 certificate chain
 cred = X509Credential.deserialize(cert_der)
@@ -212,8 +212,8 @@ group._inner.set_trust_roots([trust_root1_der, trust_root2_der])
 Revocation checks are pluggable. Batteries-included helpers are available:
 
 ```python
-from src.pymls.crypto.x509_revocation import check_ocsp_end_entity, check_crl
-from src.pymls.crypto.x509_policy import X509Policy, RevocationConfig
+from pymls.crypto.x509_revocation import check_ocsp_end_entity, check_crl
+from pymls.crypto.x509_policy import X509Policy, RevocationConfig
 
 policy = X509Policy(
     revocation=RevocationConfig(
@@ -258,7 +258,7 @@ PyMLS aligns closely with RFC 9420 semantics:
 Run the RFC 9420 test vectors:
 
 ```bash
-python -m src.pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
+python -m pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
 ```
 
 Supported types include `key_schedule`, `tree_math`, `secret_tree`, `message_protection`, `welcome_groupinfo`, `tree_operations`, `messages`, and `encryption`. A JSON summary is printed.
@@ -269,23 +269,23 @@ The interop CLI exposes RFC-wire encode/decode helpers for handshake and applica
 
 ```bash
 # Encode handshake (hex → base64 TLS presentation bytes)
-python -m src.pymls.interop.cli wire encode-handshake <hex_plaintext>
+python -m pymls.interop.cli wire encode-handshake <hex_plaintext>
 
 # Decode handshake (base64 → hex)
-python -m src.pymls.interop.cli wire decode-handshake <b64_wire>
+python -m pymls.interop.cli wire decode-handshake <b64_wire>
 
 # Encode application (hex → base64)
-python -m src.pymls.interop.cli wire encode-application <hex_ciphertext>
+python -m pymls.interop.cli wire encode-application <hex_ciphertext>
 
 # Decode application (base64 → hex)
-python -m src.pymls.interop.cli wire decode-application <b64_wire>
+python -m pymls.interop.cli wire decode-application <b64_wire>
 ```
 
 This is intended to interoperate with other MLS implementations (e.g., OpenMLS). Wire helpers use the TLS presentation bytes described in RFC 9420 (§6–§7 for handshake, §9 for application).
 
 ## API Reference
 
-### `src.pymls.Group`
+### `pymls.Group`
 
 High-level wrapper around `MLSGroup` providing an ergonomic API.
 
@@ -305,7 +305,7 @@ High-level wrapper around `MLSGroup` providing an ergonomic API.
 - `epoch: int` - Current group epoch
 - `group_id: bytes` - Group identifier
 
-### `src.pymls.DefaultCryptoProvider`
+### `pymls.DefaultCryptoProvider`
 
 Concrete `CryptoProvider` implementation using the `cryptography` library.
 
@@ -319,7 +319,7 @@ Concrete `CryptoProvider` implementation using the `cryptography` library.
 **Methods:**
 - `set_ciphersuite(suite_id: int) -> None` - Select a different ciphersuite
 
-### `src.pymls.protocol.mls_group.MLSGroup`
+### `pymls.protocol.mls_group.MLSGroup`
 
 Core protocol implementation. Most users should use `Group` instead.
 
@@ -331,8 +331,6 @@ Core protocol implementation. Most users should use `Group` instead.
 - `get_resumption_psk() -> bytes`
 - `set_strict_psk_binders(strict: bool) -> None`
 - `set_trust_roots(trust_roots: list[bytes]) -> None`
-
-## Migration from v0.1.x
 
 ### Breaking Changes
 
