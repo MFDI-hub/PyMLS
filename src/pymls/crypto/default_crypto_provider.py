@@ -17,7 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidSignature
 
 # Integrate rfc9180
-from rfc9180 import HPKE, KEM_PARAMS
+from rfc9180 import HPKE
+from rfc9180.constants import KEM_PARAMS
 from .hpke_backend import (
     hpke_seal as _hpke_seal_backend, 
     hpke_open as _hpke_open_backend,
@@ -25,7 +26,7 @@ from .hpke_backend import (
 )
 
 from .crypto_provider import CryptoProvider
-from .ciphersuites import KEM, KDF as KDFEnum, AEAD
+from .ciphersuites import KDF as KDFEnum, AEAD
 from ..codec.tls import write_uint16 as _write_uint16
 from ..codec.tls import write_opaque8 as _write_opaque8, write_opaque16 as _write_opaque16
 from .ciphersuites import (
@@ -152,8 +153,8 @@ class DefaultCryptoProvider(CryptoProvider):
             sk = Ed25519PrivateKey.from_private_bytes(private_key)
             return sk.sign(data)
         if scheme == SignatureScheme.ED448:
-            sk = Ed448PrivateKey.from_private_bytes(private_key)
-            return sk.sign(data)
+            sk_448 = Ed448PrivateKey.from_private_bytes(private_key) # FIX 2 (mypy assignment error)
+            return sk_448.sign(data)
         if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
             sk = self._load_ec_private(private_key, ec.SECP256R1())
             return sk.sign(data, ec.ECDSA(hashes.SHA256()))
@@ -170,8 +171,8 @@ class DefaultCryptoProvider(CryptoProvider):
                 pk.verify(signature, data)
                 return
             if scheme == SignatureScheme.ED448:
-                pk = Ed448PublicKey.from_public_bytes(public_key)
-                pk.verify(signature, data)
+                pk_448 = Ed448PublicKey.from_public_bytes(public_key) # FIX 3 (mypy assignment error)
+                pk_448.verify(signature, data)
                 return
             if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
                 pk = self._load_ec_public(public_key, ec.SECP256R1())

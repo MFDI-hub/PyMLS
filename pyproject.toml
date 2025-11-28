@@ -21,7 +21,7 @@ classifiers = [
 dependencies = [
   "cryptography>=42",
   "certifi>=2024.7.4",
-  "rfc9180>=0.1.0",
+  "rfc9180>=0.2.0",
 ]
 
 [project.optional-dependencies]
