@@ -56,5 +56,5 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 ---
 
-**Note**: This documentation is for PyMLS version 0.2.0. For version-specific information, check the [main README](../README.md).
+**Note**: This documentation is for PyMLS version 0.3.1. For version-specific information, check the [main README](../README.md).
 

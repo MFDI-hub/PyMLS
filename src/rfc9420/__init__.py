@@ -23,4 +23,4 @@ from .api import MLSGroupSession
 
 __all__ = ["Group", "DefaultCryptoProvider", "MLSGroup", "MLSGroupSession", "CipherSuite"]
 
-__version__ = "0.2.0"
+__version__ = "0.3.1"
