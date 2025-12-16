@@ -1,8 +1,8 @@
 import unittest
-from pymls.protocol.ratchet_tree import RatchetTree
-from pymls import DefaultCryptoProvider
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420.protocol.ratchet_tree import RatchetTree
+from rfc9420 import DefaultCryptoProvider
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
@@ -62,5 +62,3 @@ class TestRatchetTreeOps(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

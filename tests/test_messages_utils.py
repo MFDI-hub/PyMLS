@@ -1,7 +1,8 @@
 """Comprehensive tests for pymls.protocol.messages utility functions."""
+
 import unittest
 
-from pymls.protocol.messages import (
+from rfc9420.protocol.messages import (
     ContentType,
     compute_ciphertext_aad,
     add_zero_padding,
@@ -18,9 +19,9 @@ class TestMessagesUtils(unittest.TestCase):
         epoch = 5
         content_type = ContentType.APPLICATION
         authenticated_data = b"auth_data"
-        
+
         aad = compute_ciphertext_aad(group_id, epoch, content_type, authenticated_data)
-        
+
         self.assertIsInstance(aad, bytes)
         self.assertGreater(len(aad), 0)
         self.assertIn(group_id, aad)
@@ -36,10 +37,10 @@ class TestMessagesUtils(unittest.TestCase):
         """Test compute_ciphertext_aad with different content types."""
         group_id = b"group"
         epoch = 1
-        
+
         aad1 = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, b"")
         aad2 = compute_ciphertext_aad(group_id, epoch, ContentType.COMMIT, b"")
-        
+
         # Should be different due to content type
         self.assertNotEqual(aad1, aad2)
 
@@ -62,20 +63,20 @@ class TestMessagesUtils(unittest.TestCase):
         data = b"test"
         padded = add_zero_padding(data, 0)
         self.assertEqual(padded, data)
-        
+
         padded = add_zero_padding(data, -1)
         self.assertEqual(padded, data)
 
     def test_add_zero_padding_various_sizes(self):
         """Test add_zero_padding with various pad_to values."""
         data = b"x" * 5  # 5 bytes
-        
+
         # Pad to 8
         padded = add_zero_padding(data, 8)
         self.assertEqual(len(padded), 8)
         self.assertEqual(padded[:5], data)
         self.assertEqual(padded[5:], b"\x00" * 3)
-        
+
         # Pad to 16
         padded = add_zero_padding(data, 16)
         self.assertEqual(len(padded), 16)
@@ -115,10 +116,10 @@ class TestMessagesUtils(unittest.TestCase):
     def test_apply_remove_application_padding_roundtrip(self):
         """Test apply_application_padding and remove_application_padding roundtrip."""
         data = b"test_data"
-        
+
         padded = apply_application_padding(data, block=32)
         self.assertGreater(len(padded), len(data))
-        
+
         unpadded = remove_application_padding(padded)
         self.assertEqual(unpadded, data)
 
@@ -126,7 +127,7 @@ class TestMessagesUtils(unittest.TestCase):
         """Test that apply_application_padding respects block size."""
         data = b"x" * 10
         padded = apply_application_padding(data, block=32)
-        
+
         # Should be padded to multiple of 32
         self.assertEqual(len(padded) % 32, 0)
 
@@ -135,7 +136,7 @@ class TestMessagesUtils(unittest.TestCase):
         # Data length + 1 (for pad_len byte) should be multiple of block
         data = b"x" * 31  # 31 + 1 = 32, already aligned
         padded = apply_application_padding(data, block=32)
-        
+
         # Should still add padding byte
         self.assertGreaterEqual(len(padded), len(data) + 1)
 
@@ -167,11 +168,10 @@ class TestMessagesUtils(unittest.TestCase):
         # Should add single zero byte
         self.assertEqual(len(padded), len(data) + 1)
         self.assertEqual(padded[-1], 0)
-        
+
         padded = apply_application_padding(data, block=-1)
         self.assertEqual(len(padded), len(data) + 1)
 
 
 if __name__ == "__main__":
     unittest.main()
-

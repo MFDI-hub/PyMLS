@@ -1,17 +1,33 @@
 """LeafNode and KeyPackage structures with basic (de)serialization and verification."""
+
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Optional
 import struct
 
-from .data_structures import Credential, Signature, serialize_bytes, deserialize_bytes, MLSVersion, CipherSuite
+from .data_structures import (
+    Credential,
+    Signature,
+    serialize_bytes,
+    deserialize_bytes,
+    MLSVersion,
+    CipherSuite,
+)
 from ..crypto.ciphersuites import KEM, KDF, AEAD
 from ..mls.exceptions import InvalidSignatureError
-from ..extensions.extensions import Extension, serialize_extensions, deserialize_extensions, make_capabilities_ext
+from ..extensions.extensions import (
+    Extension,
+    serialize_extensions,
+    deserialize_extensions,
+    make_capabilities_ext,
+)
+
+
 class LeafNodeSource(IntEnum):
     """Origin of the LeafNode per RFC §7.2 (simplified)."""
+
     KEY_PACKAGE = 1
     UPDATE = 2
-
 
 
 @dataclass(frozen=True)
@@ -25,9 +41,10 @@ class LeafNode:
     - capabilities: Opaque capabilities payload (extension-friendly).
     - parent_hash: Optional binding to parent nodes (MVP simplified).
     """
+
     encryption_key: bytes
     signature_key: bytes
-    credential: Credential | None
+    credential: Optional[Credential]
     capabilities: bytes
     parent_hash: bytes = b""
     # RFC fields
@@ -87,7 +104,7 @@ class LeafNode:
         # Parse optional source and extensions if present
         try:
             if rest2 is not None and len(rest2) >= 1:
-                source_val, = struct.unpack("!B", rest2[:1])
+                (source_val,) = struct.unpack("!B", rest2[:1])
                 source = LeafNodeSource(source_val)
                 ext_blob, _ = deserialize_bytes(rest2[1:]) if len(rest2) > 1 else (b"", b"")
                 if ext_blob:
@@ -100,10 +117,13 @@ class LeafNode:
 @dataclass(frozen=True)
 class KeyPackage:
     """A member's join artifact including protocol metadata and a signed LeafNode."""
+
     version: MLSVersion = MLSVersion.MLS10
-    cipher_suite: CipherSuite = CipherSuite(KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM)
+    cipher_suite: CipherSuite = CipherSuite(
+        KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM
+    )
     init_key: bytes = b""  # HPKE init key (distinct from leaf_node.encryption_key)
-    leaf_node: LeafNode | None = None
+    leaf_node: Optional[LeafNode] = None
     signature: Signature = Signature(b"")
 
     def serialize(self) -> bytes:
@@ -132,15 +152,17 @@ class KeyPackage:
         """
         if len(data) >= 4:
             try:
-                len_ln_legacy, = struct.unpack("!I", data[:4])
+                (len_ln_legacy,) = struct.unpack("!I", data[:4])
                 if 4 + len_ln_legacy <= len(data):
-                    ln_bytes_legacy = data[4:4+len_ln_legacy]
-                    sig_bytes_legacy = data[4+len_ln_legacy:]
+                    ln_bytes_legacy = data[4 : 4 + len_ln_legacy]
+                    sig_bytes_legacy = data[4 + len_ln_legacy :]
                     leaf_node_legacy = LeafNode.deserialize(ln_bytes_legacy)
                     signature_legacy = Signature.deserialize(sig_bytes_legacy)
                     return cls(
                         version=MLSVersion.MLS10,
-                        cipher_suite=CipherSuite(KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM),
+                        cipher_suite=CipherSuite(
+                            KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM
+                        ),
                         init_key=b"",
                         leaf_node=leaf_node_legacy,
                         signature=signature_legacy,
@@ -153,13 +175,19 @@ class KeyPackage:
         cipher_suite = CipherSuite.deserialize(rest[:6])
         rest = rest[6:]
         init_key, rest = deserialize_bytes(rest)
-        len_ln, = struct.unpack("!I", rest[:4])
+        (len_ln,) = struct.unpack("!I", rest[:4])
         rest = rest[4:]
         ln_bytes = rest[:len_ln]
         sig_bytes = rest[len_ln:]
         leaf_node = LeafNode.deserialize(ln_bytes)
         signature = Signature.deserialize(sig_bytes)
-        return cls(version=version, cipher_suite=cipher_suite, init_key=init_key, leaf_node=leaf_node, signature=signature)
+        return cls(
+            version=version,
+            cipher_suite=cipher_suite,
+            init_key=init_key,
+            leaf_node=leaf_node,
+            signature=signature,
+        )
 
     def verify(self, crypto_provider) -> None:
         """Verify the KeyPackage signature and credential consistency.
@@ -180,7 +208,11 @@ class KeyPackage:
             raise InvalidSignatureError("unsupported MLS version in KeyPackage")
         # Enforce cipher suite compatibility with the active provider
         cs = crypto_provider.active_ciphersuite
-        if not (self.cipher_suite.kem == cs.kem and self.cipher_suite.kdf == cs.kdf and self.cipher_suite.aead == cs.aead):
+        if not (
+            self.cipher_suite.kem == cs.kem
+            and self.cipher_suite.kdf == cs.kdf
+            and self.cipher_suite.aead == cs.aead
+        ):
             raise InvalidSignatureError("KeyPackage cipher suite does not match active provider")
         # Enforce init_key != encryption_key when init_key present
         if self.init_key and self.leaf_node and self.init_key == self.leaf_node.encryption_key:

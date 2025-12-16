@@ -1,8 +1,8 @@
 import os
 from collections import OrderedDict
 
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from pymls.protocol.secret_tree import SecretTree
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.protocol.secret_tree import SecretTree
 
 
 def _derive_reference_app(crypto, encryption_secret: bytes, leaf: int, generation: int):
@@ -73,5 +73,3 @@ def test_secret_tree_window_handshake_branch():
     k0, n0, g0 = st.handshake_for(0, 0)
     assert g0 == 0
     assert k0 == k0_ref and n0 == n0_ref
-
-

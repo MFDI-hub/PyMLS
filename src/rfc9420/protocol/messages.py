@@ -5,6 +5,7 @@ RFC 9420 message framing helpers.
 """
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Optional
 import os
 
 from ..mls.exceptions import InvalidSignatureError
@@ -70,7 +71,7 @@ def encode_psk_binder(binder: bytes) -> bytes:
     """
     return b"PSKB" + write_opaque16(binder)
 
-def decode_psk_binder(authenticated_data: bytes) -> bytes | None:
+def decode_psk_binder(authenticated_data: bytes) -> Optional[bytes]:
     """
     Decode a PSK binder from authenticated_data if present.
     Returns binder bytes or None.
@@ -148,7 +149,7 @@ class AuthenticatedContent:
     """
     tbs: AuthenticatedContentTBS
     signature: bytes
-    membership_tag: bytes | None = None
+    membership_tag: Optional[bytes] = None
 
     def serialize(self) -> bytes:
         """Encode as TBS || opaque16(signature) || opaque16(membership_tag|empty)."""
@@ -270,7 +271,7 @@ def encrypt_sender_data(
     key_schedule: KeySchedule,
     crypto: CryptoProvider,
     aad: bytes = b"",
-    ciphertext_sample: bytes | None = None,
+    ciphertext_sample: Optional[bytes] = None,
 ) -> bytes:
     """Encrypt SenderData using sender data key/nonce derived from KeySchedule.
 
@@ -300,7 +301,7 @@ def decrypt_sender_data(
     key_schedule: KeySchedule,
     crypto: CryptoProvider,
     aad: bytes = b"",
-    ciphertext_sample: bytes | None = None,
+    ciphertext_sample: Optional[bytes] = None,
 ) -> SenderData:
     """Decrypt SenderData using sender data key/nonce derived from KeySchedule."""
     if ciphertext_sample is not None:
@@ -314,7 +315,7 @@ def decrypt_sender_data(
 
 
 def encode_encrypted_sender_data(
-    sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider, ciphertext_sample: bytes | None = None
+    sd: SenderData, key_schedule: KeySchedule, crypto: CryptoProvider, ciphertext_sample: Optional[bytes] = None
 ) -> bytes:
     """
     Encode encrypted sender data as a single opaque field containing:
@@ -325,7 +326,7 @@ def encode_encrypted_sender_data(
 
 
 def decode_encrypted_sender_data(
-    data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider, ciphertext_sample: bytes | None = None
+    data: bytes, key_schedule: KeySchedule, crypto: CryptoProvider, ciphertext_sample: Optional[bytes] = None
 ) -> SenderData:
     """Decode the reuse_guard and inner SenderData from the opaque field."""
     blob, _ = read_opaque16(data, 0)
@@ -443,7 +444,7 @@ def attach_membership_tag(plaintext: MLSPlaintext, membership_key: bytes, crypto
 def verify_plaintext(
     plaintext: MLSPlaintext,
     sender_signature_key: bytes,
-    membership_key: bytes | None,
+    membership_key: Optional[bytes],
     crypto: CryptoProvider,
 ) -> None:
     """

@@ -1,9 +1,9 @@
 import os
 
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from pymls.protocol.ratchet_tree import RatchetTree
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.protocol.ratchet_tree import RatchetTree
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 
 
 def _dummy_leaf(enc_pk: bytes, sig_pk: bytes) -> LeafNode:
@@ -52,4 +52,3 @@ def test_parent_hash_changes_on_path_update():
     _update_path, _commit_secret = rt.create_update_path(0, leaf1, b"")
     ph_after = rt._compute_parent_hash_for_leaf(0)
     assert ph_before != ph_after
-

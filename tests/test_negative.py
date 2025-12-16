@@ -1,9 +1,9 @@
 import unittest
 
-from pymls import DefaultCryptoProvider
-from pymls.mls.group import Group
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420 import DefaultCryptoProvider
+from rfc9420.mls.group import Group
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
@@ -37,10 +37,20 @@ class TestNegative(unittest.TestCase):
         # Create a normal commit (no proposals) to get a valid commit container
         pt, welcomes = group.commit(sig_sk_a)
         # Tamper plaintext framed content by appending a fake reference in the commit body
-        from pymls.protocol.data_structures import Commit, ProposalOrRef, ProposalOrRefType
+        from rfc9420.protocol.data_structures import Commit, ProposalOrRef, ProposalOrRefType
+
         commit = Commit.deserialize(pt.auth_content.tbs.framed_content.content)
-        tampered = Commit(commit.path, commit.proposals + [ProposalOrRef(ProposalOrRefType.REFERENCE, reference=b"\x01")], commit.signature)
-        from pymls.protocol.messages import sign_authenticated_content, attach_membership_tag, ContentType
+        tampered = Commit(
+            commit.path,
+            commit.proposals + [ProposalOrRef(ProposalOrRefType.REFERENCE, reference=b"\x01")],
+            commit.signature,
+        )
+        from rfc9420.protocol.messages import (
+            sign_authenticated_content,
+            attach_membership_tag,
+            ContentType,
+        )
+
         pt_tampered = sign_authenticated_content(
             group_id=group.group_id,
             epoch=group.epoch,
@@ -51,7 +61,9 @@ class TestNegative(unittest.TestCase):
             signing_private_key=sig_sk_a,
             crypto=self.crypto,
         )
-        pt_tampered = attach_membership_tag(pt_tampered, group._inner._key_schedule.membership_key, self.crypto)
+        pt_tampered = attach_membership_tag(
+            pt_tampered, group._inner._key_schedule.membership_key, self.crypto
+        )
         with self.assertRaises(ValueError):
             group.apply_commit(pt_tampered, 0)
 
@@ -68,5 +80,3 @@ class TestNegative(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

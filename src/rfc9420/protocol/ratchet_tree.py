@@ -4,6 +4,7 @@ This module provides a minimal array-indexed tree with helpers for adding,
 removing, and updating leaves, computing node hashes, and producing/merging
 UpdatePath structures used in commits.
 """
+from typing import Optional
 from .key_packages import KeyPackage, LeafNode
 from .data_structures import UpdatePath, Signature
 from . import tree_math
@@ -27,11 +28,11 @@ class RatchetTreeNode:
     """
     def __init__(self, is_leaf: bool):
         self.is_leaf = is_leaf
-        self.public_key: bytes | None = None
-        self.private_key: bytes | None = None
-        self.parent_hash: bytes | None = None
-        self.leaf_node: LeafNode | None = None
-        self.hash: bytes | None = None
+        self.public_key: Optional[bytes] = None
+        self.private_key: Optional[bytes] = None
+        self.parent_hash: Optional[bytes] = None
+        self.leaf_node: Optional[LeafNode] = None
+        self.hash: Optional[bytes] = None
         # RFC §7.1: track unmerged leaves for parent nodes
         self.unmerged_leaves: list[int] = [] if not is_leaf else []
 
@@ -270,8 +271,8 @@ class RatchetTree:
 
         # Decrypt a single path_secret for the lowest applicable node; then derive upwards
         direct_path = tree_math.direct_path(committer_index * 2, self.n_leaves)
-        decrypted_index: int | None = None
-        current_path_secret: bytes | None = None
+        decrypted_index: Optional[int] = None
+        current_path_secret: Optional[bytes] = None
         for node_index in direct_path:
             # Skip root which has no sibling/parent encryption index
             try:

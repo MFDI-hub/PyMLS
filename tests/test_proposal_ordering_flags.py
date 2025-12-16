@@ -1,5 +1,5 @@
-from pymls.protocol.validations import commit_path_required
-from pymls.protocol.data_structures import (
+from rfc9420.protocol.validations import commit_path_required
+from rfc9420.protocol.data_structures import (
     UpdateProposal,
     RemoveProposal,
     PreSharedKeyProposal,
@@ -18,5 +18,3 @@ def test_commit_path_required_update_remove_gce():
     assert commit_path_required([UpdateProposal(b"x")]) is True
     assert commit_path_required([RemoveProposal(0)]) is True
     assert commit_path_required([GroupContextExtensionsProposal(b"\x00\x00")]) is True
-
-

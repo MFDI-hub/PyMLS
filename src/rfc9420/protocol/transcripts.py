@@ -1,5 +1,6 @@
 """Transcript hash maintenance for MLS handshake flows."""
 from __future__ import annotations
+from typing import Optional
 
 from ..crypto.crypto_provider import CryptoProvider
 from ..mls.exceptions import PyMLSError
@@ -15,18 +16,18 @@ class TranscriptState:
     avoiding a direct dependency on hashing primitives in this layer.
     """
 
-    def __init__(self, crypto: CryptoProvider, interim: bytes | None = None, confirmed: bytes | None = None):
+    def __init__(self, crypto: CryptoProvider, interim: Optional[bytes] = None, confirmed: Optional[bytes] = None):
         self._crypto = crypto
         self._interim = interim
         self._confirmed = confirmed
 
     @property
-    def interim(self) -> bytes | None:
+    def interim(self) -> Optional[bytes]:
         """Current interim transcript hash (or None if uninitialized)."""
         return self._interim
 
     @property
-    def confirmed(self) -> bytes | None:
+    def confirmed(self) -> Optional[bytes]:
         """Current confirmed transcript hash (or None if not finalized)."""
         return self._confirmed
 

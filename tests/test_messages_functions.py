@@ -1,6 +1,6 @@
 import unittest
-from pymls import DefaultCryptoProvider
-from pymls.protocol.messages import (
+from rfc9420 import DefaultCryptoProvider
+from rfc9420.protocol.messages import (
     sign_authenticated_content,
     attach_membership_tag,
     verify_plaintext,
@@ -11,9 +11,9 @@ from pymls.protocol.messages import (
     unprotect_content_application,
     ContentType,
 )
-from pymls.protocol.key_schedule import KeySchedule
-from pymls.protocol.data_structures import GroupContext
-from pymls.protocol.secret_tree import SecretTree
+from rfc9420.protocol.key_schedule import KeySchedule
+from rfc9420.protocol.data_structures import GroupContext
+from rfc9420.protocol.secret_tree import SecretTree
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
@@ -67,5 +67,3 @@ class TestMessagesFunctions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -2,11 +2,11 @@ import unittest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from pymls import DefaultCryptoProvider
-from pymls.protocol.mls_group import MLSGroup
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature, Sender
-from pymls.protocol.messages import decode_psk_binder
+from rfc9420 import DefaultCryptoProvider
+from rfc9420.protocol.mls_group import MLSGroup
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature, Sender
+from rfc9420.protocol.messages import decode_psk_binder
 
 
 def _ed25519_keypair():
@@ -25,7 +25,13 @@ def _make_key_package(identity: bytes) -> tuple[KeyPackage, bytes, bytes]:
     kem_sk, kem_pk = _x25519_keypair()
     sig_sk, sig_pk = _ed25519_keypair()
     cred = Credential(identity=identity, public_key=sig_pk)
-    leaf = LeafNode(encryption_key=kem_pk, signature_key=sig_pk, credential=cred, capabilities=b"", parent_hash=b"")
+    leaf = LeafNode(
+        encryption_key=kem_pk,
+        signature_key=sig_pk,
+        credential=cred,
+        capabilities=b"",
+        parent_hash=b"",
+    )
     crypto = DefaultCryptoProvider()
     sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", leaf.serialize())
     kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
@@ -52,4 +58,3 @@ class TestPSKBinder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,7 +1,8 @@
 """Comprehensive tests for pymls.codec.mls module."""
+
 import unittest
 
-from pymls.codec.mls import (
+from rfc9420.codec.mls import (
     encode_welcome,
     decode_welcome,
     encode_commit_message,
@@ -9,7 +10,7 @@ from pymls.codec.mls import (
     encode_proposals_message,
     decode_proposals_message,
 )
-from pymls.protocol.data_structures import (
+from rfc9420.protocol.data_structures import (
     Welcome,
     Commit,
     AddProposal,
@@ -21,9 +22,9 @@ from pymls.protocol.data_structures import (
     MLSVersion,
     UpdatePath,
 )
-from pymls.protocol.key_packages import LeafNode
-from pymls.protocol.data_structures import Credential
-from pymls import DefaultCryptoProvider
+from rfc9420.protocol.key_packages import LeafNode
+from rfc9420.protocol.data_structures import Credential
+from rfc9420 import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
@@ -52,22 +53,42 @@ class TestCodecMLS(unittest.TestCase):
         # Create a minimal Welcome message
         sig_sk = Ed25519PrivateKey.generate()
         sig_pk = sig_sk.public_key()
-        
+
         # Create encrypted group secrets
         enc_secrets = EncryptedGroupSecrets(kem_output=b"\x00" * 16, ciphertext=b"encrypted_data")
-        
+
         # Create group info
-        group_context = GroupContext(group_id=b"test_group", epoch=0, tree_hash=b"\x00" * 32, confirmed_transcript_hash=b"\x00" * 32)
-        group_info = GroupInfo(group_context=group_context, signature=Signature(sig_pk.public_bytes_raw()), extensions=b"", confirmation_tag=b"\x00" * 32, signer_leaf_index=0)
-        
-        cs = CipherSuite(self.crypto.active_ciphersuite.kem, self.crypto.active_ciphersuite.kdf, self.crypto.active_ciphersuite.aead)
+        group_context = GroupContext(
+            group_id=b"test_group",
+            epoch=0,
+            tree_hash=b"\x00" * 32,
+            confirmed_transcript_hash=b"\x00" * 32,
+        )
+        group_info = GroupInfo(
+            group_context=group_context,
+            signature=Signature(sig_pk.public_bytes_raw()),
+            extensions=b"",
+            confirmation_tag=b"\x00" * 32,
+            signer_leaf_index=0,
+        )
+
+        cs = CipherSuite(
+            self.crypto.active_ciphersuite.kem,
+            self.crypto.active_ciphersuite.kdf,
+            self.crypto.active_ciphersuite.aead,
+        )
         # In this codec, Welcome carries encrypted_group_info bytes; keep it simple
-        welcome = Welcome(version=MLSVersion.MLS10, cipher_suite=cs, secrets=[enc_secrets], encrypted_group_info=group_info.serialize())
-        
+        welcome = Welcome(
+            version=MLSVersion.MLS10,
+            cipher_suite=cs,
+            secrets=[enc_secrets],
+            encrypted_group_info=group_info.serialize(),
+        )
+
         # Encode and decode
         encoded = encode_welcome(welcome)
         decoded = decode_welcome(encoded)
-        
+
         self.assertEqual(decoded.version, welcome.version)
         self.assertEqual(decoded.cipher_suite.kem, welcome.cipher_suite.kem)
         self.assertEqual(len(decoded.secrets), len(welcome.secrets))
@@ -80,19 +101,19 @@ class TestCodecMLS(unittest.TestCase):
         leaf = self._make_leaf_node(b"test")
         sig_sk = Ed25519PrivateKey.generate()
         sig_bytes = sig_sk.sign(b"test_data")
-        
+
         update_path = UpdatePath(leaf_node=leaf.serialize(), nodes={})
-        
+
         commit = Commit(
             path=update_path,
             proposals=[],
             signature=Signature(sig_bytes),
         )
-        
+
         # Encode and decode
         encoded = encode_commit_message(commit, sig_bytes)
         decoded_commit, decoded_sig = decode_commit_message(encoded)
-        
+
         self.assertEqual(len(decoded_commit.proposals), len(commit.proposals))
         self.assertEqual(decoded_sig, sig_bytes)
 
@@ -101,26 +122,27 @@ class TestCodecMLS(unittest.TestCase):
         # Create test proposals
         leaf1 = self._make_leaf_node(b"user1")
         leaf2 = self._make_leaf_node(b"user2")
-        
+
         sig_sk1 = Ed25519PrivateKey.generate()
         sig1 = sig_sk1.sign(leaf1.serialize())
-        
+
         sig_sk2 = Ed25519PrivateKey.generate()
         sig2 = sig_sk2.sign(leaf2.serialize())
-        
-        from pymls.protocol.key_packages import KeyPackage
+
+        from rfc9420.protocol.key_packages import KeyPackage
+
         kp1 = KeyPackage(leaf_node=leaf1, signature=Signature(sig1))
         kp2 = KeyPackage(leaf_node=leaf2, signature=Signature(sig2))
-        
+
         proposals = [
             AddProposal(key_package=kp1.serialize()),
             AddProposal(key_package=kp2.serialize()),
         ]
-        
+
         # Encode and decode
         encoded = encode_proposals_message(proposals, b"ignored_signature")
         decoded_proposals, decoded_sig = decode_proposals_message(encoded)
-        
+
         self.assertEqual(len(decoded_proposals), len(proposals))
         self.assertEqual(decoded_sig, b"")
         self.assertIsInstance(decoded_proposals[0], AddProposal)
@@ -131,7 +153,7 @@ class TestCodecMLS(unittest.TestCase):
         proposals = []
         encoded = encode_proposals_message(proposals, b"")
         decoded_proposals, decoded_sig = decode_proposals_message(encoded)
-        
+
         self.assertEqual(len(decoded_proposals), 0)
         self.assertEqual(decoded_sig, b"")
 
@@ -140,14 +162,15 @@ class TestCodecMLS(unittest.TestCase):
         leaf = self._make_leaf_node(b"user")
         sig_sk = Ed25519PrivateKey.generate()
         sig = sig_sk.sign(leaf.serialize())
-        
-        from pymls.protocol.key_packages import KeyPackage
+
+        from rfc9420.protocol.key_packages import KeyPackage
+
         kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
-        
+
         proposals = [AddProposal(key_package=kp.serialize())]
         encoded = encode_proposals_message(proposals, b"")
         decoded_proposals, _ = decode_proposals_message(encoded)
-        
+
         self.assertEqual(len(decoded_proposals), 1)
         self.assertIsInstance(decoded_proposals[0], AddProposal)
 
@@ -161,4 +184,3 @@ class TestCodecMLS(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

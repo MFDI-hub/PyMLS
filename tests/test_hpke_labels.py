@@ -1,17 +1,19 @@
 """Comprehensive tests for pymls.crypto.hpke_labels module."""
+
 import unittest
 
-from pymls.crypto.hpke_labels import (
+from rfc9420.crypto.hpke_labels import (
     encode_encrypt_context,
     encrypt_with_label,
     decrypt_with_label,
 )
-from pymls import DefaultCryptoProvider
+from rfc9420 import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 
 try:
     import cryptography.hazmat.primitives.hpke  # noqa: F401
+
     _HAS_HPKE = True
 except Exception:
     _HAS_HPKE = False
@@ -35,7 +37,7 @@ class TestHPKELabels(unittest.TestCase):
         label = b"test_label"
         context = b"test_context"
         result = encode_encrypt_context(label, context)
-        
+
         # Should contain the label prefixed with "MLS 1.0 "
         self.assertIn(b"MLS 1.0 test_label", result)
         self.assertIn(context, result)
@@ -45,7 +47,7 @@ class TestHPKELabels(unittest.TestCase):
         label = b"Welcome"
         context = b"group_context"
         result = encode_encrypt_context(label, context)
-        
+
         # Should have length prefixes
         self.assertGreater(len(result), len(label) + len(context) + 8)  # +8 for "MLS 1.0 "
 
@@ -56,12 +58,12 @@ class TestHPKELabels(unittest.TestCase):
         pk = sk.public_key()
         sk_bytes = sk.private_bytes_raw()
         pk_bytes = pk.public_bytes_raw()
-        
+
         label = b"Welcome"
         context = b"group_context"
         aad = b"additional_data"
         plaintext = b"secret_message"
-        
+
         # Encrypt
         enc, ciphertext = encrypt_with_label(
             self.crypto,
@@ -71,12 +73,12 @@ class TestHPKELabels(unittest.TestCase):
             aad,
             plaintext,
         )
-        
+
         self.assertIsInstance(enc, bytes)
         self.assertIsInstance(ciphertext, bytes)
         self.assertGreater(len(enc), 0)
         self.assertGreater(len(ciphertext), 0)
-        
+
         # Decrypt
         decrypted = decrypt_with_label(
             self.crypto,
@@ -87,7 +89,7 @@ class TestHPKELabels(unittest.TestCase):
             aad,
             ciphertext,
         )
-        
+
         self.assertEqual(decrypted, plaintext)
 
     def test_encrypt_decrypt_with_label_different_contexts(self):
@@ -96,11 +98,11 @@ class TestHPKELabels(unittest.TestCase):
         pk = sk.public_key()
         sk_bytes = sk.private_bytes_raw()
         pk_bytes = pk.public_bytes_raw()
-        
+
         label = b"Welcome"
         plaintext = b"secret"
         aad = b""
-        
+
         # Encrypt with context1
         enc1, ct1 = encrypt_with_label(
             self.crypto,
@@ -110,7 +112,7 @@ class TestHPKELabels(unittest.TestCase):
             aad,
             plaintext,
         )
-        
+
         # Encrypt with context2
         enc2, ct2 = encrypt_with_label(
             self.crypto,
@@ -120,14 +122,14 @@ class TestHPKELabels(unittest.TestCase):
             aad,
             plaintext,
         )
-        
+
         # Should produce different ciphertexts
         self.assertNotEqual(ct1, ct2)
-        
+
         # But both should decrypt correctly
         dec1 = decrypt_with_label(self.crypto, sk_bytes, enc1, label, b"context1", aad, ct1)
         dec2 = decrypt_with_label(self.crypto, sk_bytes, enc2, label, b"context2", aad, ct2)
-        
+
         self.assertEqual(dec1, plaintext)
         self.assertEqual(dec2, plaintext)
 
@@ -136,11 +138,11 @@ class TestHPKELabels(unittest.TestCase):
         sk = X25519PrivateKey.generate()
         pk = sk.public_key()
         pk_bytes = pk.public_bytes_raw()
-        
+
         context = b"context"
         plaintext = b"secret"
         aad = b""
-        
+
         # Encrypt with label1
         enc1, ct1 = encrypt_with_label(
             self.crypto,
@@ -150,7 +152,7 @@ class TestHPKELabels(unittest.TestCase):
             aad,
             plaintext,
         )
-        
+
         # Encrypt with label2
         enc2, ct2 = encrypt_with_label(
             self.crypto,
@@ -160,7 +162,7 @@ class TestHPKELabels(unittest.TestCase):
             aad,
             plaintext,
         )
-        
+
         # Should produce different ciphertexts
         self.assertNotEqual(ct1, ct2)
 
@@ -170,7 +172,7 @@ class TestHPKELabels(unittest.TestCase):
         pk = sk.public_key()
         sk_bytes = sk.private_bytes_raw()
         pk_bytes = pk.public_bytes_raw()
-        
+
         enc, ct = encrypt_with_label(
             self.crypto,
             pk_bytes,
@@ -179,7 +181,7 @@ class TestHPKELabels(unittest.TestCase):
             b"aad",
             b"",
         )
-        
+
         decrypted = decrypt_with_label(
             self.crypto,
             sk_bytes,
@@ -189,10 +191,9 @@ class TestHPKELabels(unittest.TestCase):
             b"aad",
             ct,
         )
-        
+
         self.assertEqual(decrypted, b"")
 
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,6 +1,6 @@
 import unittest
-from pymls.protocol.secret_tree import SecretTree
-from pymls import DefaultCryptoProvider
+from rfc9420.protocol.secret_tree import SecretTree
+from rfc9420 import DefaultCryptoProvider
 
 
 class TestSecretTree(unittest.TestCase):
@@ -28,5 +28,3 @@ class TestSecretTree(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

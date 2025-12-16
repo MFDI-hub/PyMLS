@@ -9,7 +9,7 @@ sending via next_* helpers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from collections import OrderedDict
 
 from ..crypto.crypto_provider import CryptoProvider
@@ -31,14 +31,14 @@ class _LeafState:
     """Mutable per-leaf state for tracking send generations and ratchet secrets."""
     app_generation: int = 0
     hs_generation: int = 0
-    app_secret: bytes | None = None
-    hs_secret: bytes | None = None
+    app_secret: Optional[bytes] = None
+    hs_secret: Optional[bytes] = None
     # Receive-side state (windowed skipped-keys cache)
     app_recv_generation: int = 0
-    app_recv_secret: bytes | None = None
+    app_recv_secret: Optional[bytes] = None
     app_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = field(default_factory=OrderedDict)
     hs_recv_generation: int = 0
-    hs_recv_secret: bytes | None = None
+    hs_recv_secret: Optional[bytes] = None
     hs_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = field(default_factory=OrderedDict)
 
 

@@ -1,6 +1,6 @@
 import unittest
 
-from pymls.codec.tls import (
+from rfc9420.codec.tls import (
     TLSDecodeError,
     write_uint8,
     read_uint8,
@@ -175,11 +175,11 @@ class TestTLSCodec(unittest.TestCase):
         v2 = write_opaque16(b"second")
         v3 = write_opaque24(b"third")
         combined = v1 + v2 + v3
-        
+
         d1, off1 = read_opaque8(combined, 0)
         d2, off2 = read_opaque16(combined, off1)
         d3, off3 = read_opaque24(combined, off2)
-        
+
         self.assertEqual(d1, b"first")
         self.assertEqual(d2, b"second")
         self.assertEqual(d3, b"third")
@@ -188,4 +188,3 @@ class TestTLSCodec(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

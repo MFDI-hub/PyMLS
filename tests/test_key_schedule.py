@@ -1,7 +1,7 @@
 import unittest
-from pymls.protocol.key_schedule import KeySchedule
-from pymls.protocol.data_structures import GroupContext
-from pymls import DefaultCryptoProvider
+from rfc9420.protocol.key_schedule import KeySchedule
+from rfc9420.protocol.data_structures import GroupContext
+from rfc9420 import DefaultCryptoProvider
 
 
 class TestKeySchedule(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestKeySchedule(unittest.TestCase):
         self.assertTrue(ks.application_secret)
         self.assertTrue(ks.exporter_secret)
         self.assertTrue(ks.membership_key)
-        reuse_guard = b"\xAA\xBB\xCC\xDD"
+        reuse_guard = b"\xaa\xbb\xcc\xdd"
         nonce = ks.sender_data_nonce(reuse_guard)
         self.assertEqual(len(nonce), c.aead_nonce_size())
         # Expand export
@@ -27,5 +27,3 @@ class TestKeySchedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

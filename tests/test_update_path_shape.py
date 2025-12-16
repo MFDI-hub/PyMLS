@@ -1,7 +1,7 @@
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from pymls.protocol.ratchet_tree import RatchetTree
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Signature
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.protocol.ratchet_tree import RatchetTree
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Signature
 
 
 def make_dummy_leaf(crypto: DefaultCryptoProvider) -> LeafNode:
@@ -28,8 +28,9 @@ def test_create_update_path_shape_two_leaves():
     new_leaf0 = make_dummy_leaf(crypto)
     gc_bytes = b"group-context-bytes"
     update_path, commit_secret = tree.create_update_path(0, new_leaf0, gc_bytes)
-    assert isinstance(commit_secret, (bytes, bytearray)) and len(commit_secret) == crypto.kdf_hash_len()
+    assert (
+        isinstance(commit_secret, (bytes, bytearray))
+        and len(commit_secret) == crypto.kdf_hash_len()
+    )
     # With 2 leaves, there should be encryption to the sibling subtree (leaf 1)
     assert isinstance(update_path.nodes, dict) and len(update_path.nodes) >= 0
-
-

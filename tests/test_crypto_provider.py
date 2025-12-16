@@ -1,12 +1,14 @@
 """Comprehensive tests for pymls.DefaultCryptoProvider."""
+
 import unittest
-from pymls import DefaultCryptoProvider
-from pymls.mls.exceptions import UnsupportedCipherSuiteError, InvalidSignatureError
+from rfc9420 import DefaultCryptoProvider
+from rfc9420.mls.exceptions import UnsupportedCipherSuiteError, InvalidSignatureError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.exceptions import InvalidTag
 
 try:
     import cryptography.hazmat.primitives.hpke  # noqa: F401
+
     _HAS_HPKE = True
 except Exception:
     _HAS_HPKE = False
@@ -33,7 +35,7 @@ class TestCryptoProvider(unittest.TestCase):
         """Test set_ciphersuite method."""
         self.crypto.set_ciphersuite(0x0002)
         self.assertEqual(self.crypto.active_ciphersuite.suite_id, 0x0002)
-        
+
         # Reset to default
         self.crypto.set_ciphersuite(0x0001)
         self.assertEqual(self.crypto.active_ciphersuite.suite_id, 0x0001)
@@ -48,7 +50,7 @@ class TestCryptoProvider(unittest.TestCase):
         salt = b"salt"
         ikm = b"input_key_material"
         prk = self.crypto.kdf_extract(salt, ikm)
-        
+
         self.assertIsInstance(prk, bytes)
         self.assertEqual(len(prk), 32)  # HKDF-SHA256 produces 32-byte PRK
 
@@ -66,14 +68,14 @@ class TestCryptoProvider(unittest.TestCase):
         info = b"info"
         length = 16
         expanded = self.crypto.kdf_expand(prk, info, length)
-        
+
         self.assertIsInstance(expanded, bytes)
         self.assertEqual(len(expanded), length)
 
     def test_kdf_expand_different_lengths(self):
         """Test kdf_expand with different lengths."""
         prk = self.crypto.kdf_extract(b"salt", b"ikm")
-        
+
         for length in [1, 16, 32, 64, 100]:
             expanded = self.crypto.kdf_expand(prk, b"info", length)
             self.assertEqual(len(expanded), length)
@@ -83,7 +85,7 @@ class TestCryptoProvider(unittest.TestCase):
         data = b"test_data"
         hash1 = self.crypto.hash(data)
         hash2 = self.crypto.hash(data)
-        
+
         self.assertIsInstance(hash1, bytes)
         self.assertEqual(len(hash1), self.crypto.kdf_hash_len())
         self.assertEqual(hash1, hash2)  # Deterministic
@@ -100,7 +102,7 @@ class TestCryptoProvider(unittest.TestCase):
         out1 = self.crypto.expand_with_label(prk, b"label", b"context", 16)
         out2 = self.crypto.expand_with_label(prk, b"label", b"context", 16)
         self.assertEqual(out1, out2)
-        
+
         ds = self.crypto.derive_secret(prk, b"label2")
         self.assertEqual(len(ds), self.crypto.kdf_hash_len())
 
@@ -116,7 +118,7 @@ class TestCryptoProvider(unittest.TestCase):
         secret = b"secret" * 4  # 24 bytes
         label = b"test_label"
         derived = self.crypto.derive_secret(secret, label)
-        
+
         self.assertIsInstance(derived, bytes)
         self.assertEqual(len(derived), self.crypto.kdf_hash_len())
 
@@ -126,7 +128,7 @@ class TestCryptoProvider(unittest.TestCase):
         nonce = b"\x02" * self.crypto.aead_nonce_size()
         pt = b"hello"
         aad = b"additional_data"
-        
+
         ct = self.crypto.aead_encrypt(key, nonce, pt, aad)
         out = self.crypto.aead_decrypt(key, nonce, ct, aad)
         self.assertEqual(out, pt)
@@ -136,11 +138,11 @@ class TestCryptoProvider(unittest.TestCase):
         key = b"\x01" * self.crypto.aead_key_size()
         nonce = b"\x02" * self.crypto.aead_nonce_size()
         pt = b"plaintext"
-        
+
         ct1 = self.crypto.aead_encrypt(key, nonce, pt, b"aad1")
         ct2 = self.crypto.aead_encrypt(key, nonce, pt, b"aad2")
         self.assertNotEqual(ct1, ct2)
-        
+
         # Both should decrypt correctly
         self.assertEqual(self.crypto.aead_decrypt(key, nonce, ct1, b"aad1"), pt)
         self.assertEqual(self.crypto.aead_decrypt(key, nonce, ct2, b"aad2"), pt)
@@ -150,7 +152,7 @@ class TestCryptoProvider(unittest.TestCase):
         key = b"\x01" * self.crypto.aead_key_size()
         nonce = b"\x02" * self.crypto.aead_nonce_size()
         pt = b"plaintext"
-        
+
         ct = self.crypto.aead_encrypt(key, nonce, pt, b"correct_aad")
         with self.assertRaises(InvalidTag):
             self.crypto.aead_decrypt(key, nonce, ct, b"wrong_aad")
@@ -159,14 +161,14 @@ class TestCryptoProvider(unittest.TestCase):
         """Test HMAC sign and verify."""
         key = b"hmac_key"
         data = b"data_to_authenticate"
-        
+
         tag = self.crypto.hmac_sign(key, data)
         self.assertIsInstance(tag, bytes)
         self.assertEqual(len(tag), self.crypto.kdf_hash_len())
-        
+
         # Should verify successfully
         self.crypto.hmac_verify(key, data, tag)
-        
+
         # Wrong tag should fail
         with self.assertRaises(Exception):
             self.crypto.hmac_verify(key, data, b"\x00" * len(tag))
@@ -185,16 +187,16 @@ class TestCryptoProvider(unittest.TestCase):
         pk = sk.public_key()
         sk_bytes = sk.private_bytes_raw()
         pk_bytes = pk.public_bytes_raw()
-        
+
         data = b"data_to_sign"
         signature = self.crypto.sign(sk_bytes, data)
-        
+
         self.assertIsInstance(signature, bytes)
         self.assertGreater(len(signature), 0)
-        
+
         # Should verify successfully
         self.crypto.verify(pk_bytes, data, signature)
-        
+
         # Wrong signature should fail
         with self.assertRaises(InvalidSignatureError):
             self.crypto.verify(pk_bytes, data, b"\x00" * len(signature))
@@ -205,16 +207,16 @@ class TestCryptoProvider(unittest.TestCase):
         pk = sk.public_key()
         sk_bytes = sk.private_bytes_raw()
         pk_bytes = pk.public_bytes_raw()
-        
+
         label = b"test_label"
         content = b"content_to_sign"
-        
+
         signature = self.crypto.sign_with_label(sk_bytes, label, content)
         self.assertIsInstance(signature, bytes)
-        
+
         # Should verify successfully
         self.crypto.verify_with_label(pk_bytes, label, content, signature)
-        
+
         # Wrong label should fail
         with self.assertRaises(InvalidSignatureError):
             self.crypto.verify_with_label(pk_bytes, b"wrong_label", content, signature)
@@ -227,11 +229,11 @@ class TestCryptoProvider(unittest.TestCase):
         info = b"info"
         aad = b"aad"
         pt = b"plaintext"
-        
+
         enc, ct = self.crypto.hpke_seal(pk, info, aad, pt)
         self.assertIsInstance(enc, bytes)
         self.assertIsInstance(ct, bytes)
-        
+
         out = self.crypto.hpke_open(sk, enc, info, aad, ct)
         self.assertEqual(out, pt)
 
@@ -241,12 +243,12 @@ class TestCryptoProvider(unittest.TestCase):
             self.skipTest("HPKE support not available in this cryptography build")
         sk, pk = self.crypto.generate_key_pair()
         pt = b"plaintext"
-        
+
         enc1, ct1 = self.crypto.hpke_seal(pk, b"info1", b"", pt)
         enc2, ct2 = self.crypto.hpke_seal(pk, b"info2", b"", pt)
-        
+
         self.assertNotEqual(ct1, ct2)
-        
+
         # Both should decrypt correctly
         self.assertEqual(self.crypto.hpke_open(sk, enc1, b"info1", b"", ct1), pt)
         self.assertEqual(self.crypto.hpke_open(sk, enc2, b"info2", b"", ct2), pt)
@@ -254,12 +256,12 @@ class TestCryptoProvider(unittest.TestCase):
     def test_generate_key_pair(self):
         """Test generate_key_pair method."""
         sk, pk = self.crypto.generate_key_pair()
-        
+
         self.assertIsInstance(sk, bytes)
         self.assertIsInstance(pk, bytes)
         self.assertGreater(len(sk), 0)
         self.assertGreater(len(pk), 0)
-        
+
         # Should be able to use for HPKE
         if _HAS_HPKE:
             enc, ct = self.crypto.hpke_seal(pk, b"info", b"", b"test")
@@ -270,10 +272,10 @@ class TestCryptoProvider(unittest.TestCase):
         """Test derive_key_pair method."""
         seed = b"seed" * 8  # 32 bytes
         sk, pk = self.crypto.derive_key_pair(seed)
-        
+
         self.assertIsInstance(sk, bytes)
         self.assertIsInstance(pk, bytes)
-        
+
         # Should be deterministic
         sk2, pk2 = self.crypto.derive_key_pair(seed)
         self.assertEqual(sk, sk2)
@@ -283,7 +285,7 @@ class TestCryptoProvider(unittest.TestCase):
         """Test that different seeds produce different keys."""
         sk1, pk1 = self.crypto.derive_key_pair(b"seed1" * 8)
         sk2, pk2 = self.crypto.derive_key_pair(b"seed2" * 8)
-        
+
         self.assertNotEqual(sk1, sk2)
         self.assertNotEqual(pk1, pk2)
 
@@ -320,5 +322,3 @@ class TestCryptoProvider(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

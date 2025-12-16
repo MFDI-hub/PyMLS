@@ -1,5 +1,5 @@
 import unittest
-from pymls.protocol.test_vectors import generate_key_schedule_vector
+from rfc9420.protocol.test_vectors import generate_key_schedule_vector
 
 
 class TestKeyScheduleVectors(unittest.TestCase):
@@ -22,5 +22,3 @@ class TestKeyScheduleVectors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

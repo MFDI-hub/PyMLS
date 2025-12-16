@@ -1,11 +1,11 @@
 import unittest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import GroupContext, GroupInfo, Signature
-from pymls.protocol.ratchet_tree import RatchetTree
-from pymls.extensions.extensions import Extension, ExtensionType, serialize_extensions
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import GroupContext, GroupInfo, Signature
+from rfc9420.protocol.ratchet_tree import RatchetTree
+from rfc9420.extensions.extensions import Extension, ExtensionType, serialize_extensions
 
 
 class TestGroupInfoVerification(unittest.TestCase):
@@ -28,7 +28,12 @@ class TestGroupInfoVerification(unittest.TestCase):
         exts = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]
         ext_bytes = serialize_extensions(exts)
 
-        gc = GroupContext(group_id=b"g", epoch=1, tree_hash=tree.calculate_tree_hash(), confirmed_transcript_hash=b"x")
+        gc = GroupContext(
+            group_id=b"g",
+            epoch=1,
+            tree_hash=tree.calculate_tree_hash(),
+            confirmed_transcript_hash=b"x",
+        )
         gi_unsigned = GroupInfo(gc, Signature(b""), ext_bytes)
         sig = sk.sign(gi_unsigned.tbs_serialize())
         gi = GroupInfo(gc, Signature(sig), ext_bytes)
@@ -46,6 +51,6 @@ class TestGroupInfoVerification(unittest.TestCase):
                     break
                 except Exception:
                     continue
-        self.assertTrue(verified, "GroupInfo signature should verify with a leaf signer from the tree")
-
-
+        self.assertTrue(
+            verified, "GroupInfo signature should verify with a leaf signer from the tree"
+        )

@@ -1,7 +1,9 @@
 """Core protocol data structures and (de)serialization helpers for MLS."""
+
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from abc import ABC, abstractmethod
+from typing import Optional
 import struct
 
 from ..crypto.ciphersuites import KEM, KDF, AEAD
@@ -15,18 +17,20 @@ def serialize_bytes(data: bytes) -> bytes:
 
 def deserialize_bytes(data: bytes) -> tuple[bytes, bytes]:
     """Deserializes bytes with a 4-byte length prefix."""
-    length, = struct.unpack("!L", data[:4])
-    return data[4:4+length], data[4+length:]
+    (length,) = struct.unpack("!L", data[:4])
+    return data[4 : 4 + length], data[4 + length :]
 
 
 class MLSVersion(Enum):
     """Protocol version enumeration."""
+
     MLS10 = "mls10"
 
 
 @dataclass(frozen=True)
 class CipherSuite:
     """Selected KEM, KDF, and AEAD identifiers for an epoch."""
+
     kem: KEM
     kdf: KDF
     aead: AEAD
@@ -45,6 +49,7 @@ class CipherSuite:
 @dataclass(frozen=True)
 class Sender:
     """Sender descriptor carrying the leaf index."""
+
     sender: int  # leaf index
 
     def serialize(self) -> bytes:
@@ -54,13 +59,14 @@ class Sender:
     @classmethod
     def deserialize(cls, data: bytes) -> "Sender":
         """Parse from 4-byte uint32."""
-        sender, = struct.unpack("!I", data)
+        (sender,) = struct.unpack("!I", data)
         return cls(sender)
 
 
 @dataclass(frozen=True)
 class Credential:
     """Basic credential carrying identity and signature public key."""
+
     identity: bytes
     public_key: bytes
 
@@ -79,6 +85,7 @@ class Credential:
 @dataclass(frozen=True)
 class Signature:
     """Wrapper for raw signature bytes."""
+
     value: bytes
 
     def serialize(self) -> bytes:
@@ -98,6 +105,7 @@ class SignContent:
     Serialized as:
         uint32(len(label)) || label || uint32(len(content)) || content
     """
+
     label: bytes
     content: bytes
 
@@ -108,6 +116,7 @@ class SignContent:
 
 class ProposalType(IntEnum):
     """Enumeration of proposal kinds."""
+
     ADD = 1
     UPDATE = 2
     REMOVE = 3
@@ -120,6 +129,7 @@ class ProposalType(IntEnum):
 
 class Proposal(ABC):
     """Base class for all proposals."""
+
     @property
     @abstractmethod
     def proposal_type(self) -> ProposalType:
@@ -138,7 +148,7 @@ class Proposal(ABC):
     @classmethod
     def deserialize(cls, data: bytes) -> "Proposal":
         """Dispatch to the appropriate concrete Proposal subclass."""
-        proposal_type, = struct.unpack("!B", data[:1])
+        (proposal_type,) = struct.unpack("!B", data[:1])
         content = data[1:]
 
         if proposal_type == ProposalType.ADD:
@@ -164,6 +174,7 @@ class Proposal(ABC):
 @dataclass(frozen=True)
 class AddProposal(Proposal):
     """Proposal to add a new member by KeyPackage."""
+
     key_package: bytes
 
     @property
@@ -190,6 +201,7 @@ class AddProposal(Proposal):
 @dataclass(frozen=True)
 class UpdateProposal(Proposal):
     """Proposal to update a member's leaf node."""
+
     leaf_node: bytes
 
     @property
@@ -215,6 +227,7 @@ class UpdateProposal(Proposal):
 @dataclass(frozen=True)
 class RemoveProposal(Proposal):
     """Proposal to remove a member by leaf index."""
+
     removed: int
 
     @property
@@ -234,13 +247,14 @@ class RemoveProposal(Proposal):
         """
         if data and data[0] == ProposalType.REMOVE:
             data = data[1:]
-        removed, = struct.unpack("!I", data)
+        (removed,) = struct.unpack("!I", data)
         return cls(removed)
 
 
 @dataclass(frozen=True)
 class PreSharedKeyProposal(Proposal):
     """Proposal to bind a pre-shared key (PSK)."""
+
     psk_id: bytes
 
     @property
@@ -267,6 +281,7 @@ class PreSharedKeyProposal(Proposal):
 @dataclass(frozen=True)
 class ReInitProposal(Proposal):
     """Proposal to re-initialize the group with a new group_id."""
+
     new_group_id: bytes
 
     @property
@@ -293,6 +308,7 @@ class ReInitProposal(Proposal):
 @dataclass(frozen=True)
 class ExternalInitProposal(Proposal):
     """Proposal to publish an external HPKE public key for external commits."""
+
     kem_public_key: bytes
 
     @property
@@ -319,6 +335,7 @@ class ExternalInitProposal(Proposal):
 @dataclass(frozen=True)
 class GroupContextExtensionsProposal(Proposal):
     """Proposal to set or update GroupContext extensions (opaque payload)."""
+
     extensions: bytes
 
     @property
@@ -341,9 +358,11 @@ class GroupContextExtensionsProposal(Proposal):
         ext, _ = deserialize_bytes(data)
         return cls(ext)
 
+
 @dataclass(frozen=True)
 class AppAckProposal(Proposal):
     """Application Acknowledgement proposal carrying opaque authenticated_data."""
+
     authenticated_data: bytes
 
     @property
@@ -367,17 +386,21 @@ class AppAckProposal(Proposal):
         authenticated_data, _ = deserialize_bytes(data)
         return cls(authenticated_data)
 
+
 class ProposalOrRefType(IntEnum):
     """Discriminator for Commit proposals vector entries."""
+
     PROPOSAL = 1
     REFERENCE = 2
+
 
 @dataclass(frozen=True)
 class ProposalOrRef:
     """Union of a Proposal by-value or a Proposal reference (opaque bytes)."""
+
     typ: ProposalOrRefType
-    proposal: Proposal | None = None
-    reference: bytes | None = None
+    proposal: Optional[Proposal] = None
+    reference: Optional[bytes] = None
 
     def serialize(self) -> bytes:
         """Encode as uint8 typ || opaque16(payload)."""
@@ -399,7 +422,7 @@ class ProposalOrRef:
         """Parse from bytes produced by serialize()."""
         if len(data) < 1:
             raise PyMLSError("invalid ProposalOrRef encoding")
-        t_val, = struct.unpack("!B", data[:1])
+        (t_val,) = struct.unpack("!B", data[:1])
         typ = ProposalOrRefType(t_val)
         payload, _ = deserialize_bytes(data[1:])
         if typ == ProposalOrRefType.PROPOSAL:
@@ -408,9 +431,11 @@ class ProposalOrRef:
             return cls(typ=typ, reference=payload)
         raise PyMLSError("unknown ProposalOrRefType during deserialize")
 
+
 @dataclass(frozen=True)
 class UpdatePath:
     """Commit path structure with leaf and per-recipient encrypted path secrets."""
+
     leaf_node: bytes
     # Map of copath node index -> list of per-recipient HPKE blobs,
     # where each blob encodes opaque16(enc) || opaque16(ct).
@@ -432,13 +457,13 @@ class UpdatePath:
     def deserialize(cls, data: bytes) -> "UpdatePath":
         """Parse an UpdatePath from bytes produced by serialize()."""
         leaf_node, rest = deserialize_bytes(data)
-        num_nodes, = struct.unpack("!H", rest[:2])
+        (num_nodes,) = struct.unpack("!H", rest[:2])
         rest = rest[2:]
         nodes = {}
         for _ in range(num_nodes):
-            key, = struct.unpack("!I", rest[:4])
+            (key,) = struct.unpack("!I", rest[:4])
             rest = rest[4:]
-            num_recips, = struct.unpack("!H", rest[:2])
+            (num_recips,) = struct.unpack("!H", rest[:2])
             rest = rest[2:]
             recips: list[bytes] = []
             for __ in range(num_recips):
@@ -447,10 +472,12 @@ class UpdatePath:
             nodes[key] = recips
         return cls(leaf_node, nodes)
 
+
 @dataclass(frozen=True)
 class Commit:
     """Commit object carrying optional UpdatePath and proposal list (by-value or by-reference)."""
-    path: UpdatePath | None
+
+    path: Optional[UpdatePath]
     proposals: list[ProposalOrRef]
     signature: Signature
 
@@ -458,10 +485,10 @@ class Commit:
         """Encode presence of path, proposals vector, and signature."""
         data = b""
         if self.path:
-            data += b'\x01'
+            data += b"\x01"
             data += serialize_bytes(self.path.serialize())
         else:
-            data += b'\x00'
+            data += b"\x00"
         # Proposals vector
         data += struct.pack("!H", len(self.proposals))
         for por in self.proposals:
@@ -472,13 +499,13 @@ class Commit:
     @classmethod
     def deserialize(cls, data: bytes) -> "Commit":
         """Parse a Commit from bytes produced by serialize()."""
-        has_path = (data[0] == 1)
+        has_path = data[0] == 1
         rest = data[1:]
         path = None
         if has_path:
             path_bytes, rest = deserialize_bytes(rest)
             path = UpdatePath.deserialize(path_bytes)
-        num_props, = struct.unpack("!H", rest[:2])
+        (num_props,) = struct.unpack("!H", rest[:2])
         rest = rest[2:]
         proposals: list[ProposalOrRef] = []
         for _ in range(num_props):
@@ -491,6 +518,7 @@ class Commit:
 @dataclass(frozen=True)
 class Welcome:
     """Welcome message carrying epoch secrets and encrypted GroupInfo."""
+
     version: MLSVersion
     cipher_suite: CipherSuite
     secrets: list["EncryptedGroupSecrets"]
@@ -498,7 +526,7 @@ class Welcome:
 
     def serialize(self) -> bytes:
         """Encode version, cipher suite, secrets, and encrypted GroupInfo."""
-        data = serialize_bytes(self.version.value.encode('utf-8'))
+        data = serialize_bytes(self.version.value.encode("utf-8"))
         data += self.cipher_suite.serialize()
 
         data += struct.pack("!H", len(self.secrets))
@@ -512,12 +540,12 @@ class Welcome:
     def deserialize(cls, data: bytes) -> "Welcome":
         """Parse a Welcome from bytes produced by serialize()."""
         version_bytes, rest = deserialize_bytes(data)
-        version = MLSVersion(version_bytes.decode('utf-8'))
+        version = MLSVersion(version_bytes.decode("utf-8"))
 
         cipher_suite = CipherSuite.deserialize(rest[:6])
         rest = rest[6:]
 
-        num_secrets, = struct.unpack("!H", rest[:2])
+        (num_secrets,) = struct.unpack("!H", rest[:2])
         rest = rest[2:]
         secrets: list[EncryptedGroupSecrets] = []
         for _ in range(num_secrets):
@@ -532,6 +560,7 @@ class Welcome:
 @dataclass(frozen=True)
 class GroupContext:
     """Group context bound into key schedule and transcript computation."""
+
     group_id: bytes
     epoch: int
     tree_hash: bytes
@@ -548,7 +577,7 @@ class GroupContext:
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupContext":
         """Parse GroupContext from bytes produced by serialize()."""
-        epoch, = struct.unpack("!Q", data[:8])
+        (epoch,) = struct.unpack("!Q", data[:8])
         rest = data[8:]
         group_id, rest = deserialize_bytes(rest)
         tree_hash, rest = deserialize_bytes(rest)
@@ -559,6 +588,7 @@ class GroupContext:
 @dataclass(frozen=True)
 class GroupInfo:
     """Signed GroupContext and optional extensions referenced by Welcome."""
+
     group_context: GroupContext
     signature: Signature
     extensions: bytes = b""  # serialized extensions (opaque); MVP keeps raw for flexibility
@@ -597,6 +627,7 @@ class GroupInfo:
 @dataclass(frozen=True)
 class EncryptedGroupSecrets:
     """HPKE-wrapped epoch secret material for a specific recipient."""
+
     kem_output: bytes
     ciphertext: bytes
 
@@ -615,8 +646,9 @@ class EncryptedGroupSecrets:
 @dataclass(frozen=True)
 class GroupSecrets:
     """Secrets for onboarding new members via Welcome (RFC §12.4.3)."""
+
     joiner_secret: bytes
-    psk_secret: bytes | None = None
+    psk_secret: Optional[bytes] = None
 
     def serialize(self) -> bytes:
         out = serialize_bytes(self.joiner_secret)
@@ -628,5 +660,3 @@ class GroupSecrets:
         js, rest = deserialize_bytes(data)
         psk, _ = deserialize_bytes(rest) if rest else (b"", b"")
         return cls(js, psk if psk else None)
-
-

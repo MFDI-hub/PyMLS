@@ -1,13 +1,14 @@
 """Comprehensive tests for pymls.interop.wire module."""
+
 import unittest
 
-from pymls.interop.wire import (
+from rfc9420.interop.wire import (
     encode_handshake,
     decode_handshake,
     encode_application,
     decode_application,
 )
-from pymls.protocol.messages import (
+from rfc9420.protocol.messages import (
     MLSPlaintext,
     MLSCiphertext,
     ContentType,
@@ -15,11 +16,11 @@ from pymls.protocol.messages import (
     AuthenticatedContentTBS,
     AuthenticatedContent,
 )
-from pymls import DefaultCryptoProvider
+from rfc9420 import DefaultCryptoProvider
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 
 
 class TestInteropWire(unittest.TestCase):
@@ -45,7 +46,7 @@ class TestInteropWire(unittest.TestCase):
 
     def test_encode_decode_handshake_roundtrip(self):
         """Test encode_handshake and decode_handshake roundtrip."""
-        
+
         # Create a minimal MLSPlaintext via messages API
         group_id = b"test_group"
         epoch = 0
@@ -59,21 +60,24 @@ class TestInteropWire(unittest.TestCase):
         )
         auth_content = AuthenticatedContent(tbs=tbs, signature=b"dummy_sig", membership_tag=None)
         plaintext = MLSPlaintext(auth_content=auth_content)
-        
+
         # Encode and decode
         encoded = encode_handshake(plaintext)
         decoded = decode_handshake(encoded)
-        
+
         self.assertEqual(decoded.auth_content.tbs.group_id, plaintext.auth_content.tbs.group_id)
         self.assertEqual(decoded.auth_content.tbs.epoch, plaintext.auth_content.tbs.epoch)
-        self.assertEqual(decoded.auth_content.tbs.framed_content.content_type, plaintext.auth_content.tbs.framed_content.content_type)
+        self.assertEqual(
+            decoded.auth_content.tbs.framed_content.content_type,
+            plaintext.auth_content.tbs.framed_content.content_type,
+        )
 
     def test_encode_decode_application_roundtrip(self):
         """Test encode_application and decode_application roundtrip."""
         # Create a minimal MLSCiphertext
         group_id = b"test_group"
         epoch = 0
-        
+
         ciphertext = MLSCiphertext(
             group_id=group_id,
             epoch=epoch,
@@ -82,11 +86,11 @@ class TestInteropWire(unittest.TestCase):
             encrypted_sender_data=b"encrypted_sender",
             ciphertext=b"encrypted_content",
         )
-        
+
         # Encode and decode
         encoded = encode_application(ciphertext)
         decoded = decode_application(encoded)
-        
+
         self.assertEqual(decoded.group_id, ciphertext.group_id)
         self.assertEqual(decoded.epoch, ciphertext.epoch)
         self.assertEqual(decoded.content_type, ciphertext.content_type)
@@ -97,7 +101,7 @@ class TestInteropWire(unittest.TestCase):
         """Test that encode_handshake preserves message structure."""
         group_id = b"test_group"
         epoch = 1
-        
+
         framed = FramedContent(content_type=ContentType.COMMIT, content=b"commit_content")
         tbs = AuthenticatedContentTBS(
             group_id=group_id,
@@ -108,7 +112,7 @@ class TestInteropWire(unittest.TestCase):
         )
         auth_content = AuthenticatedContent(tbs=tbs, signature=b"sig", membership_tag=None)
         plaintext = MLSPlaintext(auth_content=auth_content)
-        
+
         encoded = encode_handshake(plaintext)
         # Should be able to deserialize
         decoded = decode_handshake(encoded)
@@ -125,10 +129,10 @@ class TestInteropWire(unittest.TestCase):
             encrypted_sender_data=b"sender_data",
             ciphertext=b"ciphertext_data",
         )
-        
+
         encoded = encode_application(ciphertext)
         decoded = decode_application(encoded)
-        
+
         self.assertEqual(decoded.group_id, ciphertext.group_id)
         self.assertEqual(decoded.epoch, ciphertext.epoch)
         self.assertEqual(decoded.encrypted_sender_data, ciphertext.encrypted_sender_data)

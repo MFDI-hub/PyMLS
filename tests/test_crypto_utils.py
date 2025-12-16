@@ -1,7 +1,8 @@
 """Comprehensive tests for pymls.crypto.utils module."""
+
 import unittest
 
-from pymls.crypto.utils import secure_wipe
+from rfc9420.crypto.utils import secure_wipe
 
 
 class TestCryptoUtils(unittest.TestCase):
@@ -37,7 +38,7 @@ class TestCryptoUtils(unittest.TestCase):
 
     def test_secure_wipe_all_bytes_zeroed(self):
         """Test that all bytes are zeroed."""
-        buf = bytearray(b"\x01\x02\x03\xFF\xAA")
+        buf = bytearray(b"\x01\x02\x03\xff\xaa")
         secure_wipe(buf)
         for byte in buf:
             self.assertEqual(byte, 0)
@@ -45,4 +46,3 @@ class TestCryptoUtils(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

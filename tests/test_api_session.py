@@ -3,10 +3,10 @@ import unittest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from pymls import DefaultCryptoProvider
-from pymls.api import MLSGroupSession
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420 import DefaultCryptoProvider
+from rfc9420.api import MLSGroupSession
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 
 
 def _ed25519_keypair():

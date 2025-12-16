@@ -14,12 +14,13 @@ Example:
     >>> crypto = DefaultCryptoProvider()
     >>> group = Group.create(b"group1", key_package, crypto)
 """
+
 from .mls.group import Group  # High-level API
 from .crypto.default_crypto_provider import DefaultCryptoProvider
 from .protocol.mls_group import MLSGroup  # Low-level protocol implementation
+from .protocol.data_structures import CipherSuite
 from .api import MLSGroupSession
 
-__all__ = ["Group", "DefaultCryptoProvider", "MLSGroup", "MLSGroupSession"]
+__all__ = ["Group", "DefaultCryptoProvider", "MLSGroup", "MLSGroupSession", "CipherSuite"]
 
-__version__ = "0.2.0"
-
+__version__ = "0.1.0"

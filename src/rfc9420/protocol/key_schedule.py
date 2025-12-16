@@ -5,6 +5,7 @@ Rationale:
 - Implements RFC 9420 §9 (Secret Derivation) and §10 (Key Schedule) using
   ExpandWithLabel/DeriveSecret helpers provided by the CryptoProvider.
 """
+from typing import Optional
 from .data_structures import GroupContext
 from ..crypto.crypto_provider import CryptoProvider
 
@@ -17,7 +18,7 @@ class KeySchedule:
     handshake, application, exporter, external, and sender-data, as well as
     helpers for confirmation, membership, resumption, and content encryption.
     """
-    def __init__(self, init_secret: bytes, commit_secret: bytes, group_context: GroupContext, psk_secret: bytes | None, crypto_provider: CryptoProvider):
+    def __init__(self, init_secret: bytes, commit_secret: bytes, group_context: GroupContext, psk_secret: Optional[bytes], crypto_provider: CryptoProvider):
         """Construct a new key schedule for the current epoch.
 
         Parameters

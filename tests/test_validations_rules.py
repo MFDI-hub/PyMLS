@@ -1,10 +1,18 @@
 import unittest
-from pymls.protocol.validations import (
+from rfc9420.protocol.validations import (
     validate_proposals_client_rules,
     validate_commit_matches_referenced_proposals,
     CommitValidationError,
 )
-from pymls.protocol.data_structures import AddProposal, RemoveProposal, UpdateProposal, Commit, Signature, ProposalOrRef, ProposalOrRefType
+from rfc9420.protocol.data_structures import (
+    AddProposal,
+    RemoveProposal,
+    UpdateProposal,
+    Commit,
+    Signature,
+    ProposalOrRef,
+    ProposalOrRefType,
+)
 
 
 class TestValidations(unittest.TestCase):
@@ -36,5 +44,3 @@ class TestValidations(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -3,13 +3,13 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pymls"
+name = "rfc9420"
 version = "0.1.0"
 description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-authors = [{ name = "PyMLS maintainers" }]
+authors = [{ name = "rfc9420 maintainers" }]
 keywords = ["mls", "messaging layer security", "rfc9420", "cryptography", "hpke"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -45,15 +45,19 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py39"
 line-length = 100
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.9"
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unused_configs = true
 strict_optional = true
 check_untyped_defs = true
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["tests"]
 

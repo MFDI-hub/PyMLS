@@ -1,7 +1,8 @@
 """Comprehensive tests for pymls.crypto.ciphersuites module."""
+
 import unittest
 
-from pymls.crypto.ciphersuites import (
+from rfc9420.crypto.ciphersuites import (
     KEM,
     KDF,
     AEAD,
@@ -22,7 +23,7 @@ class TestCiphersuites(unittest.TestCase):
         suite = get_ciphersuite_by_id(0x0001)
         self.assertIsNotNone(suite)
         self.assertEqual(suite.suite_id, 0x0001)
-        
+
         suite = get_ciphersuite_by_id(0x0002)
         self.assertIsNotNone(suite)
         self.assertEqual(suite.suite_id, 0x0002)
@@ -47,7 +48,7 @@ class TestCiphersuites(unittest.TestCase):
         """Test all_ciphersuites returns all registered suites."""
         suites = list(all_ciphersuites())
         self.assertGreater(len(suites), 0)
-        
+
         # Should have unique suite IDs
         suite_ids = [s.suite_id for s in suites]
         self.assertEqual(len(suite_ids), len(set(suite_ids)))
@@ -57,10 +58,10 @@ class TestCiphersuites(unittest.TestCase):
         ids = list_ciphersuite_ids()
         self.assertGreater(len(ids), 0)
         self.assertIsInstance(ids, list)
-        
+
         # Should be sorted
         self.assertEqual(ids, sorted(ids))
-        
+
         # Should contain known IDs
         self.assertIn(0x0001, ids)
 
@@ -69,10 +70,10 @@ class TestCiphersuites(unittest.TestCase):
         names = list_ciphersuite_names()
         self.assertGreater(len(names), 0)
         self.assertIsInstance(names, list)
-        
+
         # Should be sorted
         self.assertEqual(names, sorted(names))
-        
+
         # Should contain known names
         self.assertIn("MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519", names)
 
@@ -95,7 +96,7 @@ class TestCiphersuites(unittest.TestCase):
         """Test that ciphersuite has required properties."""
         suite = get_ciphersuite_by_id(0x0001)
         self.assertIsNotNone(suite)
-        
+
         self.assertIsInstance(suite.suite_id, int)
         self.assertIsInstance(suite.name, str)
         self.assertIsInstance(suite.kem, KEM)
@@ -107,10 +108,10 @@ class TestCiphersuites(unittest.TestCase):
         """Test consistency between different lookup methods."""
         suite_by_id = get_ciphersuite_by_id(0x0001)
         self.assertIsNotNone(suite_by_id)
-        
+
         suite_by_name = get_ciphersuite_by_name(suite_by_id.name)
         self.assertIsNotNone(suite_by_name)
-        
+
         self.assertEqual(suite_by_id.suite_id, suite_by_name.suite_id)
         self.assertEqual(suite_by_id.name, suite_by_name.name)
         self.assertEqual(suite_by_id.kem, suite_by_name.kem)
@@ -122,7 +123,7 @@ class TestCiphersuites(unittest.TestCase):
         """Test that all standard RFC ciphersuites are available."""
         # Check for some known RFC 9420 ciphersuites
         known_ids = [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008]
-        
+
         for suite_id in known_ids:
             suite = get_ciphersuite_by_id(suite_id)
             if suite_id <= 0x0008:  # These should exist
@@ -131,4 +132,3 @@ class TestCiphersuites(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

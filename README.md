@@ -1,10 +1,10 @@
-# PyMLS
+# RFC9420
 
 Pure Messaging Layer Security (MLS, RFC 9420) library in Python.
 
 ## Overview
 
-PyMLS is a minimal, pragmatic implementation of the Messaging Layer Security protocol as specified in RFC 9420. The library provides a clean Python API for creating and managing MLS groups, handling cryptographic operations, and interoperating with other MLS implementations.
+RFC9420 is a minimal, pragmatic implementation of the Messaging Layer Security protocol as specified in RFC 9420. The library provides a clean Python API for creating and managing MLS groups, handling cryptographic operations, and interoperating with other MLS implementations.
 
 ### Status
 
@@ -12,7 +12,7 @@ PyMLS is a minimal, pragmatic implementation of the Messaging Layer Security pro
 - ✅ Group state machine for Add/Update/Remove, commit create/process (RFC-aligned ordering)
 - ✅ Ratchet tree with RFC-style parent-hash validation
 - ✅ Welcome processing with full ratchet_tree extension (internal nodes included)
-- ✅ Ergonomic API: `pymls.Group`
+- ✅ Ergonomic API: `RFC9420.Group`
 - ✅ RFC 9420 test vector support
 - ✅ External commit and PSK support
 - ✅ X.509 credential verification and revocation helpers
@@ -23,9 +23,9 @@ PyMLS is a minimal, pragmatic implementation of the Messaging Layer Security pro
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from pymls import Group, DefaultCryptoProvider
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420 import Group, DefaultCryptoProvider
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 
 crypto = DefaultCryptoProvider()  # MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
 
@@ -96,7 +96,7 @@ The `Group` class provides a high-level API for MLS group management:
 
 ### Ciphersuites
 
-PyMLS supports all RFC 9420 §16.3 ciphersuites:
+FC9420 supports all RFC 9420 §16.3 ciphersuites:
 
 - `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (0x0001) - Default
 - `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (0x0002)
@@ -173,7 +173,7 @@ Out-of-order application/handshake decryption is supported via a sliding window 
 Configure at group creation:
 
 ```python
-from pymls.protocol.mls_group import MLSGroup
+from rfc9420.protocol.mls_group import MLSGroup
 
 group = MLSGroup.create(
     group_id=b"group1",
@@ -194,7 +194,7 @@ The ratchet tree truncates immediately when the rightmost leaf (and all trailing
 KeyPackage verification checks that the credential public key matches the leaf signature key. X.509 credential containers are supported:
 
 ```python
-from pymls.crypto.x509 import X509Credential
+from rfc9420.crypto.x509 import X509Credential
 
 # Verify X.509 certificate chain
 cred = X509Credential.deserialize(cert_der)
@@ -212,8 +212,8 @@ group._inner.set_trust_roots([trust_root1_der, trust_root2_der])
 Revocation checks are pluggable. Batteries-included helpers are available:
 
 ```python
-from pymls.crypto.x509_revocation import check_ocsp_end_entity, check_crl
-from pymls.crypto.x509_policy import X509Policy, RevocationConfig
+from rfc9420.crypto.x509_revocation import check_ocsp_end_entity, check_crl
+from rfc9420.crypto.x509_policy import X509Policy, RevocationConfig
 
 policy = X509Policy(
     revocation=RevocationConfig(
@@ -230,7 +230,7 @@ By default, helpers fail-closed on network/responder errors (return revoked). To
 
 ## RFC 9420 Compliance
 
-PyMLS aligns closely with RFC 9420 semantics:
+RFC9420 aligns closely with RFC 9420 semantics:
 
 - **Update Path Derivation**: Internode keys use top-down `path_secret` construction (RFC §7.4). A fresh `path_secret` is generated at the leaf and ratcheted upward with `DeriveSecret(..., "path")`. Each node key pair is deterministically derived from `DeriveSecret(path_secret, "node")`.
 
@@ -258,7 +258,7 @@ PyMLS aligns closely with RFC 9420 semantics:
 Run the RFC 9420 test vectors:
 
 ```bash
-python -m pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
+python -m rfc9420.interop.test_vectors_runner /path/to/vectors --suite 0x0001
 ```
 
 Supported types include `key_schedule`, `tree_math`, `secret_tree`, `message_protection`, `welcome_groupinfo`, `tree_operations`, `messages`, and `encryption`. A JSON summary is printed.
@@ -269,23 +269,23 @@ The interop CLI exposes RFC-wire encode/decode helpers for handshake and applica
 
 ```bash
 # Encode handshake (hex → base64 TLS presentation bytes)
-python -m pymls.interop.cli wire encode-handshake <hex_plaintext>
+python -m rfc9420.interop.cli wire encode-handshake <hex_plaintext>
 
 # Decode handshake (base64 → hex)
-python -m pymls.interop.cli wire decode-handshake <b64_wire>
+python -m rfc9420.interop.cli wire decode-handshake <b64_wire>
 
 # Encode application (hex → base64)
-python -m pymls.interop.cli wire encode-application <hex_ciphertext>
+python -m rfc9420.interop.cli wire encode-application <hex_ciphertext>
 
 # Decode application (base64 → hex)
-python -m pymls.interop.cli wire decode-application <b64_wire>
+python -m rfc9420.interop.cli wire decode-application <b64_wire>
 ```
 
 This is intended to interoperate with other MLS implementations (e.g., OpenMLS). Wire helpers use the TLS presentation bytes described in RFC 9420 (§6–§7 for handshake, §9 for application).
 
 ## API Reference
 
-### `pymls.Group`
+### `rfc9420.Group`
 
 High-level wrapper around `MLSGroup` providing an ergonomic API.
 
@@ -305,7 +305,7 @@ High-level wrapper around `MLSGroup` providing an ergonomic API.
 - `epoch: int` - Current group epoch
 - `group_id: bytes` - Group identifier
 
-### `pymls.DefaultCryptoProvider`
+### `rfc9420.DefaultCryptoProvider`
 
 Concrete `CryptoProvider` implementation using the `cryptography` library.
 
@@ -319,7 +319,7 @@ Concrete `CryptoProvider` implementation using the `cryptography` library.
 **Methods:**
 - `set_ciphersuite(suite_id: int) -> None` - Select a different ciphersuite
 
-### `pymls.protocol.mls_group.MLSGroup`
+### `rfc9420.protocol.mls_group.MLSGroup`
 
 Core protocol implementation. Most users should use `Group` instead.
 

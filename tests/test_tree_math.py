@@ -1,7 +1,8 @@
 """Comprehensive tests for pymls.protocol.tree_math module."""
+
 import unittest
 
-from pymls.protocol.tree_math import (
+from rfc9420.protocol.tree_math import (
     log2,
     level,
     node_width,
@@ -13,7 +14,7 @@ from pymls.protocol.tree_math import (
     direct_path,
     copath,
 )
-from pymls.mls.exceptions import PyMLSError
+from rfc9420.mls.exceptions import PyMLSError
 
 
 class TestTreeMath(unittest.TestCase):
@@ -37,7 +38,7 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(level(2), 0)
         self.assertEqual(level(4), 0)
         self.assertEqual(level(6), 0)
-        
+
         # Odd indices are internal nodes
         self.assertEqual(level(1), 1)
         self.assertEqual(level(3), 2)
@@ -74,7 +75,7 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(left(3), 1)
         # Left child of node 5 (level 1) should be 4
         self.assertEqual(left(5), 4)
-        
+
         # Leaf nodes should raise error
         with self.assertRaises(PyMLSError):
             left(0)
@@ -87,7 +88,7 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(right(1, 3), 2)
         # Right child of node 3 (level 2) should be 5
         self.assertEqual(right(3, 7), 5)
-        
+
         # Leaf nodes should raise error
         with self.assertRaises(PyMLSError):
             right(0, 3)
@@ -102,7 +103,7 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(parent(2, 2), 1)
         # Parent of leaf 4 should be 5
         self.assertEqual(parent(4, 5), 5)
-        
+
         # Root node should raise error
         with self.assertRaises(PyMLSError):
             parent(1, 2)  # 1 is root for n=2
@@ -120,11 +121,11 @@ class TestTreeMath(unittest.TestCase):
         """Test direct_path function."""
         # Direct path from root should be empty
         self.assertEqual(direct_path(1, 2), [])
-        
+
         # Direct path from leaf 0 in tree of 2 leaves
         path = direct_path(0, 2)
         self.assertEqual(path, [1])  # Path to root (excluding root)
-        
+
         # Direct path from leaf 4 in tree of 5 leaves
         path = direct_path(4, 5)
         # Should go: 4 -> 5 -> 7 (root is 7, so path is [5, 7])
@@ -135,12 +136,12 @@ class TestTreeMath(unittest.TestCase):
         """Test copath function."""
         # Copath from root should be empty
         self.assertEqual(copath(1, 2), [])
-        
+
         # Copath from leaf 0 in tree of 2 leaves
         cop = copath(0, 2)
         # Should include sibling of nodes on direct path
         self.assertEqual(cop, [2])  # Sibling of 0
-        
+
         # Copath from leaf 4 in tree of 5 leaves
         cop = copath(4, 5)
         # Should include siblings along the path
@@ -150,11 +151,11 @@ class TestTreeMath(unittest.TestCase):
         """Test that tree structure functions are consistent."""
         n = 8
         r = root(n)
-        
+
         # Root should have no parent
         with self.assertRaises(PyMLSError):
             parent(r, n)
-        
+
         # For each leaf, verify parent-child relationships
         for leaf in range(0, n, 2):  # Even indices are leaves
             p = parent(leaf, n)
@@ -162,7 +163,7 @@ class TestTreeMath(unittest.TestCase):
             left_child = left(p) if p % 2 == 1 else None
             right_child = right(p, n) if p % 2 == 1 else None
             self.assertTrue(leaf == left_child or leaf == right_child)
-            
+
             # Sibling should be the other child
             s = sibling(leaf, n)
             self.assertNotEqual(s, leaf)
@@ -187,4 +188,3 @@ class TestTreeMath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

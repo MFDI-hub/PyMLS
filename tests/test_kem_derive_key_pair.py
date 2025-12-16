@@ -1,4 +1,4 @@
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
 
 
 def test_derive_key_pair_is_deterministic():
@@ -8,5 +8,3 @@ def test_derive_key_pair_is_deterministic():
     sk2, pk2 = crypto.derive_key_pair(seed)
     assert sk1 == sk2
     assert pk1 == pk2
-
-

@@ -44,6 +44,7 @@ from ..mls.exceptions import (
     ConfigurationError,
 )
 from ..crypto.ciphersuites import SignatureScheme
+from typing import Optional
 import struct
 from ..crypto.hpke_labels import encrypt_with_label, decrypt_with_label
 from ..crypto import labels as mls_labels
@@ -85,17 +86,17 @@ class MLSGroup:
         self._group_id = group_id
         self._crypto_provider = crypto_provider
         self._ratchet_tree = RatchetTree(crypto_provider)
-        self._group_context: GroupContext | None = None
-        self._key_schedule: KeySchedule | None = None
-        self._secret_tree: SecretTree | None = None
-        self._interim_transcript_hash: bytes | None = None
-        self._confirmed_transcript_hash: bytes | None = None
+        self._group_context: Optional[GroupContext] = None
+        self._key_schedule: Optional[KeySchedule] = None
+        self._secret_tree: Optional[SecretTree] = None
+        self._interim_transcript_hash: Optional[bytes] = None
+        self._confirmed_transcript_hash: Optional[bytes] = None
         self._pending_proposals: list[Proposal] = []
         # Map proposal reference -> (proposal, sender_leaf_index)
         self._proposal_cache: dict[bytes, tuple[Proposal, int]] = {}
         self._own_leaf_index = own_leaf_index
-        self._external_private_key: bytes | None = None
-        self._external_public_key: bytes | None = None
+        self._external_private_key: Optional[bytes] = None
+        self._external_public_key: Optional[bytes] = None
         self._trust_roots: list[bytes] = []
         self._strict_psk_binders: bool = True
         self._x509_policy = None
@@ -237,8 +238,8 @@ class MLSGroup:
         gi = GroupInfoStruct.deserialize(gi_bytes)
         # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
         verifier_keys: list[bytes] = []
-        ext_external_pub: bytes | None = None
-        ext_tree_bytes: bytes | None = None
+        ext_external_pub: Optional[bytes] = None
+        ext_tree_bytes: Optional[bytes] = None
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)

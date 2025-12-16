@@ -1,5 +1,5 @@
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from pymls.protocol.transcripts import TranscriptState
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.protocol.transcripts import TranscriptState
 
 
 def test_transcript_bootstrap_initial_interim():
@@ -9,5 +9,3 @@ def test_transcript_bootstrap_initial_interim():
     assert isinstance(interim, (bytes, bytearray))
     assert len(interim) == crypto.kdf_hash_len()
     assert interim != b""
-
-
