@@ -1,4 +1,4 @@
-"""PyMLS: A minimal, pragmatic MLS (Messaging Layer Security) implementation for Python.
+"""RFC9420: A minimal, pragmatic MLS (Messaging Layer Security) implementation for Python.
 
 This package provides a pure Python implementation of RFC 9420 (Messaging Layer Security).
 It includes core protocol types, cryptographic operations, and a high-level Group API
@@ -10,7 +10,7 @@ Main exports:
     - MLSGroup: Low-level protocol implementation
 
 Example:
-    >>> from pymls import Group, DefaultCryptoProvider
+    >>> from rfc9420 import Group, DefaultCryptoProvider
     >>> crypto = DefaultCryptoProvider()
     >>> group = Group.create(b"group1", key_package, crypto)
 """
@@ -23,4 +23,4 @@ from .api import MLSGroupSession
 
 __all__ = ["Group", "DefaultCryptoProvider", "MLSGroup", "MLSGroupSession", "CipherSuite"]
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"

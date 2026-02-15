@@ -1,6 +1,6 @@
 # API Reference
 
-Complete API reference for PyMLS.
+Complete API reference for RFC9420.
 
 ## Core Classes
 
@@ -127,7 +127,7 @@ Encrypt application data.
 - `MLSCiphertext`: Encrypted message
 
 **Raises:**
-- `PyMLSError`: If group not initialized or commit pending
+- `RFC9420Error`: If group not initialized or commit pending
 
 ##### `unprotect(message: MLSCiphertext) -> tuple[int, bytes]`
 
@@ -140,7 +140,7 @@ Decrypt application ciphertext.
 - `tuple[int, bytes]`: (sender_leaf_index, plaintext)
 
 **Raises:**
-- `PyMLSError`: If decryption fails
+- `RFC9420Error`: If decryption fails
 
 #### Properties
 
@@ -257,7 +257,7 @@ Export current resumption PSK.
 - `bytes`: Resumption PSK
 
 **Raises:**
-- `PyMLSError`: If group not initialized
+- `RFC9420Error`: If group not initialized
 
 ##### `set_strict_psk_binders(strict: bool) -> None`
 
@@ -372,9 +372,9 @@ Get all registered ciphersuites.
 
 ## Exceptions
 
-### `PyMLSError`
+### `RFC9420Error`
 
-Base exception for all PyMLS errors.
+Base exception for all RFC9420 errors.
 
 ### `CommitValidationError`
 

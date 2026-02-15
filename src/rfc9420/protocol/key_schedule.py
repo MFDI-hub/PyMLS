@@ -36,21 +36,23 @@ class KeySchedule:
         self._wiped = False
 
         # Derive epoch secret with RFC-labeled steps (RFC 9420 §8)
-        # joiner_secret_base := Extract(commit_secret, init_secret_prev)
-        joiner_secret_base = self._crypto_provider.kdf_extract(self._commit_secret, self._init_secret)
-        # joiner_secret := Extract(psk_secret or 0, joiner_secret_base)
-        if self._psk_secret:
-            joiner_secret = self._crypto_provider.kdf_extract(self._psk_secret, joiner_secret_base)
-        else:
-            joiner_secret = joiner_secret_base
         hash_len = self._crypto_provider.kdf_hash_len()
-        # epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Hash.length)
         gc_bytes = self._group_context.serialize()
+        # Step 1: Extract(init_secret, commit_secret) — salt=init_secret, IKM=commit_secret
+        pre_joiner = self._crypto_provider.kdf_extract(self._init_secret, self._commit_secret)
+        # Step 2: joiner_secret = ExpandWithLabel(pre_joiner, "joiner", GroupContext, Nh)
+        joiner_secret = self._crypto_provider.expand_with_label(pre_joiner, b"joiner", gc_bytes, hash_len)
+        # Step 3: PSK blending — Extract(psk_secret, joiner_secret)
+        if self._psk_secret:
+            joiner_secret = self._crypto_provider.kdf_extract(self._psk_secret, joiner_secret)
+        self._joiner_secret = joiner_secret
+        # epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Hash.length)
         self._epoch_secret = self._crypto_provider.expand_with_label(joiner_secret, b"epoch", gc_bytes, hash_len)
 
         # Derive key schedule branches using labeled derivations
         self._handshake_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"handshake")
         self._application_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"application")
+        self._encryption_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"encryption")
         self._exporter_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"exporter")
         self._external_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"external")
         self._sender_data_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"sender data")
@@ -68,13 +70,16 @@ class KeySchedule:
         ks._psk_secret = None
         ks._crypto_provider = crypto_provider
         ks._wiped = False
+        ks._joiner_secret = b""
         ks._epoch_secret = epoch_secret
         # Derive key schedule branches using labeled derivations
         ks._handshake_secret = crypto_provider.derive_secret(epoch_secret, b"handshake")
         ks._application_secret = crypto_provider.derive_secret(epoch_secret, b"application")
+        ks._encryption_secret = crypto_provider.derive_secret(epoch_secret, b"encryption")
         ks._exporter_secret = crypto_provider.derive_secret(epoch_secret, b"exporter")
         ks._external_secret = crypto_provider.derive_secret(epoch_secret, b"external")
         ks._sender_data_secret = crypto_provider.derive_secret(epoch_secret, b"sender data")
+        ks._init_secret_derived = crypto_provider.derive_secret(epoch_secret, b"init")
         return ks
     @property
     def sender_data_secret(self) -> bytes:
@@ -123,7 +128,7 @@ class KeySchedule:
     @property
     def encryption_secret(self) -> bytes:
         """Epoch encryption secret feeding message protection contexts."""
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"encryption")
+        return self._encryption_secret
 
     @property
     def exporter_secret(self) -> bytes:
@@ -151,6 +156,14 @@ class KeySchedule:
         return self._crypto_provider.derive_secret(self._epoch_secret, b"resumption")
 
     @property
+    def init_secret(self) -> bytes:
+        """DeriveSecret(epoch_secret, "init") per RFC 9420 §8.
+
+        This is the init_secret used to chain into the next epoch's key schedule.
+        """
+        return self._crypto_provider.derive_secret(self._epoch_secret, b"init")
+
+    @property
     def epoch_authenticator(self) -> bytes:
         """Epoch authenticator secret (RFC §8)."""
         return self._crypto_provider.derive_secret(self._epoch_secret, b"authentication")
@@ -175,6 +188,11 @@ class KeySchedule:
         """The epoch secret from which all other secrets are derived."""
         return self._epoch_secret
 
+    @property
+    def joiner_secret(self) -> bytes:
+        """The joiner secret used for Welcome message derivation."""
+        return self._joiner_secret
+
     def derive_sender_secrets(self, leaf_index: int) -> tuple[bytes, bytes]:
         """
         Deprecated helper: real per-sender secrets are derived via SecretTree (§9.2).
@@ -195,9 +213,11 @@ class KeySchedule:
             "_epoch_secret",
             "_handshake_secret",
             "_application_secret",
+            "_encryption_secret",
             "_exporter_secret",
             "_external_secret",
             "_sender_data_secret",
+            "_init_secret_derived",
         ]:
             val = getattr(self, name, None)
             if isinstance(val, (bytes, bytearray)) and val:

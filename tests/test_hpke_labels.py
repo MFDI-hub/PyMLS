@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.crypto.hpke_labels module."""
+"""Comprehensive tests for rfc9420.crypto.hpke_labels module."""
 
 import unittest
 

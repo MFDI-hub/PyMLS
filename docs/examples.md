@@ -1,6 +1,6 @@
 # Examples
 
-This document provides practical examples for common PyMLS use cases.
+This document provides practical examples for common RFC9420 use cases.
 
 ## Table of Contents
 
@@ -22,9 +22,9 @@ This document provides practical examples for common PyMLS use cases.
 ```python
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from src.pymls import Group, DefaultCryptoProvider
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from src.rfc9420 import Group, DefaultCryptoProvider
+from src.rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from src.rfc9420.protocol.data_structures import Credential, Signature
 
 crypto = DefaultCryptoProvider()
 
@@ -153,7 +153,7 @@ group_charlie.apply_commit(commit, 0)
 ### Joining via External Commit
 
 ```python
-from src.pymls.protocol.mls_group import MLSGroup
+from src.rfc9420.protocol.mls_group import MLSGroup
 
 # External party creates key package
 external_kp, external_kem_sk, external_sig_sk = create_key_package(b"external")
@@ -217,7 +217,7 @@ group_bob.apply_commit(commit, 0)
 ### Using X.509 Certificates
 
 ```python
-from src.pymls.crypto.x509 import X509Credential
+from src.rfc9420.crypto.x509 import X509Credential
 
 def create_x509_key_package(cert_der: bytes, private_key_der: bytes):
     """Create key package with X.509 credential."""
@@ -239,8 +239,8 @@ group._inner.set_trust_roots([trust_root1_der, trust_root2_der])
 ### Revocation Checking
 
 ```python
-from src.pymls.crypto.x509_revocation import check_ocsp_end_entity, check_crl
-from src.pymls.crypto.x509_policy import X509Policy, RevocationConfig
+from src.rfc9420.crypto.x509_revocation import check_ocsp_end_entity, check_crl
+from src.rfc9420.crypto.x509_policy import X509Policy, RevocationConfig
 
 def create_revocation_policy():
     """Create X.509 revocation policy."""
@@ -267,10 +267,10 @@ group._inner.set_x509_policy(policy)
 ### Comprehensive Error Handling
 
 ```python
-from src.pymls.mls.exceptions import (
+from src.rfc9420.mls.exceptions import (
     CommitValidationError,
     InvalidSignatureError,
-    PyMLSError,
+    RFC9420Error,
 )
 
 def safe_apply_commit(group: Group, commit: MLSPlaintext, sender: int):
@@ -285,7 +285,7 @@ def safe_apply_commit(group: Group, commit: MLSPlaintext, sender: int):
     except InvalidSignatureError:
         print("Invalid signature")
         # Handle signature error
-    except PyMLSError as e:
+    except RFC9420Error as e:
         print(f"MLS error: {e}")
         # Handle general MLS error
     except Exception as e:

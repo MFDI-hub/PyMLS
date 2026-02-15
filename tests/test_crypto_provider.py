@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.DefaultCryptoProvider."""
+"""Comprehensive tests for rfc9420.DefaultCryptoProvider."""
 
 import unittest
 from rfc9420 import DefaultCryptoProvider

@@ -1,10 +1,10 @@
-# Getting Started with PyMLS
+# Getting Started with RFC9420
 
-This guide will help you get started with PyMLS, a pure Python implementation of the Messaging Layer Security (MLS) protocol as specified in RFC 9420.
+This guide will help you get started with RFC9420, a pure Python implementation of the Messaging Layer Security (MLS) protocol as specified in RFC 9420.
 
 ## Installation
 
-PyMLS uses `pyproject.toml` (PEP 621) for dependency management. We recommend using `uv` for fast and reliable dependency resolution.
+RFC9420 uses `pyproject.toml` (PEP 621) for dependency management. We recommend using `uv` for fast and reliable dependency resolution.
 
 ### Prerequisites
 
@@ -17,7 +17,7 @@ PyMLS uses `pyproject.toml` (PEP 621) for dependency management. We recommend us
 pipx install uv  # Install uv globally
 ```
 
-### Install PyMLS
+### Install RFC9420
 
 ```bash
 # Clone the repository
@@ -28,7 +28,7 @@ cd PyMLS
 uv sync --dev
 
 # Verify installation
-uv run python -c "from src.pymls import Group, DefaultCryptoProvider; print('PyMLS installed successfully!')"
+uv run python -c "from src.rfc9420 import Group, DefaultCryptoProvider; print('RFC9420 installed successfully!')"
 ```
 
 ### Development Setup
@@ -75,9 +75,9 @@ Let's create a simple two-member group:
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from src.pymls import Group, DefaultCryptoProvider
-from src.pymls.protocol.key_packages import KeyPackage, LeafNode
-from src.pymls.protocol.data_structures import Credential, Signature
+from src.rfc9420 import Group, DefaultCryptoProvider
+from src.rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from src.rfc9420.protocol.data_structures import Credential, Signature
 
 # Initialize crypto provider
 crypto = DefaultCryptoProvider()  # Uses MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
@@ -189,10 +189,10 @@ commit, _ = group.commit(sig_sk)
 
 ### Common Issues
 
-**Import Errors**: Make sure you're using `src.pymls` as the import path:
+**Import Errors**: Make sure you're using `src.rfc9420` as the import path:
 ```python
-from src.pymls import Group  # Correct
-from pymls import Group      # Incorrect (unless installed as package)
+from src.rfc9420 import Group  # Correct
+from rfc9420 import Group      # Incorrect (unless installed as package)
 ```
 
 **HPKE Not Available**: Ensure you have cryptography >= 41.0.0:

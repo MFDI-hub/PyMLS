@@ -1,6 +1,6 @@
 # Advanced Features
 
-This guide covers advanced features of PyMLS including external commits, Pre-Shared Keys (PSKs), re-initialization, and X.509 credential handling.
+This guide covers advanced features of RFC9420 including external commits, Pre-Shared Keys (PSKs), re-initialization, and X.509 credential handling.
 
 ## External Commits
 
@@ -17,7 +17,7 @@ External commits allow parties that are not currently group members to join a gr
 ### Example: External Commit
 
 ```python
-from src.pymls.protocol.mls_group import MLSGroup
+from rfc9420.protocol.mls_group import MLSGroup
 
 # On the group side: Create external commit
 external_kp = create_key_package(...)
@@ -107,12 +107,12 @@ group.apply_commit(commit, sender_index)
 
 ## Secret Tree Skipped-Keys Window
 
-PyMLS supports out-of-order message decryption via a sliding window of skipped keys. This allows decrypting messages that arrive out of order without requiring on-demand key derivation for every skipped generation.
+RFC9420 supports out-of-order message decryption via a sliding window of skipped keys. This allows decrypting messages that arrive out of order without requiring on-demand key derivation for every skipped generation.
 
 ### Configuration
 
 ```python
-from src.pymls.protocol.mls_group import MLSGroup
+from rfc9420.protocol.mls_group import MLSGroup
 
 # Create group with custom window size
 group = MLSGroup.create(
@@ -144,12 +144,12 @@ The ratchet tree automatically truncates when the rightmost leaf (and all traili
 
 ## X.509 Credentials
 
-PyMLS supports X.509 certificate credentials for group members.
+RFC9420 supports X.509 certificate credentials for group members.
 
 ### Basic X.509 Support
 
 ```python
-from src.pymls.crypto.x509 import X509Credential
+from rfc9420.crypto.x509 import X509Credential
 
 # Deserialize X.509 credential
 cred = X509Credential.deserialize(cert_der)
@@ -168,11 +168,11 @@ group._inner.set_trust_roots([trust_root1_der, trust_root2_der])
 
 ### X.509 Revocation
 
-PyMLS provides helpers for checking certificate revocation via OCSP and CRL:
+RFC9420 provides helpers for checking certificate revocation via OCSP and CRL:
 
 ```python
-from src.pymls.crypto.x509_revocation import check_ocsp_end_entity, check_crl
-from src.pymls.crypto.x509_policy import X509Policy, RevocationConfig
+from rfc9420.crypto.x509_revocation import check_ocsp_end_entity, check_crl
+from rfc9420.crypto.x509_policy import X509Policy, RevocationConfig
 
 # Configure revocation policy
 policy = X509Policy(
@@ -216,7 +216,7 @@ Proposals are cached using RFC 9420 §5.2 proposal references. Commits reference
 
 GroupContext extensions allow groups to include custom data in the group context. Extension data is merged into GroupInfo extensions for Welcomes.
 
-**Note:** The GroupContext structure in PyMLS remains minimal and does not store extensions explicitly. Extension data is handled via GroupInfo extensions.
+**Note:** The GroupContext structure in RFC9420 remains minimal and does not store extensions explicitly. Extension data is handled via GroupInfo extensions.
 
 ## Best Practices
 

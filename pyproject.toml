@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rfc9420"
-version = "0.3.1"
+version = "0.3.2"
 description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -32,10 +32,10 @@ dev = [
 ]
 
 [project.scripts]
-pymls-interop = "src.pymls.interop.cli:main"
+rfc9420-interop = "src.rfc9420.interop.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pymls"]
+packages = ["src/rfc9420"]
 
 [dependency-groups]
 dev = [

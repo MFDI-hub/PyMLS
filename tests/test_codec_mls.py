@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.codec.mls module."""
+"""Comprehensive tests for rfc9420.codec.mls module."""
 
 import unittest
 

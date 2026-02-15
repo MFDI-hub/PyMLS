@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.protocol.refs module."""
+"""Comprehensive tests for rfc9420.protocol.refs module."""
 
 import unittest
 
@@ -17,8 +17,8 @@ class TestRefs(unittest.TestCase):
     def test_encode_ref_hash_input_empty(self):
         """Test encoding RefHashInput with empty label and value."""
         result = encode_ref_hash_input(b"", b"")
-        # Should have two 4-byte length prefixes
-        self.assertEqual(len(result), 8)
+        # Should have two 2-byte length prefixes
+        self.assertEqual(len(result), 4)
 
     def test_encode_ref_hash_input_with_data(self):
         """Test encoding RefHashInput with label and value."""
@@ -37,21 +37,21 @@ class TestRefs(unittest.TestCase):
         value = b"key_package_data"
         result = encode_ref_hash_input(label, value)
 
-        # Should start with 4-byte length prefix for label
+        # Should start with 2-byte length prefix for label
         import struct
 
-        label_len = struct.unpack("!L", result[:4])[0]
+        label_len = struct.unpack("!H", result[:2])[0]
         self.assertEqual(label_len, len(label))
 
         # Next should be label
-        self.assertEqual(result[4 : 4 + label_len], label)
+        self.assertEqual(result[2 : 2 + label_len], label)
 
-        # Then 4-byte length prefix for value
-        value_len = struct.unpack("!L", result[4 + label_len : 4 + label_len + 4])[0]
+        # Then 2-byte length prefix for value
+        value_len = struct.unpack("!H", result[2 + label_len : 2 + label_len + 2])[0]
         self.assertEqual(value_len, len(value))
 
         # Then value
-        self.assertEqual(result[4 + label_len + 4 : 4 + label_len + 4 + value_len], value)
+        self.assertEqual(result[2 + label_len + 2 : 2 + label_len + 2 + value_len], value)
 
     def test_make_key_package_ref(self):
         """Test make_key_package_ref function."""

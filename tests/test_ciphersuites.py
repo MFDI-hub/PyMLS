@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.crypto.ciphersuites module."""
+"""Comprehensive tests for rfc9420.crypto.ciphersuites module."""
 
 import unittest
 

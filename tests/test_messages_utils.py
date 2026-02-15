@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.protocol.messages utility functions."""
+"""Comprehensive tests for rfc9420.protocol.messages utility functions."""
 
 import unittest
 

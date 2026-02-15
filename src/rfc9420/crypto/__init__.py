@@ -1,2 +1,2 @@
-"""Cryptographic abstractions and concrete implementations for PyMLS."""
+"""Cryptographic abstractions and concrete implementations for RFC9420."""
 

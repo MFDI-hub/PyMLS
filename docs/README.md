@@ -1,6 +1,6 @@
-# PyMLS Documentation
+# RFC9420 Documentation
 
-Welcome to the PyMLS documentation! This directory contains comprehensive documentation for the PyMLS library.
+Welcome to the RFC9420 documentation! This directory contains comprehensive documentation for the RFC9420 library.
 
 ## Documentation Structure
 
@@ -28,7 +28,7 @@ Welcome to the PyMLS documentation! This directory contains comprehensive docume
 
 ## Reading Order
 
-1. **New to PyMLS?** Start with [Getting Started](getting-started.md)
+1. **New to RFC9420?** Start with [Getting Started](getting-started.md)
 2. **Need examples?** Check [Examples](examples.md)
 3. **Looking for specific methods?** See [API Reference](api-reference.md)
 4. **Want advanced features?** Read [Advanced Features](advanced-features.md)
@@ -46,7 +46,7 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 - **RFC 9420**: [Messaging Layer Security](https://www.rfc-editor.org/rfc/rfc9420.html)
 - **RFC 9180**: [HPKE: Hybrid Public Key Encryption](https://www.rfc-editor.org/rfc/rfc9180.html)
-- **GitHub Repository**: [PyMLS on GitHub](https://github.com/yourusername/PyMLS)
+- **GitHub Repository**: [RFC9420 on GitHub](https://github.com/yourusername/RFC9420)
 
 ## Support
 
@@ -56,5 +56,5 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 ---
 
-**Note**: This documentation is for PyMLS version 0.3.1. For version-specific information, check the [main README](../README.md).
+**Note**: This documentation is for RFC9420 version 0.3.2. For version-specific information, check the [main README](../README.md).
 

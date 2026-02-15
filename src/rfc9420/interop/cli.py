@@ -16,8 +16,8 @@ from .harness import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the argparse parser for the pymls-interop CLI."""
-    p = argparse.ArgumentParser(prog="pymls-interop")
+    """Construct the argparse parser for the rfc9420-interop CLI."""
+    p = argparse.ArgumentParser(prog="rfc9420-interop")
     sub = p.add_subparsers(dest="cmd", required=True)
     pt = sub.add_parser("plaintext")
     pt_sub = pt.add_subparsers(dest="op", required=True)

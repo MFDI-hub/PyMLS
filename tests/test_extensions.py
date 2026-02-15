@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.extensions.extensions module."""
+"""Comprehensive tests for rfc9420.extensions.extensions module."""
 
 import unittest
 

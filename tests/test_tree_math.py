@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.protocol.tree_math module."""
+"""Comprehensive tests for rfc9420.protocol.tree_math module."""
 
 import unittest
 
@@ -14,7 +14,7 @@ from rfc9420.protocol.tree_math import (
     direct_path,
     copath,
 )
-from rfc9420.mls.exceptions import PyMLSError
+from rfc9420.mls.exceptions import RFC9420Error
 
 
 class TestTreeMath(unittest.TestCase):
@@ -77,9 +77,9 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(left(5), 4)
 
         # Leaf nodes should raise error
-        with self.assertRaises(PyMLSError):
+        with self.assertRaises(RFC9420Error):
             left(0)
-        with self.assertRaises(PyMLSError):
+        with self.assertRaises(RFC9420Error):
             left(2)
 
     def test_right(self):
@@ -90,9 +90,9 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(right(3, 7), 5)
 
         # Leaf nodes should raise error
-        with self.assertRaises(PyMLSError):
+        with self.assertRaises(RFC9420Error):
             right(0, 3)
-        with self.assertRaises(PyMLSError):
+        with self.assertRaises(RFC9420Error):
             right(2, 3)
 
     def test_parent(self):
@@ -105,7 +105,7 @@ class TestTreeMath(unittest.TestCase):
         self.assertEqual(parent(4, 5), 5)
 
         # Root node should raise error
-        with self.assertRaises(PyMLSError):
+        with self.assertRaises(RFC9420Error):
             parent(1, 2)  # 1 is root for n=2
 
     def test_sibling(self):
@@ -153,7 +153,7 @@ class TestTreeMath(unittest.TestCase):
         r = root(n)
 
         # Root should have no parent
-        with self.assertRaises(PyMLSError):
+        with self.assertRaises(RFC9420Error):
             parent(r, n)
 
         # For each leaf, verify parent-child relationships

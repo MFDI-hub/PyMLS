@@ -1,7 +1,7 @@
 """Utility helpers for cryptographic memory handling.
 
 This module provides utilities for secure memory operations used throughout
-the cryptographic operations in PyMLS.
+the cryptographic operations in RFC9420.
 """
 from __future__ import annotations
 

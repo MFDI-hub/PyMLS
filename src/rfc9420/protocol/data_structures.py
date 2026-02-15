@@ -7,11 +7,17 @@ from typing import Optional
 import struct
 
 from ..crypto.ciphersuites import KEM, KDF, AEAD
-from ..mls.exceptions import PyMLSError
+from ..mls.exceptions import RFC9420Error
 
 
 def serialize_bytes(data: bytes) -> bytes:
-    """Serializes bytes with a 4-byte length prefix."""
+    """Serializes bytes with a 4-byte length prefix.
+
+    Note: RFC 9420 TLS presentation language uses variable-length prefixes,
+    but this implementation uniformly uses 4-byte prefixes for internal
+    serialization. This is functionally correct for self-contained use but
+    differs from the standard TLS encoding.
+    """
     return struct.pack("!L", len(data)) + data
 
 
@@ -168,7 +174,7 @@ class Proposal(ABC):
         if proposal_type == ProposalType.APP_ACK:
             return AppAckProposal.deserialize(content)
 
-        raise PyMLSError(f"Unknown proposal type: {proposal_type}")
+        raise RFC9420Error(f"Unknown proposal type: {proposal_type}")
 
 
 @dataclass(frozen=True)
@@ -407,21 +413,21 @@ class ProposalOrRef:
         payload = b""
         if self.typ == ProposalOrRefType.PROPOSAL:
             if self.proposal is None:
-                raise PyMLSError("missing proposal for ProposalOrRef.PROPOSAL")
+                raise RFC9420Error("missing proposal for ProposalOrRef.PROPOSAL")
             payload = self.proposal.serialize()
         elif self.typ == ProposalOrRefType.REFERENCE:
             if self.reference is None:
-                raise PyMLSError("missing reference for ProposalOrRef.REFERENCE")
+                raise RFC9420Error("missing reference for ProposalOrRef.REFERENCE")
             payload = self.reference
         else:
-            raise PyMLSError("unknown ProposalOrRefType")
+            raise RFC9420Error("unknown ProposalOrRefType")
         return struct.pack("!B", int(self.typ)) + serialize_bytes(payload)
 
     @classmethod
     def deserialize(cls, data: bytes) -> "ProposalOrRef":
         """Parse from bytes produced by serialize()."""
         if len(data) < 1:
-            raise PyMLSError("invalid ProposalOrRef encoding")
+            raise RFC9420Error("invalid ProposalOrRef encoding")
         (t_val,) = struct.unpack("!B", data[:1])
         typ = ProposalOrRefType(t_val)
         payload, _ = deserialize_bytes(data[1:])
@@ -429,7 +435,7 @@ class ProposalOrRef:
             return cls(typ=typ, proposal=Proposal.deserialize(payload))
         if typ == ProposalOrRefType.REFERENCE:
             return cls(typ=typ, reference=payload)
-        raise PyMLSError("unknown ProposalOrRefType during deserialize")
+        raise RFC9420Error("unknown ProposalOrRefType during deserialize")
 
 
 @dataclass(frozen=True)
@@ -565,13 +571,15 @@ class GroupContext:
     epoch: int
     tree_hash: bytes
     confirmed_transcript_hash: bytes
+    extensions: bytes = b""  # RFC 9420 §12.1: serialized extensions list
 
     def serialize(self) -> bytes:
-        """Encode as uint64 epoch || group_id || tree_hash || confirmed_transcript_hash."""
+        """Encode as uint64 epoch || group_id || tree_hash || confirmed_transcript_hash || extensions."""
         data = struct.pack("!Q", self.epoch)
         data += serialize_bytes(self.group_id)
         data += serialize_bytes(self.tree_hash)
         data += serialize_bytes(self.confirmed_transcript_hash)
+        data += serialize_bytes(self.extensions)
         return data
 
     @classmethod

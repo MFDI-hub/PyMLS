@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.crypto.utils module."""
+"""Comprehensive tests for rfc9420.crypto.utils module."""
 
 import unittest
 

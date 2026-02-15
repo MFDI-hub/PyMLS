@@ -1,4 +1,4 @@
-"""Comprehensive tests for pymls.interop.wire module."""
+"""Comprehensive tests for rfc9420.interop.wire module."""
 
 import unittest
 

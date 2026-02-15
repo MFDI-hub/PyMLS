@@ -1,7 +1,7 @@
-from pymls.crypto.default_crypto_provider import DefaultCryptoProvider
-from pymls.protocol.mls_group import MLSGroup
-from pymls.protocol.key_packages import KeyPackage, LeafNode
-from pymls.protocol.data_structures import Credential, Signature
+from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+from rfc9420.protocol.mls_group import MLSGroup
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+from rfc9420.protocol.data_structures import Credential, Signature
 
 
 def main():

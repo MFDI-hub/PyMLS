@@ -50,7 +50,7 @@ class Group:
             A new Group instance with the initial member.
 
         Raises:
-            PyMLSError: If group creation fails.
+            RFC9420Error: If group creation fails.
         """
         return cls(_ProtocolMLSGroup.create(group_id=group_id, key_package=key_package, crypto_provider=crypto))
 
@@ -143,7 +143,7 @@ class Group:
             Tuple of (commit MLSPlaintext, list of Welcome messages for new members).
 
         Raises:
-            PyMLSError: If group is not initialized or commit creation fails.
+            RFC9420Error: If group is not initialized or commit creation fails.
         """
         return self._inner.create_commit(signing_key)
 
@@ -179,7 +179,7 @@ class Group:
             MLSCiphertext containing the encrypted data.
 
         Raises:
-            PyMLSError: If group is not initialized or a commit is pending.
+            RFC9420Error: If group is not initialized or a commit is pending.
         """
         return self._inner.protect(application_data)
 
@@ -196,7 +196,7 @@ class Group:
             Tuple of (sender_leaf_index, plaintext).
 
         Raises:
-            PyMLSError: If decryption fails or group is not initialized.
+            RFC9420Error: If decryption fails or group is not initialized.
         """
         return self._inner.unprotect(message)
 

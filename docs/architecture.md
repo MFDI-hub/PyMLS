@@ -1,17 +1,17 @@
 # Architecture
 
-This document describes the internal architecture of PyMLS and how the various components work together.
+This document describes the internal architecture of RFC9420 and how the various components work together.
 
 ## Overview
 
-PyMLS is organized into several main modules:
+RFC9420 is organized into several main modules:
 
-- **`pymls.mls`**: High-level API (`Group` class)
-- **`pymls.protocol`**: Core protocol implementation (`MLSGroup`, data structures, messages)
-- **`pymls.crypto`**: Cryptographic operations and providers
-- **`pymls.codec`**: TLS encoding/decoding
-- **`pymls.extensions`**: Extension handling
-- **`pymls.interop`**: Interoperability tools and test vectors
+- **`rfc9420.mls`**: High-level API (`Group` class)
+- **`rfc9420.protocol`**: Core protocol implementation (`MLSGroup`, data structures, messages)
+- **`rfc9420.crypto`**: Cryptographic operations and providers
+- **`rfc9420.codec`**: TLS encoding/decoding
+- **`rfc9420.extensions`**: Extension handling
+- **`rfc9420.interop`**: Interoperability tools and test vectors
 
 ## High-Level Architecture
 
@@ -66,7 +66,7 @@ The `Group` class provides an ergonomic interface for MLS operations. It wraps `
 - Automatic error conversion
 - Cleaner API surface
 
-**Location:** `src/pymls/mls/group.py`
+**Location:** `src/rfc9420/mls/group.py`
 
 ### MLSGroup (Protocol Implementation)
 
@@ -79,7 +79,7 @@ The `MLSGroup` class implements the core MLS protocol state machine:
 - **Proposal Queue**: Pending proposals awaiting commit
 - **Proposal Cache**: Map of proposal references to proposals
 
-**Location:** `src/pymls/protocol/mls_group.py`
+**Location:** `src/rfc9420/protocol/mls_group.py`
 
 ### Ratchet Tree
 
@@ -94,7 +94,7 @@ The ratchet tree is a binary tree structure where:
 - `update_leaf()`: Update a member's keys
 - `calculate_tree_hash()`: Compute tree hash for GroupContext
 
-**Location:** `src/pymls/protocol/ratchet_tree.py`
+**Location:** `src/rfc9420/protocol/ratchet_tree.py`
 
 ### Key Schedule
 
@@ -108,7 +108,7 @@ The key schedule derives all secrets for an epoch:
 - **Membership Key**: For membership tag computation
 - **Resumption PSK**: For group resumption
 
-**Location:** `src/pymls/protocol/key_schedule.py`
+**Location:** `src/rfc9420/protocol/key_schedule.py`
 
 ### Secret Tree
 
@@ -118,7 +118,7 @@ The secret tree derives per-sender encryption keys:
 - **Handshake Keys**: For encrypting handshake messages
 - **Skipped-Keys Window**: Caches keys for out-of-order decryption
 
-**Location:** `src/pymls/protocol/secret_tree.py`
+**Location:** `src/rfc9420/protocol/secret_tree.py`
 
 ### CryptoProvider
 
@@ -134,8 +134,8 @@ Abstract interface for cryptographic operations:
 **Concrete Implementation:** `DefaultCryptoProvider` uses the `cryptography` library.
 
 **Location:** 
-- Interface: `src/pymls/crypto/crypto_provider.py`
-- Implementation: `src/pymls/crypto/default_crypto_provider.py`
+- Interface: `src/rfc9420/crypto/crypto_provider.py`
+- Implementation: `src/rfc9420/crypto/default_crypto_provider.py`
 
 ## Message Flow
 
@@ -294,10 +294,10 @@ group._inner.set_x509_policy(policy)
 
 ### Test Vectors
 
-PyMLS includes support for RFC 9420 test vectors:
+RFC9420 includes support for RFC 9420 test vectors:
 
 ```bash
-python -m src.pymls.interop.test_vectors_runner /path/to/vectors --suite 0x0001
+python -m src.rfc9420.interop.test_vectors_runner /path/to/vectors --suite 0x0001
 ```
 
 ### Unit Tests
@@ -342,5 +342,5 @@ Potential areas for improvement:
 
 - [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html) - Messaging Layer Security
 - [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html) - HPKE: Hybrid Public Key Encryption
-- [API Reference](api-reference.md) - PyMLS API documentation
+- [API Reference](api-reference.md) - RFC9420 API documentation
 

@@ -65,6 +65,83 @@ class PSKPreimage:
             out += write_opaque16(pid)
         return out
 
+
+@dataclass(frozen=True)
+class PSKLabel:
+    """RFC 9420 §8.4 PSKLabel structure for chained PSK derivation.
+
+    struct {
+        PreSharedKeyID id;
+        uint16 index;
+        uint16 count;
+    } PSKLabel;
+
+    For MVP, PreSharedKeyID is encoded as opaque16(psk_id).
+    """
+    psk_id: bytes
+    index: int
+    count: int
+
+    def serialize(self) -> bytes:
+        """Encode as opaque16(psk_id) || uint16(index) || uint16(count)."""
+        return (
+            write_opaque16(self.psk_id)
+            + write_uint16(self.index)
+            + write_uint16(self.count)
+        )
+
+
+def derive_psk_secret(
+    crypto: "CryptoProvider",
+    psk_ids: list[bytes],
+    psk_values: Optional[list[bytes]] = None,
+) -> bytes:
+    """Derive the PSK secret per RFC 9420 §8.4.
+
+    psk_extracted[i] = KDF.Extract(0, psk[i])
+    psk_input[i]     = ExpandWithLabel(psk_extracted[i], "derived psk",
+                                        PSKLabel(id[i], i, n), KDF.Nh)
+    psk_secret[0]    = 0  (all-zero of Nh length)
+    psk_secret[i]    = KDF.Extract(psk_input[i-1], psk_secret[i-1])
+    result           = psk_secret[n]
+
+    If psk_values is None, uses kdf_extract(b"psk", psk_id) as a
+    synthetic PSK value for each ID (MVP fallback when no PSK store exists).
+    """
+    n = len(psk_ids)
+    if n == 0:
+        return bytes(crypto.kdf_hash_len())
+
+    hash_len = crypto.kdf_hash_len()
+    zero_ikm = bytes(hash_len)
+
+    # psk_secret[0] = 0
+    psk_secret = bytes(hash_len)
+
+    for i in range(n):
+        # Get or derive the PSK value
+        if psk_values is not None and i < len(psk_values):
+            psk_val = psk_values[i]
+        else:
+            # MVP fallback: derive a synthetic PSK from the ID
+            psk_val = crypto.kdf_extract(b"psk", psk_ids[i])
+
+        # psk_extracted = KDF.Extract(0, psk[i])
+        psk_extracted = crypto.kdf_extract(zero_ikm, psk_val)
+
+        # PSKLabel for this iteration
+        label = PSKLabel(psk_id=psk_ids[i], index=i, count=n)
+
+        # psk_input = ExpandWithLabel(psk_extracted, "derived psk", PSKLabel, Nh)
+        psk_input = crypto.expand_with_label(
+            psk_extracted, b"derived psk", label.serialize(), hash_len
+        )
+
+        # psk_secret[i+1] = KDF.Extract(psk_input, psk_secret[i])
+        psk_secret = crypto.kdf_extract(psk_input, psk_secret)
+
+    return psk_secret
+
 def encode_psk_binder(binder: bytes) -> bytes:
     """
     Encode a PSK binder into authenticated_data. Magic prefix + opaque16.
@@ -146,15 +223,22 @@ class AuthenticatedContent:
     - tbs: To-Be-Signed structure.
     - signature: Signature produced over tbs.serialize().
     - membership_tag: Optional MAC over TBS (membership proof).
+    - confirmation_tag: Optional confirmation MAC for Commit content (RFC §6.2).
     """
     tbs: AuthenticatedContentTBS
     signature: bytes
     membership_tag: Optional[bytes] = None
+    confirmation_tag: Optional[bytes] = None
 
     def serialize(self) -> bytes:
-        """Encode as TBS || opaque16(signature) || opaque16(membership_tag|empty)."""
+        """Encode as TBS || opaque16(signature) || opaque16(confirmation_tag|empty) || opaque16(membership_tag|empty)."""
         out = self.tbs.serialize()
         out += write_opaque16(self.signature)
+        # confirmation_tag (present only for Commit content type per RFC §6.2)
+        if self.confirmation_tag is not None:
+            out += write_opaque16(self.confirmation_tag)
+        else:
+            out += write_uint16(0)
         if self.membership_tag is not None:
             out += write_opaque16(self.membership_tag)
         else:
@@ -174,9 +258,10 @@ class AuthenticatedContent:
         fc_ser = fc.serialize()
         off += len(fc_ser)
         sig, off = read_opaque16(data, off)
+        ctag, off = read_opaque16(data, off)
         mtag, off = read_opaque16(data, off)
         tbs = AuthenticatedContentTBS(group_id, epoch, sender_idx, ad, fc)
-        return cls(tbs, sig, mtag if len(mtag) > 0 else None)
+        return cls(tbs, sig, mtag if len(mtag) > 0 else None, ctag if len(ctag) > 0 else None)
 
 
 @dataclass(frozen=True)
@@ -421,7 +506,7 @@ def sign_authenticated_content(
     )
     # Domain-separated signing over FramedContentTBS
     sig = crypto.sign_with_label(signing_private_key, b"FramedContentTBS", tbs.serialize())
-    auth = AuthenticatedContent(tbs=tbs, signature=sig, membership_tag=None)
+    auth = AuthenticatedContent(tbs=tbs, signature=sig, membership_tag=None, confirmation_tag=None)
     return MLSPlaintext(auth)
 
 
@@ -438,7 +523,7 @@ def attach_membership_tag(plaintext: MLSPlaintext, membership_key: bytes, crypto
     - New MLSPlaintext with membership_tag set.
     """
     tag = crypto.hmac_sign(membership_key, plaintext.auth_content.tbs.serialize())
-    return MLSPlaintext(AuthenticatedContent(tbs=plaintext.auth_content.tbs, signature=plaintext.auth_content.signature, membership_tag=tag))
+    return MLSPlaintext(AuthenticatedContent(tbs=plaintext.auth_content.tbs, signature=plaintext.auth_content.signature, membership_tag=tag, confirmation_tag=plaintext.auth_content.confirmation_tag))
 
 
 def verify_plaintext(

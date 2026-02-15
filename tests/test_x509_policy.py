@@ -11,7 +11,7 @@ from rfc9420.crypto.x509 import verify_certificate_chain_with_policy
 
 def _self_signed_cert(digital_signature: bool = True, add_eku_client_auth: bool = True) -> bytes:
     key = ec.generate_private_key(ec.SECP256R1())
-    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "PyMLS Test Cert")])
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "RFC9420 Test Cert")])
     now = datetime.datetime.now(datetime.timezone.utc)
     builder = (
         x509.CertificateBuilder()

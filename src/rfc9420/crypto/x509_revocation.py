@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Optional, Callable
 
-from ..mls.exceptions import PyMLSError
+from ..mls.exceptions import RFC9420Error
 
 
 def _now_utc() -> _dt.datetime:
@@ -35,7 +35,7 @@ def check_ocsp_end_entity(
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
     except Exception as e:
-        raise PyMLSError("cryptography package required for OCSP checking") from e
+        raise RFC9420Error("cryptography package required for OCSP checking") from e
 
     now = now or _now_utc()
     cache = cache if cache is not None else {}
@@ -113,7 +113,7 @@ def check_ocsp_end_entity(
     try:
         ocsp_resp.public_bytes(serialization.Encoding.DER)  # force parse
     except Exception as e:
-        raise PyMLSError("OCSP response parsing failed") from e
+        raise RFC9420Error("OCSP response parsing failed") from e
     # Certificate status
     if single.certificate_status.name == "REVOKED":
         cache[cache_key] = (now, False)
@@ -141,7 +141,7 @@ def check_crl(
     try:
         from cryptography import x509
     except Exception as e:
-        raise PyMLSError("cryptography package required for CRL checking") from e
+        raise RFC9420Error("cryptography package required for CRL checking") from e
 
     now = now or _now_utc()
     cache = cache if cache is not None else {}
@@ -197,7 +197,7 @@ def check_crl(
         except Exception:
             crl = x509.load_pem_x509_crl(crl_bytes)
     except Exception as e:
-        raise PyMLSError("CRL parsing failed") from e
+        raise RFC9420Error("CRL parsing failed") from e
 
     # If serial appears in CRL, mark revoked
     for revoked in crl:

@@ -1,19 +1,58 @@
-"""Transcript hash maintenance for MLS handshake flows."""
+"""Transcript hash maintenance for MLS handshake flows (RFC 9420 §8.2)."""
 from __future__ import annotations
 from typing import Optional
 
+from ..codec.tls import write_uint16, write_opaque16
 from ..crypto.crypto_provider import CryptoProvider
-from ..mls.exceptions import PyMLSError
-from .messages import MLSPlaintext
+from ..mls.exceptions import RFC9420Error
+from .messages import MLSPlaintext, WireFormat
+
+
+def serialize_confirmed_transcript_hash_input(
+    wire_format: int,
+    framed_content_bytes: bytes,
+    signature: bytes,
+) -> bytes:
+    """Serialize ConfirmedTranscriptHashInput per RFC 9420 §8.2.
+
+    struct {
+        WireFormat wire_format;
+        FramedContent content;
+        opaque signature<V>;
+    } ConfirmedTranscriptHashInput;
+    """
+    return (
+        write_uint16(wire_format)
+        + framed_content_bytes
+        + write_opaque16(signature)
+    )
+
+
+def serialize_interim_transcript_hash_input(
+    confirmation_tag: bytes,
+) -> bytes:
+    """Serialize InterimTranscriptHashInput per RFC 9420 §8.2.
+
+    struct {
+        MAC confirmation_tag;
+    } InterimTranscriptHashInput;
+
+    MAC is opaque<V> (length-prefixed).
+    """
+    return write_opaque16(confirmation_tag)
 
 
 class TranscriptState:
     """
-    Maintains interim and confirmed transcript hashes per RFC semantics.
+    Maintains interim and confirmed transcript hashes per RFC 9420 §8.2.
 
-    This helper intentionally uses the CryptoProvider's KDF extract to
-    produce fixed-length digests tied to the ciphersuite hash length,
-    avoiding a direct dependency on hashing primitives in this layer.
+    - confirmed_transcript_hash:
+        Hash(interim_i-1 || ConfirmedTranscriptHashInput_i)
+      where ConfirmedTranscriptHashInput = wire_format || FramedContent || signature
+
+    - interim_transcript_hash:
+        Hash(confirmed_i || InterimTranscriptHashInput_i)
+      where InterimTranscriptHashInput = confirmation_tag
     """
 
     def __init__(self, crypto: CryptoProvider, interim: Optional[bytes] = None, confirmed: Optional[bytes] = None):
@@ -32,48 +71,65 @@ class TranscriptState:
         return self._confirmed
 
     def update_with_handshake(self, plaintext: MLSPlaintext) -> bytes:
+        """Update confirmed transcript hash per RFC §8.2.
+
+        confirmed_transcript_hash[i] =
+            Hash(interim_transcript_hash[i-1] ||
+                 ConfirmedTranscriptHashInput[i])
+
+        where ConfirmedTranscriptHashInput = wire_format || FramedContent || signature
         """
-        Update interim transcript hash per RFC §8.2:
-          Interim_i = Hash(Interim_{i-1} || ConfirmedTranscriptHashInput(commit))
-        For MVP, we use the handshake TBS as the input blob.
-        """
-        tbs = plaintext.auth_content.tbs.serialize()
+        # Build ConfirmedTranscriptHashInput from the plaintext
+        framed_content_bytes = plaintext.auth_content.tbs.framed_content.serialize()
+        signature = plaintext.auth_content.signature
+        input_bytes = serialize_confirmed_transcript_hash_input(
+            WireFormat.PUBLIC_MESSAGE,
+            framed_content_bytes,
+            signature,
+        )
         prev = self._interim or b""
-        self._interim = self._crypto.hash(prev + tbs)
+        self._interim = self._crypto.hash(prev + input_bytes)
         return self._interim
 
     def compute_confirmation_tag(self, confirmation_key: bytes) -> bytes:
-        """
-        Compute confirmation tag as HMAC over the current interim transcript hash.
-        """
+        """Compute confirmation tag as HMAC over the current interim transcript hash."""
         if self._interim is None:
-            raise PyMLSError("interim transcript hash is not set")
-        # Return full-length tag per RFC (Nh)
+            raise RFC9420Error("interim transcript hash is not set")
         return self._crypto.hmac_sign(confirmation_key, self._interim)
 
     def finalize_confirmed(self, confirmation_tag: bytes) -> bytes:
-        """
-        Update confirmed transcript hash per RFC §8.2:
-          Confirmed_i = Hash(Confirmed_{i-1} || InterimTranscriptHashInput(commit, confirmation_tag))
-        For MVP, we use confirmation_tag directly as the input blob.
+        """Update interim transcript hash per RFC §8.2.
+
+        interim_transcript_hash[i] =
+            Hash(confirmed_transcript_hash[i] ||
+                 InterimTranscriptHashInput[i])
+
+        where InterimTranscriptHashInput = confirmation_tag (length-prefixed)
         """
         if self._interim is None:
-            raise PyMLSError("interim transcript hash is not set")
-        prev_c = self._confirmed or b""
-        self._confirmed = self._crypto.hash(prev_c + confirmation_tag)
+            raise RFC9420Error("interim transcript hash is not set")
+        # The confirmed hash was set during update_with_handshake (stored as interim).
+        # Per RFC: confirmed = the hash we just computed; interim = Hash(confirmed || InterimInput)
+        confirmed = self._interim
+        self._confirmed = confirmed
+
+        input_bytes = serialize_interim_transcript_hash_input(confirmation_tag)
+        self._interim = self._crypto.hash(confirmed + input_bytes)
         return self._confirmed
 
     # --- RFC 9420 §11 bootstrap helper ---
     def bootstrap_initial_interim(self) -> bytes:
-        """
-        Initialize the interim transcript hash at epoch 0 using an all-zero
-        confirmation tag of suite hash length, hashed with previous confirmed
-        (empty at creation). This mirrors the confirmed hash update shape and
-        yields a non-empty interim value before the first commit.
+        """Initialize the interim transcript hash at epoch 0.
+
+        Per RFC 9420: the initial confirmed_transcript_hash is a zero-length
+        octet string. The initial interim_transcript_hash is computed as:
+
+            Hash("" || InterimTranscriptHashInput(zero_tag))
+
+        where zero_tag is an all-zero MAC of suite hash length.
         """
         zero_tag = bytes(self._crypto.kdf_hash_len())
         prev_c = self._confirmed or b""
-        self._interim = self._crypto.hash(prev_c + zero_tag)
+        input_bytes = serialize_interim_transcript_hash_input(zero_tag)
+        self._interim = self._crypto.hash(prev_c + input_bytes)
         return self._interim
-
-

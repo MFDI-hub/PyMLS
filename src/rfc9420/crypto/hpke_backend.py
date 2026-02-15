@@ -74,5 +74,5 @@ def hpke_open(
     try:
         return hpke.open_base(kem_output, recipient_private_key, info, aad, ciphertext)
     except OpenError as e:
-        # Map rfc9180 OpenError to cryptography InvalidTag for compatibility with pymls exceptions
+        # Map rfc9180 OpenError to cryptography InvalidTag for compatibility with rfc9420 exceptions
         raise InvalidTag("Decryption failed") from e

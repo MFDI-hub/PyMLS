@@ -1,5 +1,5 @@
 """Array-indexed balanced binary tree helpers (RFC 9420 Appendix C)."""
-from ..mls.exceptions import PyMLSError
+from ..mls.exceptions import RFC9420Error
 
 
 def log2(x: int) -> int:
@@ -48,7 +48,7 @@ def left(x: int) -> int:
     """Left child index of internal node x."""
     k = level(x)
     if k == 0:
-        raise PyMLSError("leaf node has no children")
+        raise RFC9420Error("leaf node has no children")
     return x ^ (0x01 << (k - 1))
 
 
@@ -57,14 +57,14 @@ def right(x: int, _n: int) -> int:
     """Right child index of internal node x."""
     k = level(x)
     if k == 0:
-        raise PyMLSError("leaf node has no children")
+        raise RFC9420Error("leaf node has no children")
     return x ^ (0x03 << (k - 1))
 
 
 def parent(x: int, n: int) -> int:
     """Parent index of node x for a tree with n leaves."""
     if x == root(n):
-        raise PyMLSError("root node has no parent")
+        raise RFC9420Error("root node has no parent")
 
     k = level(x)
     b = (x >> (k + 1)) & 0x01

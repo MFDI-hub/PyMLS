@@ -13,7 +13,7 @@ from .ciphersuites import MlsCiphersuite
 
 
 class CryptoProvider(ABC):
-    """Abstract interface for all cryptographic operations required by PyMLS.
+    """Abstract interface for all cryptographic operations required by RFC9420.
 
     This class defines the interface that all cryptographic providers must
     implement. It includes methods for:

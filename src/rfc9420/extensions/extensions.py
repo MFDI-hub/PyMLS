@@ -14,18 +14,27 @@ from ..codec.tls import (
 
 
 class ExtensionType(IntEnum):
-    """Extension type identifiers used in this library."""
-    CAPABILITIES = 1
-    LIFETIME = 2
-    KEY_ID = 3
-    PARENT_HASH = 4
-    RATCHET_TREE = 5
-    EXTERNAL_PUB = 6
-    REQUIRED_CAPABILITIES = 7
-    APPLICATION_ID = 8
-    EXTERNAL_SENDERS = 9
-    SUPPORTED_VERSIONS = 10
-    EPOCH_AUTHENTICATOR = 11
+    """Extension type identifiers per RFC 9420 §17.3 IANA registry.
+
+    Values 0x0001–0x0005 are from RFC 9420 Table 9.
+    Values 0x000A–0x000D follow common interop conventions.
+    Values 0xFF00+ are private-use / implementation-specific.
+    """
+    # RFC 9420 Table 9 (IANA-registered)
+    APPLICATION_ID = 0x0001
+    RATCHET_TREE = 0x0002
+    REQUIRED_CAPABILITIES = 0x0003
+    EXTERNAL_PUB = 0x0004
+    EXTERNAL_SENDERS = 0x0005
+    # Standard LeafNode extensions (interop conventions)
+    # Note: These use private-use values (0xFFxx) as they are not standardized in RFC 9420 IANA registry.
+    CAPABILITIES = 0xFF02   # Private-use: no IANA-assigned value for LeafNode capabilities
+    LIFETIME = 0xFF03       # Private-use: no IANA-assigned value for LeafNode lifetime
+    KEY_ID = 0xFF04         # Private-use: no IANA-assigned value for external key ID
+    PARENT_HASH = 0xFF05    # Private-use: no IANA-assigned value for parent hash
+    # Implementation-specific (private-use range)
+    SUPPORTED_VERSIONS = 0xFF00
+    EPOCH_AUTHENTICATOR = 0xFF01
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List
 from ..mls.exceptions import (
-    PyMLSError,
+    RFC9420Error,
     UnsupportedCipherSuiteError,
     CredentialValidationError,
     CredentialRevocationError,
@@ -21,7 +21,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import padding
     except Exception as e:
-        raise PyMLSError("cryptography package required for X.509 validation") from e
+        raise RFC9420Error("cryptography package required for X.509 validation") from e
 
     # Load certificates
     def load_cert(buf: bytes):
@@ -52,7 +52,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
         try:
             from cryptography.hazmat.primitives.asymmetric import rsa, ec as _ec_mod
         except Exception as e:
-            raise PyMLSError("cryptography package required for X.509 validation") from e
+            raise RFC9420Error("cryptography package required for X.509 validation") from e
         if isinstance(pub, rsa.RSAPublicKey):
             pub.verify(sig, data, padding.PKCS1v15(), child.signature_hash_algorithm)
         elif isinstance(pub, _ec_mod.EllipticCurvePublicKey):
@@ -105,7 +105,7 @@ def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem
     try:
         from cryptography import x509
     except Exception as e:
-        raise PyMLSError("cryptography package required for X.509 validation") from e
+        raise RFC9420Error("cryptography package required for X.509 validation") from e
 
     leaf_spki = verify_certificate_chain(chain_der, trust_roots_pem)
     if policy is None:

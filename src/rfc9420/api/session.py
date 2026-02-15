@@ -17,7 +17,7 @@ from ..protocol.messages import MLSPlaintext, MLSCiphertext
 
 class MLSGroupSession:
     """
-    Synchronous high-level session wrapper around `pymls.mls.Group`.
+    Synchronous high-level session wrapper around `rfc9420.mls.Group`.
 
     Responsibilities:
     - Orchestrate group lifecycle (create/join, add/update/remove, commit/apply)
@@ -27,10 +27,10 @@ class MLSGroupSession:
     This is general-purpose and not tied to any specific application protocol.
 
     Example:
-        >>> from pymls.api import MLSGroupSession
-        >>> from pymls import DefaultCryptoProvider
-        >>> from pymls.protocol.key_packages import KeyPackage, LeafNode
-        >>> from pymls.protocol.data_structures import Credential, Signature
+        >>> from rfc9420.api import MLSGroupSession
+        >>> from rfc9420 import DefaultCryptoProvider
+        >>> from rfc9420.protocol.key_packages import KeyPackage, LeafNode
+        >>> from rfc9420.protocol.data_structures import Credential, Signature
         >>> from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
         >>> crypto = DefaultCryptoProvider()
         >>> # Build a minimal KeyPackage for the first member

@@ -1,7 +1,7 @@
 """Concrete CryptoProvider using the 'cryptography' and 'rfc9180' packages."""
 import struct
 from cryptography.hazmat.primitives import hashes, hmac, serialization
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 from cryptography.hazmat.primitives.asymmetric import (
     ec,
 )
@@ -37,7 +37,7 @@ from .ciphersuites import (
 from ..mls.exceptions import (
     UnsupportedCipherSuiteError,
     InvalidSignatureError,
-    PyMLSError,
+    RFC9420Error,
 )
 
 
@@ -87,7 +87,7 @@ class DefaultCryptoProvider(CryptoProvider):
             try:
                 return serialization.load_pem_private_key(data, password=None)
             except Exception as e:
-                raise PyMLSError("Invalid EC private key encoding (expect DER/PEM)") from e
+                raise RFC9420Error("Invalid EC private key encoding (expect DER/PEM)") from e
 
     def _load_ec_public(self, data: bytes, curve: ec.EllipticCurve):
         """Load an EC public key from DER or PEM bytes (used for Signing)."""
@@ -97,7 +97,7 @@ class DefaultCryptoProvider(CryptoProvider):
             try:
                 return serialization.load_pem_public_key(data)
             except Exception as e:
-                raise PyMLSError("Invalid EC public key encoding (expect DER/PEM)") from e
+                raise RFC9420Error("Invalid EC public key encoding (expect DER/PEM)") from e
 
     def _get_hpke_instance(self) -> HPKE:
         """Helper to create an rfc9180 HPKE instance for the active suite."""
@@ -107,22 +107,23 @@ class DefaultCryptoProvider(CryptoProvider):
         return HPKE(kem_id, kdf_id, aead_id)
 
     def kdf_extract(self, salt: bytes, ikm: bytes) -> bytes:
-        hkdf = HKDF(
-            algorithm=self._hash_algo(),
-            length=32,
-            salt=salt,
-            info=None,
-        )
-        return hkdf.derive(ikm)
+        """HKDF-Extract(salt, ikm) = HMAC-Hash(salt, ikm) per RFC 5869 §2.2.
+
+        If salt is empty, uses a zero-filled key of Hash.length bytes.
+        Output length equals the hash digest size (Hash.length).
+        """
+        effective_salt = salt if salt else bytes(self._hash_algo().digest_size)
+        h = hmac.HMAC(effective_salt, self._hash_algo())
+        h.update(ikm)
+        return h.finalize()
 
     def kdf_expand(self, prk: bytes, info: bytes, length: int) -> bytes:
-        hkdf = HKDF(
+        """HKDF-Expand(prk, info, length) per RFC 5869 §2.3."""
+        return HKDFExpand(
             algorithm=self._hash_algo(),
             length=length,
-            salt=None,
             info=info,
-        )
-        return hkdf.derive(prk)
+        ).derive(prk)
 
     def hash(self, data: bytes) -> bytes:
         h = hashes.Hash(self._hash_algo())

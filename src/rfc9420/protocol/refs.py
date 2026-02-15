@@ -12,7 +12,7 @@ from ..crypto.crypto_provider import CryptoProvider
 
 
 def _encode_len_prefixed(b: bytes) -> bytes:
-    return struct.pack("!L", len(b)) + (b or b"")
+    return struct.pack("!H", len(b)) + (b or b"")
 
 
 def encode_ref_hash_input(label: bytes, value: bytes) -> bytes:

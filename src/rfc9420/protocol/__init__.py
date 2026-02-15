@@ -1,2 +1,2 @@
-"""Protocol-layer primitives and state machines for PyMLS (RFC 9420)."""
+"""Protocol-layer primitives and state machines for RFC9420 (RFC 9420)."""
 

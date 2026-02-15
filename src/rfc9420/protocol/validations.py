@@ -128,9 +128,9 @@ def commit_path_required(proposals: Iterable[Proposal]) -> bool:
     return False
 
 
-def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, commit_bytes: bytes, tag: bytes) -> None:
-    """Verify confirmation tag as HMAC(confirm_key, commit_bytes) truncated to tag length."""
-    expected = crypto.hmac_sign(confirmation_key, commit_bytes)[: len(tag)]
+def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, confirmed_transcript_hash: bytes, tag: bytes) -> None:
+    """Verify confirmation_tag == MAC(confirmation_key, confirmed_transcript_hash) per RFC 9420 §8.1."""
+    expected = crypto.hmac_sign(confirmation_key, confirmed_transcript_hash)
     if expected != tag:
         raise CommitValidationError("invalid confirmation tag")
 

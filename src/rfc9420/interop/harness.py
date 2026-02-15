@@ -1,7 +1,7 @@
 """
 Interop harness scaffolding.
 
-These helpers serialize/deserialize MLS core structures using PyMLS codecs.
+These helpers serialize/deserialize MLS core structures using RFC9420 codecs.
 External interop (OpenMLS/MLS++) can be added by invoking their CLIs/FFI here.
 """
 from __future__ import annotations
