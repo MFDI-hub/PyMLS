@@ -1206,9 +1206,13 @@ class MLSGroup:
             self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b""
         )
         # Verify confirmation tag if present in the message (RFC 9420 §8.1)
+        # Verify confirmation tag if present in the message (RFC 9420 §8.1)
         sender_confirm_tag = message.auth_content.confirmation_tag
         if sender_confirm_tag:
             from .validations import validate_confirmation_tag
+
+            if self._confirmed_transcript_hash is None:
+                raise RFC9420Error("confirmed transcript hash not available for verification")
 
             validate_confirmation_tag(
                 self._crypto_provider,

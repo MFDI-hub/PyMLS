@@ -56,6 +56,7 @@ class KeySchedule:
         self._exporter_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"exporter")
         self._external_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"external")
         self._sender_data_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"sender data")
+        self._init_secret_derived = self._crypto_provider.derive_secret(self._epoch_secret, b"init")
 
     @classmethod
     def from_epoch_secret(cls, epoch_secret: bytes, group_context: GroupContext, crypto_provider: CryptoProvider) -> "KeySchedule":
@@ -161,7 +162,7 @@ class KeySchedule:
 
         This is the init_secret used to chain into the next epoch's key schedule.
         """
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"init")
+        return self._init_secret_derived
 
     @property
     def epoch_authenticator(self) -> bytes:
