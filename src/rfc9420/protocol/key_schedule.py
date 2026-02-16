@@ -42,16 +42,14 @@ class KeySchedule:
         pre_joiner = self._crypto_provider.kdf_extract(self._init_secret, self._commit_secret)
         # Step 2: joiner_secret = ExpandWithLabel(pre_joiner, "joiner", GroupContext, Nh)
         joiner_secret = self._crypto_provider.expand_with_label(pre_joiner, b"joiner", gc_bytes, hash_len)
-        # Step 3: PSK blending — Extract(psk_secret, joiner_secret)
+        # Step 3: PSK blending — Extract(salt=joiner_secret, ikm=psk_secret) per RFC 9420 §8
         if self._psk_secret:
-            joiner_secret = self._crypto_provider.kdf_extract(self._psk_secret, joiner_secret)
+            joiner_secret = self._crypto_provider.kdf_extract(joiner_secret, self._psk_secret)
         self._joiner_secret = joiner_secret
         # epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Hash.length)
         self._epoch_secret = self._crypto_provider.expand_with_label(joiner_secret, b"epoch", gc_bytes, hash_len)
 
-        # Derive key schedule branches using labeled derivations
-        self._handshake_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"handshake")
-        self._application_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"application")
+        # Derive key schedule branches using labeled derivations (RFC 9420 §8)
         self._encryption_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"encryption")
         self._exporter_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"exporter")
         self._external_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"external")
@@ -73,55 +71,91 @@ class KeySchedule:
         ks._wiped = False
         ks._joiner_secret = b""
         ks._epoch_secret = epoch_secret
-        # Derive key schedule branches using labeled derivations
-        ks._handshake_secret = crypto_provider.derive_secret(epoch_secret, b"handshake")
-        ks._application_secret = crypto_provider.derive_secret(epoch_secret, b"application")
+        # Derive key schedule branches using labeled derivations (RFC 9420 §8)
         ks._encryption_secret = crypto_provider.derive_secret(epoch_secret, b"encryption")
         ks._exporter_secret = crypto_provider.derive_secret(epoch_secret, b"exporter")
         ks._external_secret = crypto_provider.derive_secret(epoch_secret, b"external")
         ks._sender_data_secret = crypto_provider.derive_secret(epoch_secret, b"sender data")
         ks._init_secret_derived = crypto_provider.derive_secret(epoch_secret, b"init")
         return ks
+
+    @classmethod
+    def from_joiner_secret(
+        cls,
+        joiner_secret: bytes,
+        psk_secret: Optional[bytes],
+        group_context: GroupContext,
+        crypto_provider: CryptoProvider,
+    ) -> "KeySchedule":
+        """Construct a KeySchedule from joiner_secret (e.g., from Welcome processing).
+
+        Per RFC 9420 §8: the joiner_secret is blended with psk_secret, then
+        expanded to epoch_secret using the GroupContext. This is the proper way
+        to derive the epoch in Welcome processing, rather than using
+        joiner_secret as the epoch_secret directly.
+
+        Parameters
+        - joiner_secret: The joiner secret from the Welcome message.
+        - psk_secret: Optional PSK secret for blending.
+        - group_context: Current GroupContext to bind into.
+        - crypto_provider: Active CryptoProvider.
+        """
+        hash_len = crypto_provider.kdf_hash_len()
+        gc_bytes = group_context.serialize()
+        # PSK blending: Extract(salt=joiner_secret, ikm=psk_secret) per RFC 9420 §8
+        if psk_secret:
+            blended = crypto_provider.kdf_extract(joiner_secret, psk_secret)
+        else:
+            blended = joiner_secret
+        # epoch_secret = ExpandWithLabel(blended, "epoch", GroupContext, Nh)
+        epoch_secret = crypto_provider.expand_with_label(blended, b"epoch", gc_bytes, hash_len)
+        # Now construct from the derived epoch_secret
+        return cls.from_epoch_secret(epoch_secret, group_context, crypto_provider)
+
     @property
     def sender_data_secret(self) -> bytes:
         """Base secret for deriving sender-data keys and nonces."""
         return self._sender_data_secret
 
     def sender_data_key(self) -> bytes:
-        """Derive the AEAD key for SenderData protection."""
-        return self._crypto_provider.kdf_expand(
-            self.sender_data_secret, b"sender data key", self._crypto_provider.aead_key_size()
+        """Derive the AEAD key for SenderData protection.
+
+        .. deprecated:: Use sender_data_key_from_sample for RFC-compliant derivation.
+            This method uses empty context instead of ciphertext sample.
+        """
+        return self._crypto_provider.expand_with_label(
+            self.sender_data_secret, b"key", b"", self._crypto_provider.aead_key_size()
         )
 
     def sender_data_nonce(self, reuse_guard: bytes) -> bytes:
         """Derive the AEAD nonce for SenderData, XORed with reuse_guard.
 
-        The reuse_guard is left-padded to the AEAD nonce size and XORed into
-        the base nonce to mitigate nonce reuse.
+        .. deprecated:: Use sender_data_nonce_from_sample for RFC-compliant derivation.
+            This method uses empty context instead of ciphertext sample.
         """
-        # Base nonce derived from sender_data_secret and XORed with a reuse guard (left-padded with zeros)
         base = self._crypto_provider.expand_with_label(
-            self.sender_data_secret, b"sender data nonce", b"", self._crypto_provider.aead_nonce_size()
+            self.sender_data_secret, b"nonce", b"", self._crypto_provider.aead_nonce_size()
         )
         rg = reuse_guard.rjust(self._crypto_provider.aead_nonce_size(), b"\x00")
         return bytes(a ^ b for a, b in zip(base, rg))
 
-    # --- RFC §6.3.2 SenderData derivation from ciphertext sample ---
     def sender_data_key_from_sample(self, sample: bytes) -> bytes:
-        """
-        Derive SenderData AEAD key from sender_data_secret and ciphertext sample.
+        """Derive SenderData AEAD key per RFC 9420 §6.3.2.
+
+        sender_data_key = ExpandWithLabel(sender_data_secret, "key", ciphertext_sample, AEAD.Nk)
         """
         return self._crypto_provider.expand_with_label(
-            self.sender_data_secret, b"sender data key", sample, self._crypto_provider.aead_key_size()
+            self.sender_data_secret, b"key", sample, self._crypto_provider.aead_key_size()
         )
 
     def sender_data_nonce_from_sample(self, sample: bytes, reuse_guard: bytes) -> bytes:
-        """
-        Derive SenderData AEAD nonce from sender_data_secret and ciphertext sample,
-        then XOR in the reuse_guard (left-padded) per RFC to prevent nonce reuse.
+        """Derive SenderData AEAD nonce per RFC 9420 §6.3.2.
+
+        sender_data_nonce = ExpandWithLabel(sender_data_secret, "nonce", ciphertext_sample, AEAD.Nn)
+        Then XOR in the reuse_guard (left-padded) to prevent nonce reuse.
         """
         base = self._crypto_provider.expand_with_label(
-            self.sender_data_secret, b"sender data nonce", sample, self._crypto_provider.aead_nonce_size()
+            self.sender_data_secret, b"nonce", sample, self._crypto_provider.aead_nonce_size()
         )
         rg = reuse_guard.rjust(self._crypto_provider.aead_nonce_size(), b"\x00")
         return bytes(a ^ b for a, b in zip(base, rg))
@@ -171,13 +205,21 @@ class KeySchedule:
 
     @property
     def handshake_secret(self) -> bytes:
-        """Root for handshake traffic key derivations (via SecretTree)."""
-        return self._handshake_secret
+        """Deprecated: non-standard derivation kept for backward compatibility.
+
+        RFC 9420 does not derive a separate handshake_secret from epoch_secret.
+        The SecretTree handles handshake/application split from encryption_secret.
+        """
+        return self._crypto_provider.derive_secret(self._epoch_secret, b"handshake")
 
     @property
     def application_secret(self) -> bytes:
-        """Root for application traffic key derivations (via SecretTree)."""
-        return self._application_secret
+        """Deprecated: non-standard derivation kept for backward compatibility.
+
+        RFC 9420 does not derive a separate application_secret from epoch_secret.
+        The SecretTree handles handshake/application split from encryption_secret.
+        """
+        return self._crypto_provider.derive_secret(self._epoch_secret, b"application")
 
     @property
     def external_secret(self) -> bytes:
@@ -194,15 +236,6 @@ class KeySchedule:
         """The joiner secret used for Welcome message derivation."""
         return self._joiner_secret
 
-    def derive_sender_secrets(self, leaf_index: int) -> tuple[bytes, bytes]:
-        """
-        Deprecated helper: real per-sender secrets are derived via SecretTree (§9.2).
-        Kept for compatibility; returns branch roots for diagnostics only.
-        """
-        handshake_secret = self.handshake_secret
-        application_secret = self.application_secret
-        return handshake_secret, application_secret
-
     def wipe(self) -> None:
         """
         Best-effort zeroization of sensitive secrets.
@@ -212,8 +245,6 @@ class KeySchedule:
             return
         for name in [
             "_epoch_secret",
-            "_handshake_secret",
-            "_application_secret",
             "_encryption_secret",
             "_exporter_secret",
             "_external_secret",

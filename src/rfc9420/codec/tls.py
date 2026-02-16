@@ -218,14 +218,14 @@ def read_vector(buf: bytes, offset: int, length_bytes: int) -> tuple[bytes, int]
     Parameters
     - buf: Source bytes containing the vector.
     - offset: Starting index within buf.
-    - length_bytes: Number of bytes used to encode the length (1, 2, or 3).
+    - length_bytes: Number of bytes used to encode the length (1, 2, 3, or 4).
 
     Returns
     - (data, new_offset) where data is the extracted payload and new_offset
       points to the first byte following the payload.
 
     Raises
-    - ValueError: If length_bytes is not 1, 2, or 3.
+    - ValueError: If length_bytes is not 1, 2, 3, or 4.
     - TLSDecodeError: If insufficient bytes are available for length or data.
     """
     if length_bytes == 1:
@@ -234,8 +234,10 @@ def read_vector(buf: bytes, offset: int, length_bytes: int) -> tuple[bytes, int]
         length, offset = read_uint16(buf, offset)
     elif length_bytes == 3:
         length, offset = read_uint24(buf, offset)
+    elif length_bytes == 4:
+        length, offset = read_uint32(buf, offset)
     else:
-        raise ValueError("length_bytes must be 1, 2, or 3")
+        raise ValueError("length_bytes must be 1, 2, 3, or 4")
 
     _require_length(buf[offset:], length)
     return buf[offset:offset + length], offset + length
@@ -256,6 +258,11 @@ def write_opaque24(data: bytes) -> bytes:
     return write_vector(data, 3)
 
 
+def write_opaque32(data: bytes) -> bytes:
+    """Encode an opaque vector with a 32-bit (uint32) length prefix."""
+    return write_uint32(len(data)) + data
+
+
 def read_opaque8(buf: bytes, offset: int = 0) -> tuple[bytes, int]:
     """Decode an opaque vector with an 8-bit length prefix."""
     return read_vector(buf, offset, 1)
@@ -269,4 +276,9 @@ def read_opaque16(buf: bytes, offset: int = 0) -> tuple[bytes, int]:
 def read_opaque24(buf: bytes, offset: int = 0) -> tuple[bytes, int]:
     """Decode an opaque vector with a 24-bit length prefix."""
     return read_vector(buf, offset, 3)
+
+
+def read_opaque32(buf: bytes, offset: int = 0) -> tuple[bytes, int]:
+    """Decode an opaque vector with a 32-bit (uint32) length prefix."""
+    return read_vector(buf, offset, 4)
 

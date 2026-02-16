@@ -32,27 +32,32 @@ class LeafNodeSource(IntEnum):
 
 @dataclass(frozen=True)
 class LeafNode:
-    """Leaf node contents embedded in a KeyPackage.
+    """Leaf node contents embedded in a KeyPackage (RFC 9420 §7.2).
 
     Fields
-    - encryption_key: Public key used for HPKE encryption.
-    - signature_key: Public key used for signature verification.
-    - credential: Credential binding identity to signature_key.
-    - capabilities: Opaque capabilities payload (extension-friendly).
-    - parent_hash: Optional binding to parent nodes (MVP simplified).
+    - encryption_key: HPKEPublicKey
+    - signature_key: SignaturePublicKey
+    - credential: Credential
+    - capabilities: Capabilities
+    - leaf_node_source: LeafNodeSource
+    - extensions: Extensions
+    - signature: Signature (covers LeafNodeTBS)
     """
 
     encryption_key: bytes
     signature_key: bytes
     credential: Optional[Credential]
     capabilities: bytes
-    parent_hash: bytes = b""
-    # RFC fields
     leaf_node_source: LeafNodeSource = LeafNodeSource.KEY_PACKAGE
     extensions: list[Extension] = None  # type: ignore[assignment]
-
+    signature: bytes = b""
+    parent_hash: bytes = b""  # Internal/MVP: kept for compatibility if needed, but not in RFC wire format for Source=KeyPackage?
+    # RFC 9420 §7.2: parent_hash is conditional on source. 
+    # KeyPackage source (1) -> no parent_hash. 
+    # Update source (2) -> parent_hash.
+    
     def serialize(self) -> bytes:
-        """Encode fields; keep legacy ordering and append RFC source/extensions."""
+        """Encode fields per RFC 9420 §7.2."""
         if self.extensions is None:
             exts: list[Extension] = []
         else:
@@ -61,7 +66,6 @@ class LeafNode:
         if self.capabilities:
             try:
                 cap_ext = make_capabilities_ext(self.capabilities)
-                # Avoid duplicate CAPABILITIES extension if already present
                 if not any(e.ext_type == cap_ext.ext_type for e in exts):
                     exts = exts + [cap_ext]
             except Exception:
@@ -71,47 +75,70 @@ class LeafNode:
         cred_bytes = self.credential.serialize() if self.credential is not None else b""
         data += serialize_bytes(cred_bytes)
         data += serialize_bytes(self.capabilities)
-        data += serialize_bytes(self.parent_hash)
-        # Append RFC additions
         data += struct.pack("!B", int(self.leaf_node_source))
+        if self.leaf_node_source == LeafNodeSource.UPDATE:
+             data += serialize_bytes(self.parent_hash)
+        data += serialize_bytes(serialize_extensions(exts))
+        data += serialize_bytes(self.signature)
+        return data
+
+    def tbs_serialize(self) -> bytes:
+        """Encode LeafNodeTBS (everything except signature) for signing."""
+        # Same as serialize but without the last signature field
+        if self.extensions is None:
+            exts: list[Extension] = []
+        else:
+            exts = self.extensions
+        if self.capabilities:
+            try:
+                cap_ext = make_capabilities_ext(self.capabilities)
+                if not any(e.ext_type == cap_ext.ext_type for e in exts):
+                    exts = exts + [cap_ext]
+            except Exception:
+                pass
+        data = serialize_bytes(self.encryption_key)
+        data += serialize_bytes(self.signature_key)
+        cred_bytes = self.credential.serialize() if self.credential is not None else b""
+        data += serialize_bytes(cred_bytes)
+        data += serialize_bytes(self.capabilities)
+        data += struct.pack("!B", int(self.leaf_node_source))
+        if self.leaf_node_source == LeafNodeSource.UPDATE:
+             data += serialize_bytes(self.parent_hash)
         data += serialize_bytes(serialize_extensions(exts))
         return data
 
     @classmethod
     def deserialize(cls, data: bytes) -> "LeafNode":
-        """Parse a LeafNode from bytes produced by serialize().
-
-        Backward compatibility
-        - The parent_hash field is optional; if absent, it defaults to empty.
-        """
-        # Backward-compatible: parent_hash is optional (absent in old encoding)
-        enc_key, rest = deserialize_bytes(data)
-        sig_key, rest = deserialize_bytes(rest)
-        cred_bytes, rest = deserialize_bytes(rest)
-        credential = Credential.deserialize(cred_bytes) if cred_bytes else None
-        caps, rest = deserialize_bytes(rest)
-        parent_hash = b""
+        """Parse a LeafNode from bytes produced by serialize()."""
+        # Try full RFC parse
         try:
-            parent_hash, rest2 = deserialize_bytes(rest)
-            # If extra trailing bytes exist, ignore safely
-            _ = rest2
-        except Exception:
+            enc_key, rest = deserialize_bytes(data)
+            sig_key, rest = deserialize_bytes(rest)
+            cred_bytes, rest = deserialize_bytes(rest)
+            credential = Credential.deserialize(cred_bytes) if cred_bytes else None
+            caps, rest = deserialize_bytes(rest)
+            (src_val,) = struct.unpack("!B", rest[:1])
+            leaf_source = LeafNodeSource(src_val)
+            rest = rest[1:]
             parent_hash = b""
-            rest2 = b""
-        # Defaults
-        source = LeafNodeSource.KEY_PACKAGE
-        extensions: list[Extension] = []
-        # Parse optional source and extensions if present
-        try:
-            if rest2 is not None and len(rest2) >= 1:
-                (source_val,) = struct.unpack("!B", rest2[:1])
-                source = LeafNodeSource(source_val)
-                ext_blob, _ = deserialize_bytes(rest2[1:]) if len(rest2) > 1 else (b"", b"")
-                if ext_blob:
-                    extensions = deserialize_extensions(ext_blob)
+            if leaf_source == LeafNodeSource.UPDATE:
+                 parent_hash, rest = deserialize_bytes(rest)
+            exts_bytes, rest = deserialize_bytes(rest)
+            extensions = deserialize_extensions(exts_bytes)
+            signature, rest = deserialize_bytes(rest)
+            return cls(
+                encryption_key=enc_key,
+                signature_key=sig_key,
+                credential=credential,
+                capabilities=caps,
+                leaf_node_source=leaf_source,
+                extensions=extensions,
+                signature=signature,
+                parent_hash=parent_hash
+            )
         except Exception:
-            extensions = []
-        return cls(enc_key, sig_key, credential, caps, parent_hash, source, extensions)
+             # Parse failed
+             raise
 
 
 @dataclass(frozen=True)
@@ -129,28 +156,41 @@ class KeyPackage:
     def serialize(self) -> bytes:
         """
         Encode as:
-          opaque16(version) || CipherSuite(6 bytes) || opaque16(init_key) ||
+          uint16(version) || uint16(cipher_suite) || opaque(init_key) ||
           uint32(len(leaf_node)) || leaf_node || raw signature bytes.
         """
         if self.leaf_node is None:
             raise ValueError("leaf_node must be set for serialization")
         ln_bytes = self.leaf_node.serialize()
-        out = serialize_bytes(self.version.value.encode("utf-8"))
-        out += self.cipher_suite.serialize()
+        out = struct.pack("!H", int(self.version))  # uint16 ProtocolVersion
+        out += self.cipher_suite.serialize()  # uint16 suite_id
         out += serialize_bytes(self.init_key)
         out += struct.pack("!I", len(ln_bytes))
         out += ln_bytes
         out += self.signature.serialize()
         return out
 
+    def tbs_serialize(self) -> bytes:
+        """Encode KeyPackageTBS for signing."""
+        if self.leaf_node is None:
+            raise ValueError("leaf_node must be set for serialization")
+        ln_bytes = self.leaf_node.serialize()
+        out = struct.pack("!H", int(self.version))
+        out += self.cipher_suite.serialize()
+        out += serialize_bytes(self.init_key)
+        out += struct.pack("!I", len(ln_bytes))
+        out += ln_bytes
+        return out
+
     @classmethod
     def deserialize(cls, data: bytes) -> "KeyPackage":
         """
         Parse KeyPackage from bytes.
-        Backward-compatibility: If the blob starts with uint32(len(leaf_node)),
-        parse legacy encoding without version/cipher_suite/init_key and set defaults.
+        Primary format: uint16(version) || uint16(suite_id) || opaque(init_key) || ...
+        Legacy fallback: uint32(len(leaf_node)) || leaf_node || signature
         """
         if len(data) >= 4:
+            # Try legacy format first: starts with uint32 length of leaf_node
             try:
                 (len_ln_legacy,) = struct.unpack("!I", data[:4])
                 if 4 + len_ln_legacy <= len(data):
@@ -169,11 +209,11 @@ class KeyPackage:
                     )
             except Exception:
                 pass
-        # New encoding
-        ver_bytes, rest = deserialize_bytes(data)
-        version = MLSVersion(ver_bytes.decode("utf-8"))
-        cipher_suite = CipherSuite.deserialize(rest[:6])
-        rest = rest[6:]
+        # New encoding: uint16(version) || uint16(suite_id) || opaque(init_key) || ...
+        (ver_val,) = struct.unpack("!H", data[:2])
+        version = MLSVersion(ver_val)
+        cipher_suite = CipherSuite.deserialize(data[2:4])
+        rest = data[4:]
         init_key, rest = deserialize_bytes(rest)
         (len_ln,) = struct.unpack("!I", rest[:4])
         rest = rest[4:]

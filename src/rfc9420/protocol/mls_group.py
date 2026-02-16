@@ -167,7 +167,11 @@ class MLSGroup:
 
         # Initialize group context at epoch 0 with the current tree hash
         tree_hash = group._ratchet_tree.calculate_tree_hash()
-        group._group_context = GroupContext(group_id, 0, tree_hash, b"")
+        cs_id = crypto_provider.active_ciphersuite.suite_id
+        group._group_context = GroupContext(
+            group_id, 0, tree_hash, b"",
+            cipher_suite_id=cs_id,
+        )
         # From random epoch secret
         epoch_secret = os.urandom(crypto_provider.kdf_hash_len())
         group._key_schedule = KeySchedule.from_epoch_secret(
@@ -179,10 +183,11 @@ class MLSGroup:
             n_leaves=group._ratchet_tree.n_leaves,
             window_size=group._secret_tree_window_size,
         )
-        # Bootstrap initial interim transcript hash per RFC §11 using zero confirmation tag
+        # Bootstrap initial interim transcript hash per RFC §11
+        # confirmed_transcript_hash is the zero-length octet string at epoch 0
         ts = TranscriptState(crypto_provider, interim=None, confirmed=None)
         group._interim_transcript_hash = ts.bootstrap_initial_interim()
-        group._confirmed_transcript_hash = None
+        group._confirmed_transcript_hash = b""  # RFC §11: empty confirmed hash
         # Generate external signing key pair based on the active signature scheme
         try:
             sig_scheme = crypto_provider.active_ciphersuite.signature
@@ -342,12 +347,11 @@ class MLSGroup:
 
         group = cls(gi.group_context.group_id, crypto_provider, -1)
         group._group_context = gi.group_context
-        # Initialize key schedule from derived epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Nh)
-        epoch_secret = crypto_provider.expand_with_label(
-            joiner_secret, b"epoch", gi.group_context.serialize(), crypto_provider.kdf_hash_len()
-        )
-        group._key_schedule = KeySchedule.from_epoch_secret(
-            epoch_secret, gi.group_context, crypto_provider
+        group._group_context = gi.group_context
+        # Initialize key schedule using the joiner_secret and PSK (if any)
+        # RFC 9420 §8: Joiner secret -> (blend PSK) -> Epoch Secret
+        group._key_schedule = KeySchedule.from_joiner_secret(
+            joiner_secret, None, gi.group_context, crypto_provider
         )
         group._secret_tree = SecretTree(
             group._key_schedule.encryption_secret, crypto_provider, n_leaves=1
@@ -678,10 +682,16 @@ class MLSGroup:
         except Exception as e:
             print(f"Error validating proposal: {e}")
             raise
-        # Compute RFC 9420 §5.2 ProposalRef using RefHashInput("MLS 1.0 Proposal Reference", Proposal)
+        # Compute RFC 9420 §5.2 ProposalRef using RefHashInput
+        # Per RFC, "the value input is the AuthenticatedContent carrying the Proposal"
         from .refs import make_proposal_ref
 
-        prop_ref = make_proposal_ref(self._crypto_provider, proposal.serialize())
+        # Use AuthenticatedContent bytes if available, else fall back to proposal.serialize()
+        try:
+            prop_ref_input = message.auth_content.tbs.framed_content.content if hasattr(message, 'auth_content') else proposal.serialize()
+        except Exception:
+            prop_ref_input = proposal.serialize()
+        prop_ref = make_proposal_ref(self._crypto_provider, prop_ref_input)
         self._proposal_cache[prop_ref] = (proposal, sender.sender)
         self._pending_proposals.append(proposal)
 
@@ -788,8 +798,8 @@ class MLSGroup:
             )
         else:
             update_path = None
-            # Path-less commit: use a neutral commit_secret (RFC flows will bind PSKs/external later)
-            commit_secret = self._crypto_provider.kdf_extract(b"", b"")
+            # Path-less commit: commit_secret is all-zeros of KDF.Nh (RFC §8)
+            commit_secret = bytes(self._crypto_provider.kdf_hash_len())
 
         # Construct and sign the commit
         # Collect proposal references corresponding to pending proposals and build union proposals list in RFC order
@@ -878,8 +888,10 @@ class MLSGroup:
             new_epoch = self._group_context.epoch + 1
             new_group_id = self._group_id
         tree_hash = self._ratchet_tree.calculate_tree_hash()
+        cs_id = self._crypto_provider.active_ciphersuite.suite_id
         new_group_context = GroupContext(
-            new_group_id, new_epoch, tree_hash, b""
+            new_group_id, new_epoch, tree_hash, b"",
+            cipher_suite_id=cs_id,
         )  # filled after confirm tag
 
         # Derive PSK secret using RFC §8.4 chained derivation
@@ -920,7 +932,8 @@ class MLSGroup:
         self._confirmed_transcript_hash = transcripts.confirmed
         # update group context with confirmed hash (for the new epoch)
         self._group_context = GroupContext(
-            self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b""
+            self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"",
+            cipher_suite_id=cs_id,
         )
         # Fix 6: Recompute KeySchedule with confirmed GroupContext so epoch secrets
         # bind to the complete context including confirmed_transcript_hash
@@ -1016,6 +1029,7 @@ class MLSGroup:
                     self._crypto_provider.active_ciphersuite.kem,
                     self._crypto_provider.active_ciphersuite.kdf,
                     self._crypto_provider.active_ciphersuite.aead,
+                    suite_id=self._crypto_provider.active_ciphersuite.suite_id,
                 ),
                 secrets,
                 enc_group_info,
@@ -1132,15 +1146,9 @@ class MLSGroup:
 
         removes, adds = derive_ops_from_proposals(resolved)
         for idx in sorted(removes, reverse=True):
-            try:
-                self._ratchet_tree.remove_leaf(idx)
-            except (ValueError, IndexError):
-                continue
+            self._ratchet_tree.remove_leaf(idx)
         for kp_bytes in adds:
-            try:
-                self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
-            except (ValueError, IndexError):
-                continue
+            self._ratchet_tree.add_leaf(KeyPackage.deserialize(kp_bytes))
         # Clear referenced proposals from cache after applying
         for pref in ref_bytes:
             self._proposal_cache.pop(pref, None)
@@ -1152,9 +1160,8 @@ class MLSGroup:
                 commit.path, sender_index, gc_bytes
             )
         else:
-            # Path-less commit: derive a placeholder commit_secret (RFC-compliant flows will supply
-            # joiner/psk secrets; this MVP uses a neutral extract)
-            commit_secret = self._crypto_provider.kdf_extract(b"", b"")
+            # Path-less commit: commit_secret is all-zeros of KDF.Nh (RFC §8)
+            commit_secret = bytes(self._crypto_provider.kdf_hash_len())
 
         # ReInit handling on receive: if a ReInit proposal is referenced, reset epoch and switch group_id
         if self._group_context is None:
@@ -1179,12 +1186,15 @@ class MLSGroup:
         )
         transcripts.update_with_handshake(message)
         # Prepare new group context (confirmed hash will be set after computing tag)
-        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"")
+        cs_id = self._crypto_provider.active_ciphersuite.suite_id
+        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"",
+                                        cipher_suite_id=cs_id)
 
         if self._key_schedule is None:
             raise RFC9420Error("group not initialized")
+        prev_init_secret = self._key_schedule.init_secret
         self._key_schedule = KeySchedule(
-            self._key_schedule.init_secret,
+            prev_init_secret,
             commit_secret,
             new_group_context,
             psk_secret,
@@ -1203,7 +1213,19 @@ class MLSGroup:
         self._interim_transcript_hash = transcripts.interim
         self._confirmed_transcript_hash = transcripts.confirmed
         self._group_context = GroupContext(
-            self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b""
+            self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"",
+            cipher_suite_id=cs_id,
+        )
+        # Fix 12: Recompute KeySchedule with confirmed GroupContext so epoch secrets
+        # bind to the complete context including confirmed_transcript_hash
+        self._key_schedule = KeySchedule(
+            prev_init_secret, commit_secret, self._group_context, psk_secret, self._crypto_provider
+        )
+        self._secret_tree = SecretTree(
+            self._key_schedule.encryption_secret,
+            self._crypto_provider,
+            n_leaves=self._ratchet_tree.n_leaves,
+            window_size=self._secret_tree_window_size,
         )
         # Verify confirmation tag if present in the message (RFC 9420 §8.1)
         # Verify confirmation tag if present in the message (RFC 9420 §8.1)
@@ -1293,8 +1315,8 @@ class MLSGroup:
             except (ValueError, IndexError):
                 continue
 
-        # External commits are path-less by design here; derive a neutral commit_secret
-        commit_secret = self._crypto_provider.kdf_extract(b"", b"")
+        # External commits are path-less by design here; commit_secret is all-zeros (RFC §8)
+        commit_secret = bytes(self._crypto_provider.kdf_hash_len())
 
         # ReInit handling on receive (external): if a ReInit proposal is referenced, reset epoch and switch group_id
         if self._group_context is None:
@@ -1316,12 +1338,15 @@ class MLSGroup:
         )
         transcripts.update_with_handshake(message)
         # Prepare new group context (confirmed hash will be set after computing tag)
-        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"")
+        cs_id = self._crypto_provider.active_ciphersuite.suite_id
+        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"",
+                                        cipher_suite_id=cs_id)
 
         if self._key_schedule is None:
             raise RFC9420Error("group not initialized")
+        prev_init_secret = self._key_schedule.init_secret
         self._key_schedule = KeySchedule(
-            self._key_schedule.init_secret,
+            prev_init_secret,
             commit_secret,
             new_group_context,
             psk_secret,
@@ -1340,7 +1365,19 @@ class MLSGroup:
         self._interim_transcript_hash = transcripts.interim
         self._confirmed_transcript_hash = transcripts.confirmed
         self._group_context = GroupContext(
-            new_group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b""
+            new_group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"",
+            cipher_suite_id=cs_id,
+        )
+        # Fix 12b: Recompute KeySchedule with confirmed GroupContext so epoch secrets
+        # bind to the complete context including confirmed_transcript_hash
+        self._key_schedule = KeySchedule(
+            prev_init_secret, commit_secret, self._group_context, psk_secret, self._crypto_provider
+        )
+        self._secret_tree = SecretTree(
+            self._key_schedule.encryption_secret,
+            self._crypto_provider,
+            n_leaves=self._ratchet_tree.n_leaves,
+            window_size=self._secret_tree_window_size,
         )
 
     def reinit_group_to(

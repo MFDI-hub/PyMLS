@@ -1,5 +1,4 @@
 """Concrete CryptoProvider using the 'cryptography' and 'rfc9180' packages."""
-import struct
 from cryptography.hazmat.primitives import hashes, hmac, serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 from cryptography.hazmat.primitives.asymmetric import (
@@ -190,7 +189,13 @@ class DefaultCryptoProvider(CryptoProvider):
     # --- Domain-separated signing ---
     @staticmethod
     def _encode_sign_content(label: bytes, content: bytes) -> bytes:
-        return struct.pack("!L", len(label)) + (label or b"") + struct.pack("!L", len(content)) + (content or b"")
+        """Encode SignContent per RFC 9420 §5.1.2.
+
+        struct { opaque label<V>; opaque content<V>; } SignContent;
+        Uses 2-byte (uint16) TLS-style length prefixes for both fields.
+        """
+        from ..codec.tls import write_opaque16
+        return write_opaque16(label or b"") + write_opaque16(content or b"")
 
     def sign_with_label(self, private_key: bytes, label: bytes, content: bytes) -> bytes:
         full = b"MLS 1.0 " + (label or b"")

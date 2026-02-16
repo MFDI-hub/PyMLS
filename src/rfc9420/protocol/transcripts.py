@@ -119,17 +119,14 @@ class TranscriptState:
 
     # --- RFC 9420 §11 bootstrap helper ---
     def bootstrap_initial_interim(self) -> bytes:
-        """Initialize the interim transcript hash at epoch 0.
+        """Initialize the transcript hashes at epoch 0.
 
-        Per RFC 9420: the initial confirmed_transcript_hash is a zero-length
-        octet string. The initial interim_transcript_hash is computed as:
+        Per RFC 9420 §8.2:
+            confirmed_transcript_hash_[0] = "";  /* zero-length octet string */
+            interim_transcript_hash_[0] = "";    /* zero-length octet string */
 
-            Hash("" || InterimTranscriptHashInput(zero_tag))
-
-        where zero_tag is an all-zero MAC of suite hash length.
+        Returns the initial (empty) interim transcript hash.
         """
-        zero_tag = bytes(self._crypto.kdf_hash_len())
-        prev_c = self._confirmed or b""
-        input_bytes = serialize_interim_transcript_hash_input(zero_tag)
-        self._interim = self._crypto.hash(prev_c + input_bytes)
+        self._confirmed = b""
+        self._interim = b""
         return self._interim

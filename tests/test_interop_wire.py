@@ -50,12 +50,16 @@ class TestInteropWire(unittest.TestCase):
         # Create a minimal MLSPlaintext via messages API
         group_id = b"test_group"
         epoch = 0
-        framed = FramedContent(content_type=ContentType.APPLICATION, content=b"test_content")
-        tbs = AuthenticatedContentTBS(
+        framed = FramedContent(
             group_id=group_id,
             epoch=epoch,
-            sender_leaf_index=0,
+            sender=0,
             authenticated_data=b"",
+            content_type=ContentType.APPLICATION,
+            content=b"test_content",
+        )
+        tbs = AuthenticatedContentTBS(
+            wire_format=1,
             framed_content=framed,
         )
         auth_content = AuthenticatedContent(tbs=tbs, signature=b"dummy_sig", membership_tag=None)
@@ -65,8 +69,8 @@ class TestInteropWire(unittest.TestCase):
         encoded = encode_handshake(plaintext)
         decoded = decode_handshake(encoded)
 
-        self.assertEqual(decoded.auth_content.tbs.group_id, plaintext.auth_content.tbs.group_id)
-        self.assertEqual(decoded.auth_content.tbs.epoch, plaintext.auth_content.tbs.epoch)
+        self.assertEqual(decoded.auth_content.tbs.framed_content.group_id, plaintext.auth_content.tbs.framed_content.group_id)
+        self.assertEqual(decoded.auth_content.tbs.framed_content.epoch, plaintext.auth_content.tbs.framed_content.epoch)
         self.assertEqual(
             decoded.auth_content.tbs.framed_content.content_type,
             plaintext.auth_content.tbs.framed_content.content_type,
@@ -102,12 +106,16 @@ class TestInteropWire(unittest.TestCase):
         group_id = b"test_group"
         epoch = 1
 
-        framed = FramedContent(content_type=ContentType.COMMIT, content=b"commit_content")
-        tbs = AuthenticatedContentTBS(
+        framed = FramedContent(
             group_id=group_id,
             epoch=epoch,
-            sender_leaf_index=0,
+            sender=0,
             authenticated_data=b"",
+            content_type=ContentType.COMMIT,
+            content=b"commit_content",
+        )
+        tbs = AuthenticatedContentTBS(
+            wire_format=1,
             framed_content=framed,
         )
         auth_content = AuthenticatedContent(tbs=tbs, signature=b"sig", membership_tag=None)
@@ -116,8 +124,8 @@ class TestInteropWire(unittest.TestCase):
         encoded = encode_handshake(plaintext)
         # Should be able to deserialize
         decoded = decode_handshake(encoded)
-        self.assertEqual(decoded.auth_content.tbs.group_id, group_id)
-        self.assertEqual(decoded.auth_content.tbs.epoch, epoch)
+        self.assertEqual(decoded.auth_content.tbs.framed_content.group_id, group_id)
+        self.assertEqual(decoded.auth_content.tbs.framed_content.epoch, epoch)
 
     def test_encode_application_preserves_structure(self):
         """Test that encode_application preserves message structure."""

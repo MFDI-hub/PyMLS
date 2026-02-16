@@ -24,6 +24,7 @@ def _x25519_keypair():
     return skb, pkb
 
 
+
 def _make_key_package(identity: bytes) -> tuple[KeyPackage, bytes, bytes]:
     """
     Return (KeyPackage, kem_sk, sig_sk) for a member.
@@ -31,18 +32,47 @@ def _make_key_package(identity: bytes) -> tuple[KeyPackage, bytes, bytes]:
     kem_sk, kem_pk = _x25519_keypair()
     sig_sk, sig_pk = _ed25519_keypair()
     cred = Credential(identity=identity, public_key=sig_pk)
+    # 1. Create LeafNode (unsigned initially)
     leaf = LeafNode(
         encryption_key=kem_pk,
         signature_key=sig_pk,
         credential=cred,
         capabilities=b"",
-        parent_hash=b"",
+        signature=b""
     )
-    # Sign the leaf to form a KeyPackage signature
     crypto = DefaultCryptoProvider()
-    sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", leaf.serialize())
-    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig))
-    return kp, kem_sk, sig_sk
+    # 2. Sign LeafNodeTBS
+    leaf_tbs = leaf.tbs_serialize()
+    leaf_sig = crypto.sign_with_label(sig_sk, b"LeafNodeTBS", leaf_tbs)
+    # 3. Create signed LeafNode
+    # Since it's frozen, create new instance
+    signed_leaf = LeafNode(
+        encryption_key=leaf.encryption_key,
+        signature_key=leaf.signature_key,
+        credential=leaf.credential,
+        capabilities=leaf.capabilities,
+        leaf_node_source=leaf.leaf_node_source,
+        extensions=leaf.extensions,
+        signature=Signature(leaf_sig).value,
+        parent_hash=leaf.parent_hash
+    )
+    
+    # 4. Create KeyPackage (unsigned initially)
+    kp = KeyPackage(leaf_node=signed_leaf, init_key=kem_pk, signature=Signature(b""))
+    
+    # 5. Sign KeyPackageTBS
+    kp_tbs = kp.tbs_serialize()
+    kp_sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", kp_tbs)
+    
+    # 6. Final signed KeyPackage
+    final_kp = KeyPackage(
+         version=kp.version,
+         cipher_suite=kp.cipher_suite,
+         init_key=kp.init_key,
+         leaf_node=signed_leaf,
+         signature=Signature(kp_sig)
+    )
+    return final_kp, kem_sk, sig_sk
 
 
 class TestGroupFlow(unittest.TestCase):

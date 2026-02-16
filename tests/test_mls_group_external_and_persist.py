@@ -54,15 +54,16 @@ class TestMLSGroupExternalAndPersist(unittest.TestCase):
         )
 
         tbs = pt.auth_content.tbs
+        fc = tbs.framed_content
         # Access external private key from gA (MVP internals)
         ext_sk = gA._external_private_key
         pt_ext = sign_authenticated_content(
-            group_id=tbs.group_id,
-            epoch=tbs.epoch,
-            sender_leaf_index=tbs.sender_leaf_index,
-            authenticated_data=tbs.authenticated_data,
+            group_id=fc.group_id,
+            epoch=fc.epoch,
+            sender_leaf_index=fc.sender.sender if hasattr(fc.sender, 'sender') else int(fc.sender),
+            authenticated_data=fc.authenticated_data,
             content_type=ContentType.COMMIT,
-            content=tbs.framed_content.content,
+            content=fc.content,
             signing_private_key=ext_sk,
             crypto=self.crypto,
         )

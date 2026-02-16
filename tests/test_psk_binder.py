@@ -63,7 +63,7 @@ class TestPSKHandling(unittest.TestCase):
         pt, _ = group.create_commit(sig_sk_a)
         self.assertIsNotNone(pt)
         # authenticated_data should NOT carry a PSK binder (Fix 5)
-        ad = pt.auth_content.tbs.authenticated_data
+        ad = pt.auth_content.tbs.framed_content.authenticated_data
         binder = decode_psk_binder(ad)
         self.assertIsNone(binder, "PSK binder should not be present in authenticated_data")
 

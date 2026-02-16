@@ -42,15 +42,21 @@ class TestGroupInfoVerification(unittest.TestCase):
         verified = False
         tmp = RatchetTree(crypto)
         tmp.load_tree_from_welcome_bytes(rt_bytes)
+        print(f"DEBUG: loaded {tmp.n_leaves} leaves")
         for i in range(tmp.n_leaves):
             node = tmp.get_node(i * 2)
-            if node.leaf_node and node.leaf_node.signature_key:
-                try:
-                    crypto.verify(node.leaf_node.signature_key, tbs, gi.signature.value)
-                    verified = True
-                    break
-                except Exception:
-                    continue
+            if node.leaf_node:
+                print(f"DEBUG: node {i*2} has leaf_node with sig_key len {len(node.leaf_node.signature_key)}")
+                if node.leaf_node.signature_key:
+                    try:
+                        crypto.verify(node.leaf_node.signature_key, tbs, gi.signature.value)
+                        verified = True
+                        break
+                    except Exception as e:
+                        print(f"DEBUG: verify failed: {e}")
+                        continue
+            else:
+                print(f"DEBUG: node {i*2} missing leaf_node")
         self.assertTrue(
             verified, "GroupInfo signature should verify with a leaf signer from the tree"
         )

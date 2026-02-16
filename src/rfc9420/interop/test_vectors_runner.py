@@ -11,7 +11,7 @@ from ..crypto.crypto_provider import CryptoProvider
 from ..protocol import tree_math
 from ..protocol.secret_tree import SecretTree
 from ..protocol.messages import ContentType, FramedContent, AuthenticatedContentTBS
-from ..protocol.data_structures import GroupInfo as GroupInfoStruct, Signature
+from ..protocol.data_structures import GroupInfo as GroupInfoStruct, Signature, Sender
 from ..protocol.ratchet_tree import RatchetTree
 from ..protocol.key_packages import KeyPackage, LeafNode
 from ..protocol.mls_group import MLSGroup
@@ -120,12 +120,16 @@ def _run_message_protection_vector(vec: Dict[str, Any], crypto: CryptoProvider) 
     def h(b):
         return bytes.fromhex(b) if isinstance(b, str) else b
     ct_map = {"PROPOSAL": ContentType.PROPOSAL, "COMMIT": ContentType.COMMIT, "APPLICATION": ContentType.APPLICATION}
-    fc = FramedContent(content_type=ct_map[vec.get("content_type", "PROPOSAL")], content=h(vec.get("content", "")))
-    tbs = AuthenticatedContentTBS(
+    fc = FramedContent(
         group_id=h(vec.get("group_id", "")),
         epoch=int(vec.get("epoch", 0)),
-        sender_leaf_index=int(vec.get("sender", 0)),
+        sender=Sender(int(vec.get("sender", 0))),
         authenticated_data=h(vec.get("authenticated_data", "")),
+        content_type=ct_map[vec.get("content_type", "PROPOSAL")],
+        content=h(vec.get("content", "")),
+    )
+    tbs = AuthenticatedContentTBS(
+        wire_format=1,  # WireFormat.PUBLIC_MESSAGE
         framed_content=fc,
     )
     if "expected" in vec and "tbs" in vec["expected"]:

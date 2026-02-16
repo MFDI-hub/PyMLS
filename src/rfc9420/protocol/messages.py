@@ -3,9 +3,14 @@ RFC 9420 message framing helpers.
 - Handshake: RFC 9420 §6–§7 (AuthenticatedContent, MLSPlaintext)
 - Application: RFC 9420 §9 (MLSCiphertext, sender data)
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .data_structures import Sender
 import os
 
 from ..mls.exceptions import InvalidSignatureError
@@ -13,10 +18,12 @@ from ..codec.tls import (
     write_uint8,
     write_uint16,
     write_uint32,
+    write_uint64,
     write_opaque16,
     read_uint8,
     read_uint16,
     read_uint32,
+    read_uint64,
     read_opaque16,
 )
 from .key_schedule import KeySchedule
@@ -165,53 +172,86 @@ def decode_psk_binder(authenticated_data: bytes) -> Optional[bytes]:
 
 @dataclass(frozen=True)
 class FramedContent:
-    """RFC-aligned framed content wrapper.
+    """RFC 9420 §6 FramedContent structure.
 
-    Fields
-    - content_type: Indicates how to interpret 'content'.
-    - content: Encoded content bytes (Application | Proposal | Commit).
+    struct {
+        opaque group_id<V>;
+        uint64 epoch;
+        Sender sender;
+        opaque authenticated_data<V>;
+        ContentType content_type;
+        select (FramedContent.content_type) {
+            case application: opaque application_data<V>;
+            case proposal:    Proposal proposal;
+            case commit:      Commit commit;
+        };
+    } FramedContent;
     """
+    group_id: bytes
+    epoch: int
+    sender: 'Sender'
+    authenticated_data: bytes
     content_type: ContentType
     content: bytes  # RFC: ApplicationData | Proposal | Commit
 
     def serialize(self) -> bytes:
-        """Encode as uint8(content_type) || opaque16(content)."""
-        return write_uint8(int(self.content_type)) + write_opaque16(self.content)
+        """Encode FramedContent per RFC 9420 §6."""
+        from .data_structures import Sender as _Sender
+        out = write_opaque16(self.group_id)
+        out += write_uint64(self.epoch)
+        if isinstance(self.sender, _Sender):
+            out += self.sender.serialize()
+        else:
+            # Legacy: sender as int treated as member leaf index
+            out += _Sender(self.sender).serialize()
+        out += write_opaque16(self.authenticated_data)
+        out += write_uint8(int(self.content_type))
+        out += write_opaque16(self.content)
+        return out
 
     @classmethod
     def deserialize(cls, data: bytes) -> "FramedContent":
         """Parse FramedContent from bytes."""
+        from .data_structures import Sender as _Sender
         off = 0
+        group_id, off = read_opaque16(data, off)
+        epoch, off = read_uint64(data, off)
+        sender = _Sender.deserialize(data[off:])
+        off += len(sender.serialize())
+        ad, off = read_opaque16(data, off)
         ct_val, off = read_uint8(data, off)
         body, off = read_opaque16(data, off)
-        return cls(ContentType(ct_val), body)
+        return cls(group_id, epoch, sender, ad, ContentType(ct_val), body)
 
 
 @dataclass(frozen=True)
 class AuthenticatedContentTBS:
-    """To-Be-Signed structure for MLSPlaintext authentication.
+    """To-Be-Signed structure per RFC 9420 §6.1.
 
-    Fields
-    - group_id: Group identifier.
-    - epoch: Group epoch.
-    - sender_leaf_index: Sender's leaf index.
-    - authenticated_data: Opaque authenticated data associated with content.
-    - framed_content: Wrapped content and content type.
+    struct {
+        ProtocolVersion version = mls10;
+        WireFormat wire_format;
+        FramedContent content;
+        select (FramedContentTBS.sender.sender_type) {
+            case member:        GroupContext context;
+            case external:
+            case new_member_commit:
+            case new_member_proposal:
+        };
+    } AuthenticatedContentTBS;
     """
-    # To-Be-Signed structure
-    group_id: bytes
-    epoch: int
-    sender_leaf_index: int
-    authenticated_data: bytes
+    wire_format: int  # WireFormat enum value
     framed_content: FramedContent
+    group_context: Optional[bytes] = None  # serialized GroupContext (for member senders)
 
     def serialize(self) -> bytes:
-        """Encode fields in RFC order for signature/MAC coverage."""
-        out = write_opaque16(self.group_id)
-        out += write_uint32(self.epoch)
-        out += write_uint16(self.sender_leaf_index)
-        out += write_opaque16(self.authenticated_data)
+        """Encode AuthenticatedContentTBS per RFC 9420 §6.1."""
+        out = write_uint16(0x0001)  # ProtocolVersion = mls10
+        out += write_uint16(self.wire_format)
         out += self.framed_content.serialize()
+        # For member senders, include GroupContext
+        if self.group_context is not None:
+            out += self.group_context
         return out
 
 
@@ -249,18 +289,17 @@ class AuthenticatedContent:
     def deserialize(cls, data: bytes) -> "AuthenticatedContent":
         """Parse AuthenticatedContent from bytes produced by serialize()."""
         off = 0
-        group_id, off = read_opaque16(data, off)
-        epoch, off = read_uint32(data, off)
-        sender_idx, off = read_uint16(data, off)
-        ad, off = read_opaque16(data, off)
+        # Read ProtocolVersion header (uint16, always 0x0001 for mls10)
+        _version, off = read_uint16(data, off)
+        # Read wire_format header
+        wf, off = read_uint16(data, off)
         fc = FramedContent.deserialize(data[off:])
-        # Compute new offset by re-serializing framed content's length
         fc_ser = fc.serialize()
         off += len(fc_ser)
         sig, off = read_opaque16(data, off)
         ctag, off = read_opaque16(data, off)
         mtag, off = read_opaque16(data, off)
-        tbs = AuthenticatedContentTBS(group_id, epoch, sender_idx, ad, fc)
+        tbs = AuthenticatedContentTBS(wire_format=wf, framed_content=fc)
         return cls(tbs, sig, mtag if len(mtag) > 0 else None, ctag if len(ctag) > 0 else None)
 
 
@@ -447,9 +486,18 @@ def add_zero_padding(data: bytes, pad_to: int) -> bytes:
     return data + (b"\x00" * need)
 
 
-def strip_trailing_zeros(data: bytes) -> bytes:
-    """Remove trailing zero bytes."""
-    return data.rstrip(b"\x00")
+def strip_content_padding(data: bytes) -> bytes:
+    """Remove RFC 9420 §6.3.1 content padding (trailing zero bytes).
+
+    The content is encoded as opaque16(content) followed by zero padding.
+    We find the last non-zero byte and return everything up to and including it.
+    If the entire buffer is zero, return empty bytes.
+    """
+    # Find last non-zero byte
+    end = len(data)
+    while end > 0 and data[end - 1] == 0:
+        end -= 1
+    return data[:end]
 
 
 # --- Helpers for signing and membership tags (RFC-aligned surface for MVP) ---
@@ -490,19 +538,31 @@ def sign_authenticated_content(
     content: bytes,
     signing_private_key: bytes,
     crypto: CryptoProvider,
+    group_context: Optional[bytes] = None,
+    wire_format: int = WireFormat.PUBLIC_MESSAGE,
 ) -> MLSPlaintext:
+    """Build MLSPlaintext by signing AuthenticatedContentTBS per RFC 9420 §6.1.
+
+    Membership tag is left empty for the caller to attach via
+    attach_membership_tag(), since it depends on the group membership key.
+
+    Parameters
+    - group_context: Serialized GroupContext bytes (required for member senders).
+    - wire_format: WireFormat value (default: PUBLIC_MESSAGE).
     """
-    Build MLSPlaintext by signing AuthenticatedContentTBS. Membership tag is left empty
-    for the caller to attach via attach_membership_tag(), since it depends on the group
-    membership key maintained by the group state.
-    """
-    framed = FramedContent(content_type=content_type, content=content)
-    tbs = AuthenticatedContentTBS(
+    from .data_structures import Sender as _Sender
+    framed = FramedContent(
         group_id=group_id,
         epoch=epoch,
-        sender_leaf_index=sender_leaf_index,
+        sender=_Sender(sender_leaf_index),
         authenticated_data=authenticated_data,
+        content_type=content_type,
+        content=content,
+    )
+    tbs = AuthenticatedContentTBS(
+        wire_format=wire_format,
         framed_content=framed,
+        group_context=group_context,
     )
     # Domain-separated signing over FramedContentTBS
     sig = crypto.sign_with_label(signing_private_key, b"FramedContentTBS", tbs.serialize())
@@ -687,5 +747,5 @@ def unprotect_content_application(
             ba_n[i] = 0
     except Exception:
         pass
-    # Strip zero padding (must be all zeros per RFC)
-    return sd.sender, strip_trailing_zeros(ptxt) 
+    # Strip zero padding (must be all zeros per RFC §6.3.1)
+    return sd.sender, strip_content_padding(ptxt)

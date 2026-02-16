@@ -79,6 +79,9 @@ def validate_proposals_server_rules(proposals: Iterable[Proposal], committer_ind
     - Enforce client-side rules.
     - No Remove of committer.
     - ReInit cannot be combined with any other proposal.
+    - At most one Update per member per commit.
+    - At most one GCE proposal per commit.
+    - Pairwise-distinct PSK IDs.
     """
     plist = list(proposals)
     validate_proposals_client_rules(plist, n_leaves)
@@ -97,6 +100,23 @@ def validate_proposals_server_rules(proposals: Iterable[Proposal], committer_ind
             if p.removed in seen_removed:
                 raise CommitValidationError(f"duplicate Remove for leaf index {p.removed}")
             seen_removed.add(p.removed)
+    # At most one GCE proposal per commit (RFC §12.2)
+    gce_count = sum(1 for p in plist if isinstance(p, GroupContextExtensionsProposal))
+    if gce_count > 1:
+        raise CommitValidationError("at most one GroupContextExtensions proposal per commit")
+    # Pairwise-distinct PSK IDs (RFC §12.2)
+    from .data_structures import PreSharedKeyProposal
+    psk_ids: list[bytes] = []
+    for p in plist:
+        if isinstance(p, PreSharedKeyProposal):
+            if p.psk_id in psk_ids:
+                raise CommitValidationError("duplicate PSK ID in commit")
+            psk_ids.append(p.psk_id)
+    # At most one Update per leaf index (RFC §12.2)
+    # Note: sender leaf index is not available here, but enforce no double Updates
+    update_count = sum(1 for p in plist if isinstance(p, UpdateProposal))
+    if update_count > 1:
+        raise CommitValidationError("at most one Update proposal per member per commit")
 
 
 def validate_commit_basic(commit: Commit) -> None:

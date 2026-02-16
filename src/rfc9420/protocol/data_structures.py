@@ -1,91 +1,174 @@
 """Core protocol data structures and (de)serialization helpers for MLS."""
 
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 from abc import ABC, abstractmethod
 from typing import Optional
 import struct
 
-from ..crypto.ciphersuites import KEM, KDF, AEAD
+from ..codec.tls import write_opaque32, read_opaque32
+from ..crypto.ciphersuites import KEM, KDF, AEAD, find_by_triple, get_ciphersuite_by_id
 from ..mls.exceptions import RFC9420Error
 
 
 def serialize_bytes(data: bytes) -> bytes:
-    """Serializes bytes with a 4-byte length prefix.
+    """Serializes bytes with a 4-byte (uint32) TLS-style length prefix.
 
-    Note: RFC 9420 TLS presentation language uses variable-length prefixes,
-    but this implementation uniformly uses 4-byte prefixes for internal
-    serialization. This is functionally correct for self-contained use but
-    differs from the standard TLS encoding.
+    Uses the standard TLS opaque32 encoding via codec/tls.py helpers.
     """
-    return struct.pack("!L", len(data)) + data
+    return write_opaque32(data)
 
 
 def deserialize_bytes(data: bytes) -> tuple[bytes, bytes]:
-    """Deserializes bytes with a 4-byte length prefix."""
-    (length,) = struct.unpack("!L", data[:4])
-    return data[4 : 4 + length], data[4 + length :]
+    """Deserializes bytes with a 4-byte (uint32) TLS-style length prefix."""
+    payload, new_offset = read_opaque32(data, 0)
+    return payload, data[new_offset:]
 
 
-class MLSVersion(Enum):
-    """Protocol version enumeration."""
+class MLSVersion(IntEnum):
+    """Protocol version enumeration (RFC 9420 §5).
 
-    MLS10 = "mls10"
+    Wire format: uint16. mls10 = 0x0001.
+    """
+
+    MLS10 = 0x0001
 
 
 @dataclass(frozen=True)
 class CipherSuite:
-    """Selected KEM, KDF, and AEAD identifiers for an epoch."""
+    """Selected cipher suite for an epoch (RFC 9420 §5.1).
+
+    Wire format: single uint16 suite_id from IANA MLS Cipher Suites registry.
+    The kem/kdf/aead fields are kept for internal algorithm dispatch.
+    """
 
     kem: KEM
     kdf: KDF
     aead: AEAD
+    suite_id: int = 0  # IANA suite_id; 0 means "auto-detect from triple"
+
+    def __post_init__(self) -> None:
+        if self.suite_id == 0:
+            # Auto-resolve suite_id from (KEM, KDF, AEAD) triple
+            cs = find_by_triple((self.kem, self.kdf, self.aead))
+            if cs is not None:
+                object.__setattr__(self, "suite_id", cs.suite_id)
 
     def serialize(self) -> bytes:
-        """Encode as uint16 kem || uint16 kdf || uint16 aead."""
-        return struct.pack("!HHH", self.kem.value, self.kdf.value, self.aead.value)
+        """Encode as uint16 suite_id (RFC 9420 §5.1)."""
+        return struct.pack("!H", self.suite_id)
 
     @classmethod
     def deserialize(cls, data: bytes) -> "CipherSuite":
-        """Parse a CipherSuite from 6 bytes."""
-        kem_val, kdf_val, aead_val = struct.unpack("!HHH", data)
-        return cls(KEM(kem_val), KDF(kdf_val), AEAD(aead_val))
+        """Parse a CipherSuite from 2 bytes (uint16 suite_id)."""
+        (suite_id_val,) = struct.unpack("!H", data[:2])
+        cs = get_ciphersuite_by_id(suite_id_val)
+        if cs is not None:
+            return cls(cs.kem, cs.kdf, cs.aead, suite_id=cs.suite_id)
+        raise RFC9420Error(f"Unknown cipher suite: 0x{suite_id_val:04x}")
+
+
+class SenderType(IntEnum):
+    """Sender type discriminator (RFC 9420 §6).
+
+    enum { member(1), external(2), new_member_proposal(3), new_member_commit(4) } SenderType;
+    """
+    MEMBER = 1
+    EXTERNAL = 2
+    NEW_MEMBER_PROPOSAL = 3
+    NEW_MEMBER_COMMIT = 4
 
 
 @dataclass(frozen=True)
 class Sender:
-    """Sender descriptor carrying the leaf index."""
+    """Sender descriptor with type discriminator (RFC 9420 §6).
 
-    sender: int  # leaf index
+    Wire format: uint8 sender_type || select(sender_type) { member: uint32 leaf_index; ... }
+    """
+
+    sender: int  # leaf index (for MEMBER/EXTERNAL types)
+    sender_type: SenderType = SenderType.MEMBER
 
     def serialize(self) -> bytes:
-        """Encode as uint32 sender."""
-        return struct.pack("!I", self.sender)
+        """Encode as uint8 sender_type || uint32 leaf_index (for member/external)."""
+        out = struct.pack("!B", self.sender_type.value)
+        if self.sender_type in (SenderType.MEMBER, SenderType.EXTERNAL):
+            out += struct.pack("!I", self.sender)
+        # NEW_MEMBER_COMMIT and NEW_MEMBER_PROPOSAL have empty select body
+        return out
 
     @classmethod
     def deserialize(cls, data: bytes) -> "Sender":
-        """Parse from 4-byte uint32."""
-        (sender,) = struct.unpack("!I", data)
-        return cls(sender)
+        """Parse from sender_type || select(...)."""
+        (st_val,) = struct.unpack("!B", data[:1])
+        sender_type = SenderType(st_val)
+        if sender_type in (SenderType.MEMBER, SenderType.EXTERNAL):
+            (sender,) = struct.unpack("!I", data[1:5])
+            return cls(sender, sender_type)
+        return cls(0, sender_type)
+
+
+class CredentialType(IntEnum):
+    """Credential type discriminator (RFC 9420 §5.3)."""
+    BASIC = 1
+    X509 = 2
 
 
 @dataclass(frozen=True)
 class Credential:
-    """Basic credential carrying identity and signature public key."""
+    """Credential with type discriminator (RFC 9420 §5.3).
+
+    Wire format: uint16 credential_type || select(credential_type) {
+        case basic: opaque identity<V>;
+        case x509: Certificate certificates<V>;
+    }
+    The public_key field is kept for internal use (binding to LeafNode.signature_key)
+    but is NOT part of the RFC wire encoding.
+    """
 
     identity: bytes
     public_key: bytes
+    credential_type: CredentialType = CredentialType.BASIC
 
     def serialize(self) -> bytes:
-        """Encode as len-delimited identity || len-delimited public_key."""
-        return serialize_bytes(self.identity) + serialize_bytes(self.public_key)
+        """Encode per RFC 9420 §5.3."""
+        out = struct.pack("!H", self.credential_type.value)
+        if self.credential_type == CredentialType.BASIC:
+            out += serialize_bytes(self.identity)
+        elif self.credential_type == CredentialType.X509:
+            # X.509: identity holds the DER cert chain blob
+            out += serialize_bytes(self.identity)
+        return out
 
     @classmethod
     def deserialize(cls, data: bytes) -> "Credential":
-        """Parse from len-delimited identity and public_key."""
-        identity, rest = deserialize_bytes(data)
-        public_key, _ = deserialize_bytes(rest)
-        return cls(identity, public_key)
+        """Parse from uint16 credential_type || select(...)."""
+        if len(data) < 2:
+            # Legacy fallback: no credential_type prefix, treat as basic
+            identity, rest = deserialize_bytes(data)
+            public_key_bytes = b""
+            if rest:
+                try:
+                    public_key_bytes, _ = deserialize_bytes(rest)
+                except Exception:
+                    pass
+            return cls(identity, public_key_bytes)
+        (ct_val,) = struct.unpack("!H", data[:2])
+        try:
+            ct = CredentialType(ct_val)
+        except ValueError:
+            # Not a valid credential type — try legacy format
+            identity, rest = deserialize_bytes(data)
+            public_key_bytes = b""
+            if rest:
+                try:
+                    public_key_bytes, _ = deserialize_bytes(rest)
+                except Exception:
+                    pass
+            return cls(identity, public_key_bytes)
+        rest = data[2:]
+        identity, _ = deserialize_bytes(rest)
+        return cls(identity, b"", ct)
 
 
 @dataclass(frozen=True)
@@ -106,17 +189,18 @@ class Signature:
 
 @dataclass(frozen=True)
 class SignContent:
-    """
-    Domain-separated signing structure (RFC 9420 §5.1.2).
-    Serialized as:
-        uint32(len(label)) || label || uint32(len(content)) || content
+    """Domain-separated signing structure (RFC 9420 §5.1.2).
+
+    Serialized as: opaque label<V> || opaque content<V>
+    Uses TLS-style variable-length encoding (4-byte prefix for opaque<V>).
+    The label should already include the "MLS 1.0 " prefix when constructed.
     """
 
     label: bytes
     content: bytes
 
     def serialize(self) -> bytes:
-        """Length-prefixed label and content."""
+        """TLS-style length-prefixed label and content."""
         return serialize_bytes(self.label or b"") + serialize_bytes(self.content or b"")
 
 
@@ -531,9 +615,9 @@ class Welcome:
     encrypted_group_info: bytes
 
     def serialize(self) -> bytes:
-        """Encode version, cipher suite, secrets, and encrypted GroupInfo."""
-        data = serialize_bytes(self.version.value.encode("utf-8"))
-        data += self.cipher_suite.serialize()
+        """Encode version (uint16), cipher suite (uint16), secrets, and encrypted GroupInfo."""
+        data = struct.pack("!H", int(self.version))  # uint16 ProtocolVersion
+        data += self.cipher_suite.serialize()  # uint16 suite_id
 
         data += struct.pack("!H", len(self.secrets))
         for secret in self.secrets:
@@ -545,11 +629,11 @@ class Welcome:
     @classmethod
     def deserialize(cls, data: bytes) -> "Welcome":
         """Parse a Welcome from bytes produced by serialize()."""
-        version_bytes, rest = deserialize_bytes(data)
-        version = MLSVersion(version_bytes.decode("utf-8"))
+        (ver_val,) = struct.unpack("!H", data[:2])
+        version = MLSVersion(ver_val)
 
-        cipher_suite = CipherSuite.deserialize(rest[:6])
-        rest = rest[6:]
+        cipher_suite = CipherSuite.deserialize(data[2:4])
+        rest = data[4:]
 
         (num_secrets,) = struct.unpack("!H", rest[:2])
         rest = rest[2:]
@@ -565,18 +649,27 @@ class Welcome:
 
 @dataclass(frozen=True)
 class GroupContext:
-    """Group context bound into key schedule and transcript computation."""
+    """Group context bound into key schedule and transcript computation (RFC 9420 §8.1).
+
+    Wire format: uint16 version || uint16 cipher_suite || opaque group_id<V> ||
+                 uint64 epoch || opaque tree_hash<V> ||
+                 opaque confirmed_transcript_hash<V> || Extension extensions<V>
+    """
 
     group_id: bytes
     epoch: int
     tree_hash: bytes
     confirmed_transcript_hash: bytes
     extensions: bytes = b""  # RFC 9420 §12.1: serialized extensions list
+    version: int = 0x0001  # ProtocolVersion mls10
+    cipher_suite_id: int = 0x0001  # default to MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
 
     def serialize(self) -> bytes:
-        """Encode as uint64 epoch || group_id || tree_hash || confirmed_transcript_hash || extensions."""
-        data = struct.pack("!Q", self.epoch)
+        """Encode per RFC 9420 §8.1."""
+        data = struct.pack("!H", self.version)  # ProtocolVersion
+        data += struct.pack("!H", self.cipher_suite_id)  # CipherSuite
         data += serialize_bytes(self.group_id)
+        data += struct.pack("!Q", self.epoch)
         data += serialize_bytes(self.tree_hash)
         data += serialize_bytes(self.confirmed_transcript_hash)
         data += serialize_bytes(self.extensions)
@@ -585,12 +678,19 @@ class GroupContext:
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupContext":
         """Parse GroupContext from bytes produced by serialize()."""
-        (epoch,) = struct.unpack("!Q", data[:8])
-        rest = data[8:]
+        (version,) = struct.unpack("!H", data[:2])
+        (cipher_suite_id,) = struct.unpack("!H", data[2:4])
+        rest = data[4:]
         group_id, rest = deserialize_bytes(rest)
+        (epoch,) = struct.unpack("!Q", rest[:8])
+        rest = rest[8:]
         tree_hash, rest = deserialize_bytes(rest)
-        confirmed_transcript_hash, _ = deserialize_bytes(rest)
-        return cls(group_id, epoch, tree_hash, confirmed_transcript_hash)
+        confirmed_transcript_hash, rest = deserialize_bytes(rest)
+        extensions = b""
+        if rest:
+            extensions, _ = deserialize_bytes(rest)
+        return cls(group_id, epoch, tree_hash, confirmed_transcript_hash,
+                   extensions, version, cipher_suite_id)
 
 
 @dataclass(frozen=True)

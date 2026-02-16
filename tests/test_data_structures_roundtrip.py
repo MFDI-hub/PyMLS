@@ -69,6 +69,27 @@ class TestDataStructuresRoundtrip(unittest.TestCase):
         self.assertEqual(x.cipher_suite.kem, w.cipher_suite.kem)
         self.assertEqual(len(x.secrets), 1)
 
+    def test_group_context_roundtrip(self):
+        from rfc9420.protocol.data_structures import GroupContext
+        gc = GroupContext(
+            group_id=b"gid",
+            epoch=123,
+            tree_hash=b"tree",
+            confirmed_transcript_hash=b"cth",
+            extensions=b"ext",
+            version=0x0001,
+            cipher_suite_id=0x0001
+        )
+        data = gc.serialize()
+        gc2 = GroupContext.deserialize(data)
+        self.assertEqual(gc.group_id, gc2.group_id)
+        self.assertEqual(gc.epoch, gc2.epoch)
+        self.assertEqual(gc.tree_hash, gc2.tree_hash)
+        self.assertEqual(gc.confirmed_transcript_hash, gc2.confirmed_transcript_hash)
+        self.assertEqual(gc.extensions, gc2.extensions)
+        self.assertEqual(gc.version, gc2.version)
+        self.assertEqual(gc.cipher_suite_id, gc2.cipher_suite_id)
+
 
 if __name__ == "__main__":
     unittest.main()

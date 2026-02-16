@@ -159,7 +159,7 @@ class TestTLSCodec(unittest.TestCase):
             write_vector(b"data", 4)
         with self.assertRaises(ValueError):
             read_vector(b"data", 0, 0)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TLSDecodeError):
             read_vector(b"data", 0, 4)
 
     def test_read_vector_insufficient_data(self):

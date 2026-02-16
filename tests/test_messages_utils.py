@@ -6,7 +6,6 @@ from rfc9420.protocol.messages import (
     ContentType,
     compute_ciphertext_aad,
     add_zero_padding,
-    strip_trailing_zeros,
     apply_application_padding,
     remove_application_padding,
 )
@@ -82,36 +81,6 @@ class TestMessagesUtils(unittest.TestCase):
         self.assertEqual(len(padded), 16)
         self.assertEqual(padded[:5], data)
         self.assertEqual(padded[5:], b"\x00" * 11)
-
-    def test_strip_trailing_zeros(self):
-        """Test strip_trailing_zeros function."""
-        data = b"test\x00\x00\x00"
-        stripped = strip_trailing_zeros(data)
-        self.assertEqual(stripped, b"test")
-
-    def test_strip_trailing_zeros_no_zeros(self):
-        """Test strip_trailing_zeros with no trailing zeros."""
-        data = b"test"
-        stripped = strip_trailing_zeros(data)
-        self.assertEqual(stripped, data)
-
-    def test_strip_trailing_zeros_all_zeros(self):
-        """Test strip_trailing_zeros with all zeros."""
-        data = b"\x00\x00\x00"
-        stripped = strip_trailing_zeros(data)
-        self.assertEqual(stripped, b"")
-
-    def test_strip_trailing_zeros_empty(self):
-        """Test strip_trailing_zeros with empty bytes."""
-        data = b""
-        stripped = strip_trailing_zeros(data)
-        self.assertEqual(stripped, b"")
-
-    def test_strip_trailing_zeros_mixed(self):
-        """Test strip_trailing_zeros with mixed content."""
-        data = b"test\x00data\x00\x00"
-        stripped = strip_trailing_zeros(data)
-        self.assertEqual(stripped, b"test\x00data")
 
     def test_apply_remove_application_padding_roundtrip(self):
         """Test apply_application_padding and remove_application_padding roundtrip."""
