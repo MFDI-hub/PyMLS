@@ -840,7 +840,8 @@ class MLSGroup:
                 from .key_packages import LeafNode as _LeafNode
 
                 leaf = _LeafNode.deserialize(proposal.leaf_node)
-                if leaf.credential is not None and leaf.credential.public_key != leaf.signature_key:
+                pk = getattr(leaf.credential, "public_key", None) if leaf.credential is not None else None
+                if pk and pk != leaf.signature_key:
                     raise CommitValidationError(
                         "leaf credential public key does not match signature key"
                     )

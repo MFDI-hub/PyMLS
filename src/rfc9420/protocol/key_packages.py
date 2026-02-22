@@ -462,7 +462,7 @@ class KeyPackage:
         # Basic credential wire encoding does not carry public_key in this
         # implementation, so only enforce equality when a public key is present.
         pk = getattr(cred, "public_key", None) if cred is not None else None
-        if pk is not None and pk != self.leaf_node.signature_key:
+        if pk and pk != self.leaf_node.signature_key:
             raise InvalidSignatureError("credential public key does not match leaf signature key")
 
         # Enforce version
