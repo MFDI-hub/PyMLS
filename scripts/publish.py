@@ -10,12 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ImportError:
-
-    def load_dotenv(*_args: object, **_kwargs: object) -> bool:
-        return False
+from dotenv import load_dotenv
 
 
 TEST_PYPI_URL = "https://test.pypi.org/legacy/"
@@ -89,7 +84,9 @@ def upload(repository_url: str, token: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build and publish to TestPyPI, PyPI, or both.")
+    parser = argparse.ArgumentParser(
+        description="Build and publish to TestPyPI, PyPI, or both."
+    )
     parser.add_argument(
         "--repository",
         choices=("testpypi", "pypi", "both"),

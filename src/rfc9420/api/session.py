@@ -54,20 +54,22 @@ class MLSGroupSession:
         Returns:
             MLSGroupSession for the new group.
         """
-        runtime_kwargs = {}
+        secret_tree_window_size = 128
+        max_generation_gap = 1000
+        aead_limit_bytes: int | None = None
         if policy is not None:
-            runtime_kwargs = {
-                "secret_tree_window_size": int(policy.secret_tree_window_size),
-                "max_generation_gap": int(policy.max_generation_gap),
-                "aead_limit_bytes": policy.aead_limit_bytes,
-            }
+            secret_tree_window_size = int(policy.secret_tree_window_size)
+            max_generation_gap = int(policy.max_generation_gap)
+            aead_limit_bytes = policy.aead_limit_bytes
         sess = cls(
             Group.create(
                 group_id,
                 key_package,
                 crypto,
+                secret_tree_window_size=secret_tree_window_size,
+                max_generation_gap=max_generation_gap,
+                aead_limit_bytes=aead_limit_bytes,
                 tree_backend=tree_backend,
-                **runtime_kwargs,
             )
         )
         if policy is not None:
@@ -94,20 +96,22 @@ class MLSGroupSession:
         Returns:
             MLSGroupSession for the joined group.
         """
-        runtime_kwargs = {}
+        secret_tree_window_size = 128
+        max_generation_gap = 1000
+        aead_limit_bytes = None
         if policy is not None:
-            runtime_kwargs = {
-                "secret_tree_window_size": int(policy.secret_tree_window_size),
-                "max_generation_gap": int(policy.max_generation_gap),
-                "aead_limit_bytes": policy.aead_limit_bytes,
-            }
+            secret_tree_window_size = int(policy.secret_tree_window_size)
+            max_generation_gap = int(policy.max_generation_gap)
+            aead_limit_bytes = policy.aead_limit_bytes
         sess = cls(
             Group.join_from_welcome(
                 welcome,
                 hpke_private_key,
                 crypto,
+                secret_tree_window_size=secret_tree_window_size,
+                max_generation_gap=max_generation_gap,
+                aead_limit_bytes=aead_limit_bytes,
                 tree_backend=tree_backend,
-                **runtime_kwargs,
             )
         )
         if policy is not None:
