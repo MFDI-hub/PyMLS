@@ -31,6 +31,9 @@ class Group:
         group_id: bytes,
         key_package: KeyPackage,
         crypto: CryptoProvider,
+        secret_tree_window_size: int = 128,
+        max_generation_gap: int = 1000,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "Group":
         """Create a new MLS group with an initial member.
@@ -54,6 +57,9 @@ class Group:
                 group_id=group_id,
                 key_package=key_package,
                 crypto_provider=crypto,
+                secret_tree_window_size=secret_tree_window_size,
+                max_generation_gap=max_generation_gap,
+                aead_limit_bytes=aead_limit_bytes,
                 tree_backend=tree_backend,
             )
         )
@@ -64,6 +70,9 @@ class Group:
         welcome: Welcome,
         hpke_private_key: bytes,
         crypto: CryptoProvider,
+        secret_tree_window_size: int = 128,
+        max_generation_gap: int = 1000,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "Group":
         """Join an existing group using a Welcome message.
@@ -88,6 +97,9 @@ class Group:
                 welcome=welcome,
                 hpke_private_key=hpke_private_key,
                 crypto_provider=crypto,
+                secret_tree_window_size=secret_tree_window_size,
+                max_generation_gap=max_generation_gap,
+                aead_limit_bytes=aead_limit_bytes,
                 tree_backend=tree_backend,
             )
         )
@@ -250,6 +262,10 @@ class Group:
         """Export external keying material using the MLS exporter."""
         return self._inner.export_secret(label, context, length)
 
+    def get_resumption_psk(self) -> bytes:
+        """Return resumption PSK for the current epoch."""
+        return self._inner.get_resumption_psk()
+
     @property
     def exporter_secret(self) -> bytes:
         """Current epoch exporter secret."""
@@ -274,6 +290,36 @@ class Group:
     def to_bytes(self) -> bytes:
         """Serialize the group state."""
         return self._inner.to_bytes()
+
+    def set_trust_roots(self, roots_pem: list[bytes]) -> None:
+        """Configure trust anchors used for X.509 credential chain validation."""
+        self._inner.set_trust_roots(roots_pem)
+
+    def set_x509_policy(self, policy) -> None:
+        """Configure X.509 policy checks applied after chain validation."""
+        self._inner.set_x509_policy(policy)
+
+    def configure_runtime_policy(
+        self,
+        *,
+        secret_tree_window_size: int | None = None,
+        max_generation_gap: int | None = None,
+        aead_limit_bytes: int | None = None,
+    ) -> None:
+        """Set runtime limits that drive SecretTree receive/send enforcement."""
+        self._inner.configure_runtime_policy(
+            secret_tree_window_size=secret_tree_window_size,
+            max_generation_gap=max_generation_gap,
+            aead_limit_bytes=aead_limit_bytes,
+        )
+
+    def get_runtime_policy(self) -> dict[str, int | None]:
+        """Return currently active runtime-limit values."""
+        return self._inner.get_runtime_policy()
+
+    def close(self) -> None:
+        """Best-effort wipe for in-memory secrets."""
+        self._inner.close()
 
     @classmethod
     def from_bytes(

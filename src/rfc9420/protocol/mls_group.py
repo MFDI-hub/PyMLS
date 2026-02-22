@@ -122,6 +122,8 @@ class MLSGroup:
         crypto_provider: CryptoProvider,
         own_leaf_index: int,
         secret_tree_window_size: int = 128,
+        max_generation_gap: int = 1000,
+        aead_limit_bytes: int | None = None,
         tree_backend: Union[str, object, None] = None,
     ):
         """Initialize a new MLSGroup wrapper around cryptographic providers.
@@ -133,6 +135,8 @@ class MLSGroup:
                 or -1 for groups created from a Welcome before inserting self.
             secret_tree_window_size: Size of the skipped-keys window for
                 out-of-order decryption (default: 128).
+            max_generation_gap: Maximum allowed receive generation jump.
+            aead_limit_bytes: Optional per-epoch plaintext-byte limit.
         """
         self._group_id = group_id
         self._crypto_provider = crypto_provider
@@ -157,6 +161,10 @@ class MLSGroup:
         self._strict_psk_binders: bool = True
         self._x509_policy = None
         self._secret_tree_window_size: int = int(secret_tree_window_size)
+        self._secret_tree_max_generation_gap: int = int(max_generation_gap)
+        self._secret_tree_aead_limit_bytes: int | None = (
+            None if aead_limit_bytes is None else int(aead_limit_bytes)
+        )
         self._commit_pending: bool = False
         self._received_commit_unapplied: bool = False
         self._reinit_pending_welcome: bool = False
@@ -188,6 +196,9 @@ class MLSGroup:
         group_id: bytes,
         key_package: KeyPackage,
         crypto_provider: CryptoProvider,
+        secret_tree_window_size: int = 128,
+        max_generation_gap: int = 1000,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroup":
         """Create a new group with an initial member represented by key_package.
@@ -207,7 +218,15 @@ class MLSGroup:
         Raises:
             RFC9420Error: If group creation fails.
         """
-        group = cls(group_id, crypto_provider, 0, tree_backend=tree_backend)
+        group = cls(
+            group_id,
+            crypto_provider,
+            0,
+            secret_tree_window_size=secret_tree_window_size,
+            max_generation_gap=max_generation_gap,
+            aead_limit_bytes=aead_limit_bytes,
+            tree_backend=tree_backend,
+        )
         # Insert initial member
         group._ratchet_tree.add_leaf(key_package)
         # RFC ?11: initialize with random epoch secret; no update path
@@ -230,6 +249,8 @@ class MLSGroup:
             crypto_provider,
             n_leaves=group._ratchet_tree.n_leaves,
             window_size=group._secret_tree_window_size,
+            max_generation_gap=group._secret_tree_max_generation_gap,
+            aead_limit_bytes=group._secret_tree_aead_limit_bytes,
         )
         # Bootstrap initial interim transcript hash per RFC ?11
         # confirmed_transcript_hash is the zero-length octet string at epoch 0
@@ -259,6 +280,9 @@ class MLSGroup:
         welcome: Welcome,
         hpke_private_key: bytes,
         crypto_provider: CryptoProvider,
+        secret_tree_window_size: int = 128,
+        max_generation_gap: int = 1000,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroup":
         """Join a group using a Welcome message.
@@ -347,7 +371,15 @@ class MLSGroup:
             except ImportError:
                 pass
         # Completing Welcome processing clears any local ReInit send gate.
-        group = cls(gi.group_context.group_id, crypto_provider, -1, tree_backend=tree_backend)
+        group = cls(
+            gi.group_context.group_id,
+            crypto_provider,
+            -1,
+            secret_tree_window_size=secret_tree_window_size,
+            max_generation_gap=max_generation_gap,
+            aead_limit_bytes=aead_limit_bytes,
+            tree_backend=tree_backend,
+        )
         group._reinit_pending_welcome = False
 
         # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
@@ -402,7 +434,12 @@ class MLSGroup:
             joiner_secret, None, gi.group_context, crypto_provider
         )
         group._secret_tree = SecretTree(
-            group._key_schedule.encryption_secret, crypto_provider, n_leaves=1
+            group._key_schedule.encryption_secret,
+            crypto_provider,
+            n_leaves=1,
+            window_size=group._secret_tree_window_size,
+            max_generation_gap=group._secret_tree_max_generation_gap,
+            aead_limit_bytes=group._secret_tree_aead_limit_bytes,
         )  # will be updated if/when ratchet tree extension is loaded
         # Ratchet tree via GroupInfo extension (if present)
         req_exts: list[int] = []
@@ -525,6 +562,8 @@ class MLSGroup:
                     crypto_provider,
                     n_leaves=group._ratchet_tree.n_leaves,
                     window_size=group._secret_tree_window_size,
+                    max_generation_gap=group._secret_tree_max_generation_gap,
+                    aead_limit_bytes=group._secret_tree_aead_limit_bytes,
                 )
         except Exception:
             pass
@@ -549,6 +588,40 @@ class MLSGroup:
     def set_x509_policy(self, policy) -> None:
         """Set X.509 policy applied when validating credentials."""
         self._x509_policy = policy
+
+    def configure_runtime_policy(
+        self,
+        *,
+        secret_tree_window_size: int | None = None,
+        max_generation_gap: int | None = None,
+        aead_limit_bytes: int | None = None,
+    ) -> None:
+        """Configure runtime SecretTree limits used for application traffic."""
+        if secret_tree_window_size is not None:
+            self._secret_tree_window_size = int(secret_tree_window_size)
+        if max_generation_gap is not None:
+            self._secret_tree_max_generation_gap = int(max_generation_gap)
+        # `None` means no limit; explicit ints set a finite cap.
+        self._secret_tree_aead_limit_bytes = (
+            None if aead_limit_bytes is None else int(aead_limit_bytes)
+        )
+        if self._secret_tree is not None and self._key_schedule is not None:
+            self._secret_tree = SecretTree(
+                self._key_schedule.encryption_secret,
+                self._crypto_provider,
+                n_leaves=self._ratchet_tree.n_leaves,
+                window_size=self._secret_tree_window_size,
+                max_generation_gap=self._secret_tree_max_generation_gap,
+                aead_limit_bytes=self._secret_tree_aead_limit_bytes,
+            )
+
+    def get_runtime_policy(self) -> dict[str, int | None]:
+        """Return active runtime policy values backing SecretTree enforcement."""
+        return {
+            "secret_tree_window_size": int(self._secret_tree_window_size),
+            "max_generation_gap": int(self._secret_tree_max_generation_gap),
+            "aead_limit_bytes": self._secret_tree_aead_limit_bytes,
+        }
 
     def external_commit(
         self, key_package: KeyPackage, signing_key: bytes, kem_public_key: Optional[bytes] = None
@@ -1153,6 +1226,8 @@ class MLSGroup:
             self._crypto_provider,
             n_leaves=self._ratchet_tree.n_leaves,
             window_size=self._secret_tree_window_size,
+            max_generation_gap=self._secret_tree_max_generation_gap,
+            aead_limit_bytes=self._secret_tree_aead_limit_bytes,
         )
         self._group_context = (
             new_group_context  # temporary, will be overwritten with confirmed hash
@@ -1184,6 +1259,8 @@ class MLSGroup:
             self._crypto_provider,
             n_leaves=self._ratchet_tree.n_leaves,
             window_size=self._secret_tree_window_size,
+            max_generation_gap=self._secret_tree_max_generation_gap,
+            aead_limit_bytes=self._secret_tree_aead_limit_bytes,
         )
 
         # Construct Welcome messages for any added members (placeholder encoding)
@@ -1581,6 +1658,8 @@ class MLSGroup:
             self._crypto_provider,
             n_leaves=self._ratchet_tree.n_leaves,
             window_size=self._secret_tree_window_size,
+            max_generation_gap=self._secret_tree_max_generation_gap,
+            aead_limit_bytes=self._secret_tree_aead_limit_bytes,
         )
         self._group_context = new_group_context  # temporary
         # Compute and apply confirmation tag over interim transcript
@@ -1603,6 +1682,8 @@ class MLSGroup:
             self._crypto_provider,
             n_leaves=self._ratchet_tree.n_leaves,
             window_size=self._secret_tree_window_size,
+            max_generation_gap=self._secret_tree_max_generation_gap,
+            aead_limit_bytes=self._secret_tree_aead_limit_bytes,
         )
         # Verify confirmation tag if present in the message (RFC 9420 ?8.1)
         # Verify confirmation tag if present in the message (RFC 9420 ?8.1)
@@ -1838,6 +1919,8 @@ class MLSGroup:
             self._crypto_provider,
             n_leaves=self._ratchet_tree.n_leaves,
             window_size=self._secret_tree_window_size,
+            max_generation_gap=self._secret_tree_max_generation_gap,
+            aead_limit_bytes=self._secret_tree_aead_limit_bytes,
         )
         self._group_context = new_group_context  # temporary
         # Compute and apply confirmation tag over interim transcript
@@ -1859,6 +1942,8 @@ class MLSGroup:
             self._crypto_provider,
             n_leaves=self._ratchet_tree.n_leaves,
             window_size=self._secret_tree_window_size,
+            max_generation_gap=self._secret_tree_max_generation_gap,
+            aead_limit_bytes=self._secret_tree_aead_limit_bytes,
         )
 
     def reinit_group_to(
@@ -2078,6 +2163,8 @@ class MLSGroup:
                     crypto_provider,
                     n_leaves=group._ratchet_tree.n_leaves,
                     window_size=group._secret_tree_window_size,
+                    max_generation_gap=group._secret_tree_max_generation_gap,
+                    aead_limit_bytes=group._secret_tree_aead_limit_bytes,
                 )
             except Exception:
                 group._secret_tree = None
@@ -2157,6 +2244,8 @@ class MLSGroup:
                     crypto_provider,
                     n_leaves=group._ratchet_tree.n_leaves,
                     window_size=group._secret_tree_window_size,
+                    max_generation_gap=group._secret_tree_max_generation_gap,
+                    aead_limit_bytes=group._secret_tree_aead_limit_bytes,
                 )
             except Exception:
                 group._secret_tree = None
@@ -2256,3 +2345,18 @@ class MLSGroup:
     def get_member_count(self) -> int:
         """Return the number of current group members (leaves)."""
         return int(self._ratchet_tree.n_leaves)
+
+    def close(self) -> None:
+        """Best-effort wipe of in-memory secrets and transient proposal state."""
+        try:
+            if self._secret_tree is not None:
+                self._secret_tree.wipe()
+        except Exception:
+            pass
+        try:
+            if self._key_schedule is not None:
+                self._key_schedule.wipe()
+        except Exception:
+            pass
+        self._pending_proposals = []
+        self._proposal_cache = {}

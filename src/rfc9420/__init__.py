@@ -19,7 +19,7 @@ from .mls.group import Group  # High-level API
 from .crypto.default_crypto_provider import DefaultCryptoProvider
 from .protocol.mls_group import MLSGroup  # Low-level protocol implementation
 from .protocol.data_structures import CipherSuite
-from .api import MLSGroupSession
+from .api import MLSGroupSession, MLSAppPolicy, MLSOrchestrator, CommitIngestResult
 from .protocol.ratchet_tree_backend import (
     BACKEND_ARRAY,
     BACKEND_PERFECT,
@@ -32,6 +32,9 @@ __all__ = [
     "DefaultCryptoProvider",
     "MLSGroup",
     "MLSGroupSession",
+    "MLSAppPolicy",
+    "MLSOrchestrator",
+    "CommitIngestResult",
     "CipherSuite",
     "BACKEND_ARRAY",
     "BACKEND_PERFECT",

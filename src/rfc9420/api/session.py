@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple, List
+from typing import Tuple, List, TYPE_CHECKING
 
 from ..mls.group import Group
 from ..protocol.key_packages import KeyPackage, LeafNode
@@ -15,6 +15,8 @@ from ..interop.wire import (
 )
 from ..protocol.messages import MLSPlaintext, MLSCiphertext
 
+if TYPE_CHECKING:
+    from .policy import MLSAppPolicy
 
 class MLSGroupSession:
     """Synchronous high-level session wrapper around `rfc9420.mls.Group`.
@@ -38,6 +40,7 @@ class MLSGroupSession:
         group_id: bytes,
         key_package: KeyPackage,
         crypto: CryptoProvider,
+        policy: "MLSAppPolicy | None" = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroupSession":
         """Create a new MLS group and session as the founding member.
@@ -51,7 +54,25 @@ class MLSGroupSession:
         Returns:
             MLSGroupSession for the new group.
         """
-        return cls(Group.create(group_id, key_package, crypto, tree_backend=tree_backend))
+        runtime_kwargs = {}
+        if policy is not None:
+            runtime_kwargs = {
+                "secret_tree_window_size": int(policy.secret_tree_window_size),
+                "max_generation_gap": int(policy.max_generation_gap),
+                "aead_limit_bytes": policy.aead_limit_bytes,
+            }
+        sess = cls(
+            Group.create(
+                group_id,
+                key_package,
+                crypto,
+                tree_backend=tree_backend,
+                **runtime_kwargs,
+            )
+        )
+        if policy is not None:
+            sess.apply_policy(policy)
+        return sess
 
     @classmethod
     def join_from_welcome(
@@ -59,6 +80,7 @@ class MLSGroupSession:
         welcome: Welcome,
         hpke_private_key: bytes,
         crypto: CryptoProvider,
+        policy: "MLSAppPolicy | None" = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroupSession":
         """Join an existing group using a Welcome message and HPKE private key.
@@ -72,14 +94,25 @@ class MLSGroupSession:
         Returns:
             MLSGroupSession for the joined group.
         """
-        return cls(
+        runtime_kwargs = {}
+        if policy is not None:
+            runtime_kwargs = {
+                "secret_tree_window_size": int(policy.secret_tree_window_size),
+                "max_generation_gap": int(policy.max_generation_gap),
+                "aead_limit_bytes": policy.aead_limit_bytes,
+            }
+        sess = cls(
             Group.join_from_welcome(
                 welcome,
                 hpke_private_key,
                 crypto,
                 tree_backend=tree_backend,
+                **runtime_kwargs,
             )
         )
+        if policy is not None:
+            sess.apply_policy(policy)
+        return sess
 
     # --- Handshake proposals and commits (byte I/O) ---
     def add_member(self, key_package: KeyPackage, signing_key: bytes) -> bytes:
@@ -192,6 +225,26 @@ class MLSGroupSession:
         """
         return self._group.export_secret(label, context, length)
 
+    def get_resumption_psk(self) -> bytes:
+        """Export current epoch resumption PSK."""
+        return self._group.get_resumption_psk()
+
+    def apply_policy(self, policy: "MLSAppPolicy") -> None:
+        """Apply app-level runtime and credential policy to this session."""
+        self._group.configure_runtime_policy(
+            secret_tree_window_size=int(policy.secret_tree_window_size),
+            max_generation_gap=int(policy.max_generation_gap),
+            aead_limit_bytes=policy.aead_limit_bytes,
+        )
+        if policy.trust_roots:
+            self._group.set_trust_roots(policy.trust_roots)
+        if policy.x509_policy is not None:
+            self._group.set_x509_policy(policy.x509_policy)
+
+    def get_effective_policy(self) -> dict[str, int | None]:
+        """Return effective runtime policy currently enforced by the group."""
+        return self._group.get_runtime_policy()
+
     # --- Introspection ---
     @property
     def epoch(self) -> int:
@@ -227,6 +280,7 @@ class MLSGroupSession:
         cls,
         data: bytes,
         crypto: CryptoProvider,
+        policy: "MLSAppPolicy | None" = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroupSession":
         """Restore a session from previously serialized group state.
@@ -240,5 +294,12 @@ class MLSGroupSession:
             MLSGroupSession with restored group state.
         """
         group = Group.from_bytes(data, crypto, tree_backend=tree_backend)
-        return cls(group)
+        sess = cls(group)
+        if policy is not None:
+            sess.apply_policy(policy)
+        return sess
+
+    def close(self) -> None:
+        """Best-effort cleanup hook for sensitive in-memory state."""
+        self._group.close()
 
