@@ -20,7 +20,23 @@ from .crypto.default_crypto_provider import DefaultCryptoProvider
 from .protocol.mls_group import MLSGroup  # Low-level protocol implementation
 from .protocol.data_structures import CipherSuite
 from .api import MLSGroupSession
+from .protocol.ratchet_tree_backend import (
+    BACKEND_ARRAY,
+    BACKEND_PERFECT,
+    BACKEND_LINKED,
+    DEFAULT_TREE_BACKEND,
+)
 
-__all__ = ["Group", "DefaultCryptoProvider", "MLSGroup", "MLSGroupSession", "CipherSuite"]
+__all__ = [
+    "Group",
+    "DefaultCryptoProvider",
+    "MLSGroup",
+    "MLSGroupSession",
+    "CipherSuite",
+    "BACKEND_ARRAY",
+    "BACKEND_PERFECT",
+    "BACKEND_LINKED",
+    "DEFAULT_TREE_BACKEND",
+]
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"

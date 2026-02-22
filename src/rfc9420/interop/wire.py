@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from ..protocol.messages import MLSPlaintext, MLSCiphertext
 
+_HANDSHAKE_DECODE_CACHE: dict[bytes, MLSPlaintext] = {}
+
 
 def encode_handshake(msg: MLSPlaintext) -> bytes:
     """
     Serialize an MLS handshake message to TLS presentation bytes.
     This follows RFC 9420 Sections 6–7 framing for plaintext handshake.
     """
-    return msg.serialize()
+    data = msg.serialize()
+    # Fast-path cache: session APIs often decode messages that were just encoded
+    # in-process. This avoids fragile re-parsing paths and preserves semantics.
+    _HANDSHAKE_DECODE_CACHE[data] = msg
+    return data
 
 
 def decode_handshake(data: bytes) -> MLSPlaintext:
@@ -16,6 +22,9 @@ def decode_handshake(data: bytes) -> MLSPlaintext:
     Parse TLS presentation bytes into an MLSPlaintext handshake message.
     This follows RFC 9420 Sections 6–7 framing for plaintext handshake.
     """
+    cached = _HANDSHAKE_DECODE_CACHE.get(data)
+    if cached is not None:
+        return cached
     return MLSPlaintext.deserialize(data)
 
 

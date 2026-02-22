@@ -16,16 +16,6 @@ from ..crypto.crypto_provider import CryptoProvider
 from . import tree_math
 
 
-def _u64(x: int) -> bytes:
-    """Encode an integer as 8-byte big-endian."""
-    return x.to_bytes(8, "big")
-
-
-def _xor(a: bytes, b: bytes) -> bytes:
-    """Byte-wise XOR of two equal-length byte strings."""
-    return bytes(x ^ y for x, y in zip(a, b))
-
-
 @dataclass
 class _LeafState:
     """Mutable per-leaf state for tracking send generations and ratchet secrets."""
@@ -59,11 +49,22 @@ class SecretTree:
     the configured window.
     """
 
-    def __init__(self, encryption_secret: bytes, crypto: CryptoProvider, n_leaves: int = 1, window_size: int = 128):
+    def __init__(
+        self,
+        encryption_secret: bytes,
+        crypto: CryptoProvider,
+        n_leaves: int = 1,
+        window_size: int = 128,
+        max_generation_gap: int = 1000,
+        aead_limit_bytes: int | None = None,
+    ):
         self._root_secret = encryption_secret
         self._crypto = crypto
         self._n_leaves = max(1, int(n_leaves))
         self._window_size = max(0, int(window_size))
+        self._max_generation_gap = max(1, int(max_generation_gap))
+        self._aead_limit_bytes = aead_limit_bytes if aead_limit_bytes is None else max(0, int(aead_limit_bytes))
+        self._encrypted_bytes_total = 0
         self._leaves: Dict[int, _LeafState] = {}
 
     def _get_leaf_state(self, leaf: int) -> _LeafState:
@@ -75,7 +76,7 @@ class SecretTree:
         """
         Walk the array-based tree from root to the target leaf (RFC 9420 Appendix C),
         deriving left/right child secrets from the parent at each step using
-        labeled KDF expansion per §9.2.
+        labeled KDF expansion per §9 (tree derivation).
         """
         n = self._n_leaves
         if leaf < 0 or leaf >= n:
@@ -99,36 +100,19 @@ class SecretTree:
                 node = right_node
         return secret
 
-    def _derive_generation_secret(self, branch_secret: bytes, generation: int, branch_label: bytes) -> bytes:
-        """
-        Derive the per-generation secret for the given branch (b"handshake" or b"application").
-        """
-        ctx = _u64(generation)
-        # Domain-separate with the branch label before deriving (key, nonce)
-        return self._crypto.expand_with_label(branch_secret, branch_label, ctx, self._crypto.kdf_hash_len())
-
-    def _derive_key_nonce(self, gen_secret: bytes) -> Tuple[bytes, bytes]:
-        """Derive (key, nonce_base) for AEAD from a generation secret."""
-        key = self._crypto.expand_with_label(gen_secret, b"key", b"", self._crypto.aead_key_size())
-        nonce_base = self._crypto.expand_with_label(gen_secret, b"nonce", b"", self._crypto.aead_nonce_size())
-        return key, nonce_base
-
-    def _nonce_for_generation(self, nonce_base: bytes, generation: int) -> bytes:
-        """Derive the AEAD nonce by XORing the base with the generation counter."""
-        # XOR with generation encoded as big-endian and left-padded with zeros
-        g_bytes = generation.to_bytes(len(nonce_base), "big", signed=False)
-        return _xor(nonce_base, g_bytes)
-
-    def _ratchet_step(self, current_secret: bytes) -> tuple[bytes, bytes, bytes]:
+    def _ratchet_step(self, current_secret: bytes, generation: int) -> tuple[bytes, bytes, bytes]:
         """
         Derive (key, nonce, next_secret) from the current ratchet secret per RFC §9.1:
-          key   := ExpandWithLabel(secret, "key", "", Nk)
-          nonce := ExpandWithLabel(secret, "nonce", "", Nn)
-          next  := DeriveSecret(secret, "secret")
+          key   := ExpandWithLabel(secret, "key", generation_bytes, Nk)
+          nonce := ExpandWithLabel(secret, "nonce", generation_bytes, Nn)
+          next  := ExpandWithLabel(secret, "secret", generation_bytes, Nh)
         """
-        key = self._crypto.expand_with_label(current_secret, b"key", b"", self._crypto.aead_key_size())
-        nonce = self._crypto.expand_with_label(current_secret, b"nonce", b"", self._crypto.aead_nonce_size())
-        next_secret = self._crypto.derive_secret(current_secret, b"secret")
+        # Generation encoded as 4-byte big-endian
+        ctx = generation.to_bytes(4, "big")
+        
+        key = self._crypto.expand_with_label(current_secret, b"key", ctx, self._crypto.aead_key_size())
+        nonce = self._crypto.expand_with_label(current_secret, b"nonce", ctx, self._crypto.aead_nonce_size())
+        next_secret = self._crypto.expand_with_label(current_secret, b"secret", ctx, self._crypto.kdf_hash_len())
         return key, nonce, next_secret
 
     # Application traffic
@@ -140,8 +124,10 @@ class SecretTree:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.app_secret = self._crypto.derive_secret(leaf_secret, b"application")
             st.app_generation = 0
+            
+        gen = st.app_generation
         # Derive step and advance (delete current secret)
-        key, nonce, next_secret = self._ratchet_step(st.app_secret)
+        key, nonce, next_secret = self._ratchet_step(st.app_secret, gen)
         try:
             ba = bytearray(st.app_secret)
             for i in range(len(ba)):
@@ -149,7 +135,6 @@ class SecretTree:
         except Exception:
             pass
         st.app_secret = next_secret
-        gen = st.app_generation
         st.app_generation += 1
         return key, nonce, gen
 
@@ -161,6 +146,8 @@ class SecretTree:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.app_recv_secret = self._crypto.derive_secret(leaf_secret, b"application")
             st.app_recv_generation = 0
+        if generation - st.app_recv_generation > self._max_generation_gap:
+            raise ValueError("application generation exceeds max_generation_gap")
 
         # If requested generation is older than our current receive counter,
         # attempt to serve it from the skipped cache; otherwise fall back to
@@ -168,13 +155,22 @@ class SecretTree:
         if generation < st.app_recv_generation:
             if generation in st.app_skipped:
                 key, nonce = st.app_skipped.pop(generation)
+                # RFC §9.2: zeroize consumed skipped key immediately (best-effort)
+                try:
+                    _k = bytearray(key)
+                    _k[:] = b'\x00' * len(_k)
+                    _n = bytearray(nonce)
+                    _n[:] = b'\x00' * len(_n)
+                except Exception:
+                    pass
                 return key, nonce, generation
             # Fallback: derive on-demand without affecting receive cursor
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             secret = self._crypto.derive_secret(leaf_secret, b"application")
             key = nonce = b""
-            for _ in range(generation + 1):
-                key, nonce, secret = self._ratchet_step(secret)
+            # Walk from 0 up to generation
+            for g in range(generation + 1):
+                key, nonce, secret = self._ratchet_step(secret, g)
             return key, nonce, generation
 
         # Derive and cache intermediate generations (current .. generation-1)
@@ -184,16 +180,24 @@ class SecretTree:
             temp_secret = st.app_recv_secret
             assert temp_secret is not None
             for g in range(st.app_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(temp_secret)
+                k, n, temp_secret = self._ratchet_step(temp_secret, g)
                 st.app_skipped[g] = (k, n)
                 # Evict oldest if exceeding window
                 while len(st.app_skipped) > self._window_size:
                     st.app_skipped.popitem(last=False)
             st.app_recv_secret = temp_secret
+            st.app_recv_generation = generation
 
         # Derive key/nonce for the requested generation and advance cursor
         assert st.app_recv_secret is not None
-        key, nonce, next_secret = self._ratchet_step(st.app_recv_secret)
+        old_secret = st.app_recv_secret
+        key, nonce, next_secret = self._ratchet_step(old_secret, generation)
+        try:
+            ba = bytearray(old_secret)
+            for i in range(len(ba)):
+                ba[i] = 0
+        except Exception:
+            pass
         st.app_recv_secret = next_secret
         st.app_recv_generation = generation + 1
         return key, nonce, generation
@@ -206,7 +210,9 @@ class SecretTree:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.hs_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
             st.hs_generation = 0
-        key, nonce, next_secret = self._ratchet_step(st.hs_secret)
+            
+        gen = st.hs_generation
+        key, nonce, next_secret = self._ratchet_step(st.hs_secret, gen)
         try:
             ba = bytearray(st.hs_secret)
             for i in range(len(ba)):
@@ -214,7 +220,6 @@ class SecretTree:
         except Exception:
             pass
         st.hs_secret = next_secret
-        gen = st.hs_generation
         st.hs_generation += 1
         return key, nonce, gen
 
@@ -226,34 +231,62 @@ class SecretTree:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.hs_recv_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
             st.hs_recv_generation = 0
+        if generation - st.hs_recv_generation > self._max_generation_gap:
+            raise ValueError("handshake generation exceeds max_generation_gap")
 
         if generation < st.hs_recv_generation:
             if generation in st.hs_skipped:
                 key, nonce = st.hs_skipped.pop(generation)
+                # RFC §9.2: zeroize consumed skipped key immediately (best-effort)
+                try:
+                    _k = bytearray(key)
+                    _k[:] = b'\x00' * len(_k)
+                    _n = bytearray(nonce)
+                    _n[:] = b'\x00' * len(_n)
+                except Exception:
+                    pass
                 return key, nonce, generation
             # Fallback on-demand derivation for older gens outside window
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             secret = self._crypto.derive_secret(leaf_secret, b"handshake")
             key = nonce = b""
-            for _ in range(generation + 1):
-                key, nonce, secret = self._ratchet_step(secret)
+            for g in range(generation + 1):
+                key, nonce, secret = self._ratchet_step(secret, g)
             return key, nonce, generation
 
         if self._window_size > 0 and generation > st.hs_recv_generation:
             temp_secret = st.hs_recv_secret
             assert temp_secret is not None
             for g in range(st.hs_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(temp_secret)
+                k, n, temp_secret = self._ratchet_step(temp_secret, g)
                 st.hs_skipped[g] = (k, n)
                 while len(st.hs_skipped) > self._window_size:
                     st.hs_skipped.popitem(last=False)
             st.hs_recv_secret = temp_secret
+            st.hs_recv_generation = generation
 
         assert st.hs_recv_secret is not None
-        key, nonce, next_secret = self._ratchet_step(st.hs_recv_secret)
+        old_secret = st.hs_recv_secret
+        key, nonce, next_secret = self._ratchet_step(old_secret, generation)
+        try:
+            ba = bytearray(old_secret)
+            for i in range(len(ba)):
+                ba[i] = 0
+        except Exception:
+            pass
         st.hs_recv_secret = next_secret
         st.hs_recv_generation = generation + 1
         return key, nonce, generation
+
+    def can_encrypt(self, plaintext_len: int) -> bool:
+        """Return whether encrypting plaintext_len bytes stays within configured AEAD bound."""
+        if self._aead_limit_bytes is None:
+            return True
+        return (self._encrypted_bytes_total + max(0, int(plaintext_len))) <= self._aead_limit_bytes
+
+    def record_encryption(self, plaintext_len: int) -> None:
+        """Track encrypted byte volume for AEAD-bound guardrails."""
+        self._encrypted_bytes_total += max(0, int(plaintext_len))
 
 
     def wipe(self) -> None:

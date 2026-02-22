@@ -100,7 +100,7 @@ class CryptoProvider(ABC):
         Domain-separated signing helper (RFC 9420 §5.1.2).
         Signs the serialization of:
             SignContent := struct { opaque label<V>; opaque content<V>; }
-        where V is a 4-byte length prefix.
+        where V is a TLS variable-length opaque vector.
         """
         pass
 
@@ -120,6 +120,11 @@ class CryptoProvider(ABC):
     @abstractmethod
     def hpke_open(self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
         """HPKE open: returns plaintext."""
+        pass
+
+    @abstractmethod
+    def hpke_export_secret(self, private_key: bytes, kem_output: bytes, info: bytes, export_label: bytes, export_length: int) -> bytes:
+        """HPKE SetupBaseR + Context.Export."""
         pass
 
     @abstractmethod

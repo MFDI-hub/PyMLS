@@ -12,7 +12,7 @@ from ..protocol import tree_math
 from ..protocol.secret_tree import SecretTree
 from ..protocol.messages import ContentType, FramedContent, AuthenticatedContentTBS
 from ..protocol.data_structures import GroupInfo as GroupInfoStruct, Signature, Sender
-from ..protocol.ratchet_tree import RatchetTree
+from ..protocol.ratchet_tree_backend import BACKEND_ARRAY, create_tree_backend
 from ..protocol.key_packages import KeyPackage, LeafNode
 from ..protocol.mls_group import MLSGroup
 
@@ -169,7 +169,8 @@ def _run_tree_operations_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> 
     """
     def h(b):
         return bytes.fromhex(b) if isinstance(b, str) else b
-    tree = RatchetTree(crypto)
+    backend_id = str(vec.get("tree_backend", BACKEND_ARRAY))
+    tree = create_tree_backend(crypto, backend_id)
     for kp_hex in vec.get("initial_tree", []):
         try:
             kp = KeyPackage.deserialize(h(kp_hex))

@@ -53,8 +53,11 @@ def left(x: int) -> int:
 
 
 def right(x: int, _n: int) -> int:
-    # Keep signature compatible; n not needed for array relationships
-    """Right child index of internal node x."""
+    """Right child index of internal node x.
+
+    The second parameter is kept for signature compatibility with tree layouts
+    that depend on leaf count; it is not used for array-based indexing.
+    """
     k = level(x)
     if k == 0:
         raise RFC9420Error("leaf node has no children")
@@ -81,7 +84,7 @@ def sibling(x: int, n: int) -> int:
 
 
 def direct_path(x: int, n: int) -> list[int]:
-    """Indices on the path from node x up to (but excluding) the root."""
+    """Indices on the path from node x up to and including the root."""
     r = root(n)
     if x == r:
         return []
@@ -94,11 +97,10 @@ def direct_path(x: int, n: int) -> list[int]:
 
 
 def copath(x: int, n: int) -> list[int]:
-    """Sequence of sibling nodes along the path from x to the root."""
+    """Sequence of sibling nodes along the path from x to the root (RFC 9420 §4.1.2)."""
     if x == root(n):
         return []
 
-    d = direct_path(x, n)
-    d.insert(0, x)
-    d.pop()
-    return [sibling(y, n) for y in d]
+    r = root(n)
+    path_from_x = [x] + [y for y in direct_path(x, n) if y != r]
+    return [sibling(y, n) for y in path_from_x]

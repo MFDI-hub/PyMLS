@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..protocol.mls_group import MLSGroup as _ProtocolMLSGroup
+from ..protocol.ratchet_tree_backend import DEFAULT_TREE_BACKEND
 from ..crypto.crypto_provider import CryptoProvider
 from ..protocol.key_packages import KeyPackage, LeafNode
 from ..protocol.data_structures import Sender
@@ -10,32 +11,28 @@ from ..mls.exceptions import CommitValidationError
 
 
 class Group:
-    """
-    High-level API for MLS group operations (RFC 9420).
+    """High-level API for MLS group operations (RFC 9420).
 
-    This class provides an ergonomic wrapper around the protocol-level MLSGroup,
-    implementing RFC 9420 group lifecycle interfaces. It delegates to `protocol.MLSGroup`
-    for core functionality while providing a simpler API surface.
-
+    Ergonomic wrapper around the protocol-level MLSGroup: create/join groups,
+    add/update/remove members, commit, and protect/unprotect application data.
     See RFC 9420 §8 (Group operations) and Appendix C/D (tree representations).
 
-    Example:
-        >>> crypto = DefaultCryptoProvider()
-        >>> group = Group.create(b"group1", key_package, crypto)
-        >>> proposal = group.add(other_key_package, signing_key)
-        >>> commit, welcomes = group.commit(signing_key)
+    Parameters:
+        inner: The underlying protocol MLSGroup instance.
     """
 
     def __init__(self, inner: _ProtocolMLSGroup):
-        """Initialize a Group wrapper around a protocol MLSGroup.
-
-        Args:
-            inner: The underlying protocol MLSGroup instance.
-        """
+        """Initialize a Group wrapper around a protocol MLSGroup."""
         self._inner = inner
 
     @classmethod
-    def create(cls, group_id: bytes, key_package: KeyPackage, crypto: CryptoProvider) -> "Group":
+    def create(
+        cls,
+        group_id: bytes,
+        key_package: KeyPackage,
+        crypto: CryptoProvider,
+        tree_backend: str = DEFAULT_TREE_BACKEND,
+    ) -> "Group":
         """Create a new MLS group with an initial member.
 
         Creates a new group with epoch 0, initializes the ratchet tree with the
@@ -52,10 +49,23 @@ class Group:
         Raises:
             RFC9420Error: If group creation fails.
         """
-        return cls(_ProtocolMLSGroup.create(group_id=group_id, key_package=key_package, crypto_provider=crypto))
+        return cls(
+            _ProtocolMLSGroup.create(
+                group_id=group_id,
+                key_package=key_package,
+                crypto_provider=crypto,
+                tree_backend=tree_backend,
+            )
+        )
 
     @classmethod
-    def join_from_welcome(cls, welcome: Welcome, hpke_private_key: bytes, crypto: CryptoProvider) -> "Group":
+    def join_from_welcome(
+        cls,
+        welcome: Welcome,
+        hpke_private_key: bytes,
+        crypto: CryptoProvider,
+        tree_backend: str = DEFAULT_TREE_BACKEND,
+    ) -> "Group":
         """Join an existing group using a Welcome message.
 
         Processes a Welcome message received out-of-band, decrypts the GroupInfo,
@@ -73,7 +83,14 @@ class Group:
             CommitValidationError: If no EncryptedGroupSecrets can be opened.
             InvalidSignatureError: If GroupInfo signature verification fails.
         """
-        return cls(_ProtocolMLSGroup.from_welcome(welcome=welcome, hpke_private_key=hpke_private_key, crypto_provider=crypto))
+        return cls(
+            _ProtocolMLSGroup.from_welcome(
+                welcome=welcome,
+                hpke_private_key=hpke_private_key,
+                crypto_provider=crypto,
+                tree_backend=tree_backend,
+            )
+        )
 
     def add(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
         """Create an Add proposal to add a new member to the group.
@@ -161,6 +178,13 @@ class Group:
             ValueError: If commit validation fails (converted from CommitValidationError).
         """
         try:
+            if sender_leaf_index < 0 or sender_leaf_index >= self._inner.get_member_count():
+                raise ValueError(f"invalid sender leaf index: {sender_leaf_index}")
+            # A joiner restored from Welcome may already be at the post-commit
+            # epoch. Treat stale commit re-application as a no-op.
+            msg_epoch = message.auth_content.tbs.framed_content.epoch
+            if msg_epoch < self._inner.get_epoch():
+                return None
             return self._inner.process_commit(message, sender_leaf_index)
         except CommitValidationError as e:
             # Convert to ValueError for compatibility with tests expecting ValueError
@@ -198,7 +222,10 @@ class Group:
         Raises:
             RFC9420Error: If decryption fails or group is not initialized.
         """
-        return self._inner.unprotect(message)
+        out = self._inner.unprotect(message)
+        if isinstance(out, tuple) and len(out) >= 2:
+            return int(out[0]), out[1]
+        raise ValueError("unexpected unprotect return shape")
 
     @property
     def epoch(self) -> int:
@@ -249,7 +276,12 @@ class Group:
         return self._inner.to_bytes()
 
     @classmethod
-    def from_bytes(cls, data: bytes, crypto: CryptoProvider) -> "Group":
+    def from_bytes(
+        cls,
+        data: bytes,
+        crypto: CryptoProvider,
+        tree_backend: str = DEFAULT_TREE_BACKEND,
+    ) -> "Group":
         """Deserialize group state into a Group instance."""
-        return cls(_ProtocolMLSGroup.from_bytes(data, crypto))
+        return cls(_ProtocolMLSGroup.from_bytes(data, crypto, tree_backend=tree_backend))
 

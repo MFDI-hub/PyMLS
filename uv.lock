@@ -452,14 +452,15 @@ wheels = [
 
 [[package]]
 name = "rfc9180"
-version = "0.2.0"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/6e/5e36975a1b583858b7d26826d0fb04baa5b2d9876f2f35490be414d4b388/rfc9180-0.2.0.tar.gz", hash = "sha256:7fb58c684e13e645b7333148193c05878d4b63cb19b7d526428c2195f6e56213", size = 3484576, upload-time = "2025-11-28T21:16:43.548Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/5a/2a46e315408ecb3a032369d11310281c9a04bf4a9ad95f02a232200d9cce/rfc9180-0.3.0.tar.gz", hash = "sha256:bfa75211cebbb70c94a6266a7946caf9e463f3def44abc331e1436dabf7d8b8b", size = 3629302, upload-time = "2026-02-22T11:20:05.453Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/a8/d4f4881b21910eae1f6439ffaca8e7984966f2077265d5c6100df24e34d8/rfc9180-0.2.0-py3-none-any.whl", hash = "sha256:f7cb255f618d9d146a9edb747abd80ba7ec9b2b794743af214762a055817c10e", size = 25371, upload-time = "2025-11-28T21:16:41.545Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/36/791a30acbcf7fee99b7b18adc6cabba21723475e0a452f8a87ddd42a550a/rfc9180-0.3.0-py3-none-any.whl", hash = "sha256:b4a76ec8ae9036d15dc3ed03e1cd24a0ebbb47f154400392893bf555c6a148fb", size = 29490, upload-time = "2026-02-22T11:19:57.745Z" },
 ]
 
 [[package]]
@@ -494,7 +495,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "rfc9180", specifier = ">=0.2.0" },
+    { name = "rfc9180", specifier = ">=0.3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
 ]
 provides-extras = ["dev"]

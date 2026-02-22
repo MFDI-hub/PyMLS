@@ -53,6 +53,7 @@ class SignatureScheme(Enum):
     ED25519 = "Ed25519"
     ED448 = "Ed448"
     ECDSA_SECP256R1_SHA256 = "ECDSA_SECP256R1_SHA256"
+    ECDSA_SECP384R1_SHA384 = "ECDSA_SECP384R1_SHA384"
     ECDSA_SECP521R1_SHA512 = "ECDSA_SECP521R1_SHA512"
 
 
@@ -93,6 +94,11 @@ class MlsCiphersuite:
         """
         return (self.kem, self.kdf, self.aead)
 
+    @property
+    def is_ae1_secure(self) -> bool:
+        """RFC 9420 §16.3 suites are AE1-secure by construction."""
+        return self.aead in (AEAD.AES_128_GCM, AEAD.AES_256_GCM, AEAD.CHACHA20_POLY1305)
+
 
 # RFC 9420 §16.3 ciphersuite registry
 # Note: IDs and names follow the RFC. This list is intentionally explicit.
@@ -123,43 +129,35 @@ _REGISTRY_BY_ID: Dict[int, MlsCiphersuite] = {
     ),
     0x0004: MlsCiphersuite(
         suite_id=0x0004,
-        name="MLS_128_DHKEMP256_CHACHAPOLY_SHA256_P256",
-        kem=KEM.DHKEM_P256_HKDF_SHA256,
-        kdf=KDF.HKDF_SHA256,
-        aead=AEAD.CHACHA20_POLY1305,
-        signature=SignatureScheme.ECDSA_SECP256R1_SHA256,
-    ),
-    0x0005: MlsCiphersuite(
-        suite_id=0x0005,
         name="MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448",
         kem=KEM.DHKEM_X448_HKDF_SHA512,
         kdf=KDF.HKDF_SHA512,
         aead=AEAD.AES_256_GCM,
         signature=SignatureScheme.ED448,
     ),
-    0x0006: MlsCiphersuite(
-        suite_id=0x0006,
+    0x0005: MlsCiphersuite(
+        suite_id=0x0005,
         name="MLS_256_DHKEMP521_AES256GCM_SHA512_P521",
         kem=KEM.DHKEM_P521_HKDF_SHA512,
         kdf=KDF.HKDF_SHA512,
         aead=AEAD.AES_256_GCM,
         signature=SignatureScheme.ECDSA_SECP521R1_SHA512,
     ),
-    0x0007: MlsCiphersuite(
-        suite_id=0x0007,
-        name="MLS_256_DHKEMX448_CHACHAPOLY_SHA512_Ed448",
+    0x0006: MlsCiphersuite(
+        suite_id=0x0006,
+        name="MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448",
         kem=KEM.DHKEM_X448_HKDF_SHA512,
         kdf=KDF.HKDF_SHA512,
         aead=AEAD.CHACHA20_POLY1305,
         signature=SignatureScheme.ED448,
     ),
-    0x0008: MlsCiphersuite(
-        suite_id=0x0008,
-        name="MLS_256_DHKEMP521_CHACHAPOLY_SHA512_P521",
-        kem=KEM.DHKEM_P521_HKDF_SHA512,
-        kdf=KDF.HKDF_SHA512,
-        aead=AEAD.CHACHA20_POLY1305,
-        signature=SignatureScheme.ECDSA_SECP521R1_SHA512,
+    0x0007: MlsCiphersuite(
+        suite_id=0x0007,
+        name="MLS_256_DHKEMP384_AES256GCM_SHA384_P384",
+        kem=KEM.DHKEM_P384_HKDF_SHA384,
+        kdf=KDF.HKDF_SHA384,
+        aead=AEAD.AES_256_GCM,
+        signature=SignatureScheme.ECDSA_SECP384R1_SHA384,
     ),
 }
 

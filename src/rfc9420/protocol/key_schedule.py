@@ -1,9 +1,10 @@
-"""
-Key schedule and labeled secret derivations.
+"""Key schedule and labeled secret derivations (RFC 9420 §8–§10).
 
-Rationale:
-- Implements RFC 9420 §9 (Secret Derivation) and §10 (Key Schedule) using
-  ExpandWithLabel/DeriveSecret helpers provided by the CryptoProvider.
+Implements epoch secret derivation (init_secret, commit_secret, joiner_secret,
+epoch_secret) and key schedule branches (encryption, exporter, external,
+sender-data, init for next epoch) using ExpandWithLabel/DeriveSecret from
+the CryptoProvider. Supports construction from full commit flow or from
+Welcome (from_epoch_secret, from_joiner_secret).
 """
 from typing import Optional
 from .data_structures import GroupContext
@@ -58,9 +59,18 @@ class KeySchedule:
 
     @classmethod
     def from_epoch_secret(cls, epoch_secret: bytes, group_context: GroupContext, crypto_provider: CryptoProvider) -> "KeySchedule":
-        """
-        Construct a KeySchedule when the epoch_secret is already known (e.g., from Welcome).
+        """Construct a KeySchedule when the epoch_secret is already known (e.g., from Welcome).
+
         Derives all branch secrets from the provided epoch_secret and group_context.
+        Does not compute joiner_secret or init_secret (used when joining via Welcome).
+
+        Parameters:
+            epoch_secret: Epoch secret for the new epoch.
+            group_context: GroupContext for the epoch.
+            crypto_provider: Crypto provider for labeled KDF.
+
+        Returns:
+            KeySchedule instance with all branch secrets derived.
         """
         ks: "KeySchedule" = object.__new__(cls)
         ks._init_secret = b""
@@ -148,17 +158,20 @@ class KeySchedule:
             self.sender_data_secret, b"key", sample, self._crypto_provider.aead_key_size()
         )
 
-    def sender_data_nonce_from_sample(self, sample: bytes, reuse_guard: bytes) -> bytes:
+    def sender_data_nonce_from_sample(self, sample: bytes, reuse_guard: bytes = b"") -> bytes:
         """Derive SenderData AEAD nonce per RFC 9420 §6.3.2.
 
-        sender_data_nonce = ExpandWithLabel(sender_data_secret, "nonce", ciphertext_sample, AEAD.Nn)
-        Then XOR in the reuse_guard (left-padded) to prevent nonce reuse.
+        sender_data_nonce = ExpandWithLabel(sender_data_secret, "nonce", ciphertext_sample, Nn)
+
+        Note: the reuse_guard is NOT XOR'd into the sender-data nonce. It is a
+        field inside the SenderData plaintext and is XOR'd only into the content
+        encryption nonce (MLSCiphertext.ciphertext nonce), not this nonce.
+        The `reuse_guard` parameter is retained for API compatibility but is
+        ignored.
         """
-        base = self._crypto_provider.expand_with_label(
+        return self._crypto_provider.expand_with_label(
             self.sender_data_secret, b"nonce", sample, self._crypto_provider.aead_nonce_size()
         )
-        rg = reuse_guard.rjust(self._crypto_provider.aead_nonce_size(), b"\x00")
-        return bytes(a ^ b for a, b in zip(base, rg))
 
     @property
     def encryption_secret(self) -> bytes:
@@ -172,8 +185,15 @@ class KeySchedule:
         return self._exporter_secret
 
     def export(self, label: bytes, context: bytes, length: int) -> bytes:
-        """Export external keying material from the exporter secret."""
-        return self._crypto_provider.expand_with_label(self.exporter_secret, label, context, length)
+        """Export external keying material from the exporter secret.
+        
+        RFC 9420 §8.5:
+        MLS-Exporter(Label, Context, Length)
+            = ExpandWithLabel(DeriveSecret(exporter_secret, Label), "exported", Hash(Context), Length)
+        """
+        secret = self._crypto_provider.derive_secret(self.exporter_secret, label)
+        context_hash = self._crypto_provider.hash(context)
+        return self._crypto_provider.expand_with_label(secret, b"exported", context_hash, length)
 
     @property
     def confirmation_key(self) -> bytes:

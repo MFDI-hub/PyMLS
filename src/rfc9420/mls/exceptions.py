@@ -1,4 +1,7 @@
-"""Custom exception hierarchy for RFC9420."""
+"""Custom exception hierarchy for RFC 9420 (MLS) operations.
+
+All protocol and crypto errors inherit from RFC9420Error.
+"""
 class RFC9420Error(Exception):
     """Base class for all RFC9420 errors."""
 
