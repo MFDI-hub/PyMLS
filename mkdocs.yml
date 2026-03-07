@@ -31,8 +31,7 @@ nav:
   - Advanced Features: advanced-features.md
   - Examples: examples.md
   - Architecture: architecture.md
-  - Development:
-    - GitHub Actions: github-actions.md
+  - GitHub Actions: github-actions.md
 
 plugins:
   - search

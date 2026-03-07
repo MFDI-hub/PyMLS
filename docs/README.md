@@ -59,5 +59,5 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 ---
 
-**Note**: This documentation is for RFC9420 (PyMLS) version 0.5.0. Requires Python 3.9+. For version-specific information, check the [main README](../README.md).
+**Note**: This documentation is for RFC9420 (PyMLS) version 0.5.0. Requires Python 3.9+. For version-specific information, see the [project README on GitHub](https://github.com/YOUR_USERNAME/PyMLS/blob/main/README.md).
 

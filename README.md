@@ -2,6 +2,8 @@
 
 Pure Messaging Layer Security (MLS, RFC 9420) library in Python.
 
+**Documentation:** Full docs (getting started, API reference, examples, architecture) are built with [MkDocs](https://www.mkdocs.org/) and published to **GitHub Pages**. If the repo has Pages enabled, they are at **https://&lt;your-username&gt;.github.io/PyMLS/** (or **https://&lt;org&gt;.github.io/PyMLS/** for an org repo). To read them locally: `uv sync --group docs` then `uv run mkdocs serve`.
+
 ## Overview
 
 RFC9420 is a minimal, pragmatic implementation of the Messaging Layer Security protocol as specified in RFC 9420. The library provides a clean Python API for creating and managing MLS groups, handling cryptographic operations, and interoperating with other MLS implementations.
