@@ -20,7 +20,7 @@ Welcome to the RFC9420 documentation! This directory contains comprehensive docu
 - **[Architecture](architecture.md)** - Internal architecture, component design, and implementation details.
 
 ### Development
-- **[GitHub Actions](github-actions.md)** - CI workflows, triggers, and how to run the same checks locally.
+- **[GitHub Actions](https://github.com/YOUR_USERNAME/PyMLS/blob/main/docs/github-actions.md)** - CI workflows, triggers, and how to run the same checks locally.
 
 ## Quick Links
 

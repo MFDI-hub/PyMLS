@@ -87,7 +87,7 @@ from ..mls.exceptions import (
     ConfigurationError,
 )
 
-from typing import Optional, Union, cast
+from typing import Dict, Optional, Union, cast
 import struct
 from ..crypto.hpke_labels import encrypt_with_label, decrypt_with_label
 from ..crypto import labels as mls_labels
@@ -123,8 +123,8 @@ class MLSGroup:
         own_leaf_index: int,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: int | None = None,
-        tree_backend: Union[str, object, None] = None,
+        aead_limit_bytes: Optional[int] = None,
+        tree_backend: Optional[Union[str, object]] = None,
     ):
         """Initialize a new MLSGroup wrapper around cryptographic providers.
 
@@ -162,7 +162,7 @@ class MLSGroup:
         self._x509_policy = None
         self._secret_tree_window_size: int = int(secret_tree_window_size)
         self._secret_tree_max_generation_gap: int = int(max_generation_gap)
-        self._secret_tree_aead_limit_bytes: int | None = (
+        self._secret_tree_aead_limit_bytes: Optional[int] = (
             None if aead_limit_bytes is None else int(aead_limit_bytes)
         )
         self._commit_pending: bool = False
@@ -198,7 +198,7 @@ class MLSGroup:
         crypto_provider: CryptoProvider,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: int | None = None,
+        aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroup":
         """Create a new group with an initial member represented by key_package.
@@ -282,7 +282,7 @@ class MLSGroup:
         crypto_provider: CryptoProvider,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: int | None = None,
+        aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroup":
         """Join a group using a Welcome message.
@@ -592,9 +592,9 @@ class MLSGroup:
     def configure_runtime_policy(
         self,
         *,
-        secret_tree_window_size: int | None = None,
-        max_generation_gap: int | None = None,
-        aead_limit_bytes: int | None = None,
+        secret_tree_window_size: Optional[int] = None,
+        max_generation_gap: Optional[int] = None,
+        aead_limit_bytes: Optional[int] = None,
     ) -> None:
         """Configure runtime SecretTree limits used for application traffic."""
         if secret_tree_window_size is not None:
@@ -615,7 +615,7 @@ class MLSGroup:
                 aead_limit_bytes=self._secret_tree_aead_limit_bytes,
             )
 
-    def get_runtime_policy(self) -> dict[str, int | None]:
+    def get_runtime_policy(self) -> Dict[str, Optional[int]]:
         """Return active runtime policy values backing SecretTree enforcement."""
         return {
             "secret_tree_window_size": int(self._secret_tree_window_size),

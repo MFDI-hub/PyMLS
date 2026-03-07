@@ -56,7 +56,7 @@ class SecretTree:
         n_leaves: int = 1,
         window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: int | None = None,
+        aead_limit_bytes: Optional[int] = None,
     ):
         self._root_secret = encryption_secret
         self._crypto = crypto

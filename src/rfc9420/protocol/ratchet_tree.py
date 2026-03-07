@@ -4,7 +4,7 @@ This module provides a minimal array-indexed tree with helpers for adding,
 removing, and updating leaves, computing node hashes, and producing/merging
 UpdatePath structures used in commits.
 """
-from typing import Optional
+from typing import Optional, Set
 from .key_packages import KeyPackage, LeafNode, LeafNodeSource
 from ..codec.tls import write_uint8, write_uint16, write_uint32, write_varint, write_opaque16, read_uint8, read_uint16, read_opaque16, write_opaque_varint, read_varint, read_uint32
 from .data_structures import UpdatePath, Signature, serialize_bytes, UpdatePathNode
@@ -456,7 +456,7 @@ class RatchetTree:
         committer_index: int,
         new_leaf_node: LeafNode,
         group_context_bytes: bytes,
-        excluded_leaf_pubkeys: "set[bytes] | None" = None,
+        excluded_leaf_pubkeys: Optional[Set[bytes]] = None,
     ) -> tuple[UpdatePath, bytes]:
         """Create an UpdatePath for the committer and derive the commit secret.
 

@@ -1,7 +1,7 @@
 """Client-side and commit validations for MLS proposals and commits (MVP)."""
 from __future__ import annotations
 
-from typing import Iterable, Set, Any
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal, ReInitProposal
 from .key_packages import KeyPackage
@@ -78,11 +78,11 @@ def validate_proposals_server_rules(
     committer_index: int,
     n_leaves: int,
     *,
-    ratchet_tree: Any | None = None,
-    kdf_hash_len: int | None = None,
+    ratchet_tree: Optional[Any] = None,
+    kdf_hash_len: Optional[int] = None,
     allow_reinit_psk: bool = False,
     allow_branch_psk: bool = False,
-    current_version: int | None = None,
+    current_version: Optional[int] = None,
 ) -> None:
     """Server-side proposal checks per RFC 9420 §12.2 (subset).
 
@@ -203,7 +203,7 @@ def validate_update_path_key_uniqueness(ratchet_tree: Any, path_public_keys: lis
 
 
 def validate_proposal_types_supported(
-    proposals: Iterable[Proposal], member_capabilities: list[dict[str, list[int]]], required_proposals: list[int] | None = None
+    proposals: Iterable[Proposal], member_capabilities: List[Dict[str, List[int]]], required_proposals: Optional[List[int]] = None
 ) -> None:
     """Ensure all members support proposal types present in a commit."""
     used = [int(p.proposal_type.value) for p in proposals]
@@ -307,7 +307,7 @@ def validate_commit_matches_referenced_proposals(commit: Commit, referenced: Ite
 
 
 def validate_leaf_node_unique_against_tree(
-    ratchet_tree: Any, leaf_node: Any, replacing_leaf_index: int | None = None
+    ratchet_tree: Any, leaf_node: Any, replacing_leaf_index: Optional[int] = None
 ) -> None:
     """Ensure a candidate leaf node's signature/encryption keys are unique in the tree."""
     if leaf_node is None:

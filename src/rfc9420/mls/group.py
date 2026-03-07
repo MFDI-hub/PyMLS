@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Dict, Optional, Union
+
 from ..protocol.mls_group import MLSGroup as _ProtocolMLSGroup
 from ..protocol.ratchet_tree_backend import DEFAULT_TREE_BACKEND
 from ..crypto.crypto_provider import CryptoProvider
@@ -64,7 +66,7 @@ class Group:
         crypto: CryptoProvider,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: int | None = None,
+        aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "Group":
         """Create a new MLS group with an initial member.
@@ -103,7 +105,7 @@ class Group:
         crypto: CryptoProvider,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: int | None = None,
+        aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "Group":
         """Join an existing group using a Welcome message.
@@ -180,7 +182,7 @@ class Group:
         self,
         message: MLSPlaintext,
         sender_leaf_index: int,
-        sender_type: SenderType | int = SenderType.MEMBER,
+        sender_type: Union[SenderType, int] = SenderType.MEMBER,
     ) -> None:
         """Verify and enqueue a received proposal.
 
@@ -223,7 +225,7 @@ class Group:
     def apply_commit(
         self,
         message: MLSPlaintext,
-        sender_leaf_index: int | None = None,
+        sender_leaf_index: Optional[int] = None,
     ) -> None:
         """Verify and apply a received commit.
 
@@ -356,9 +358,9 @@ class Group:
     def configure_runtime_policy(
         self,
         *,
-        secret_tree_window_size: int | None = None,
-        max_generation_gap: int | None = None,
-        aead_limit_bytes: int | None = None,
+        secret_tree_window_size: Optional[int] = None,
+        max_generation_gap: Optional[int] = None,
+        aead_limit_bytes: Optional[int] = None,
     ) -> None:
         """Set runtime limits that drive SecretTree receive/send enforcement."""
         self._inner.configure_runtime_policy(
@@ -367,7 +369,7 @@ class Group:
             aead_limit_bytes=aead_limit_bytes,
         )
 
-    def get_runtime_policy(self) -> dict[str, int | None]:
+    def get_runtime_policy(self) -> Dict[str, Optional[int]]:
         """Return currently active runtime-limit values."""
         return self._inner.get_runtime_policy()
 

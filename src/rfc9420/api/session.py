@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple, List, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from ..mls.group import Group
 from ..protocol.key_packages import KeyPackage, LeafNode
@@ -40,7 +40,7 @@ class MLSGroupSession:
         group_id: bytes,
         key_package: KeyPackage,
         crypto: CryptoProvider,
-        policy: "MLSAppPolicy | None" = None,
+        policy: Optional["MLSAppPolicy"] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroupSession":
         """Create a new MLS group and session as the founding member.
@@ -56,7 +56,7 @@ class MLSGroupSession:
         """
         secret_tree_window_size = 128
         max_generation_gap = 1000
-        aead_limit_bytes: int | None = None
+        aead_limit_bytes: Optional[int] = None
         if policy is not None:
             secret_tree_window_size = int(policy.secret_tree_window_size)
             max_generation_gap = int(policy.max_generation_gap)
@@ -82,7 +82,7 @@ class MLSGroupSession:
         welcome: Welcome,
         hpke_private_key: bytes,
         crypto: CryptoProvider,
-        policy: "MLSAppPolicy | None" = None,
+        policy: Optional["MLSAppPolicy"] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroupSession":
         """Join an existing group using a Welcome message and HPKE private key.
@@ -245,7 +245,7 @@ class MLSGroupSession:
         if policy.x509_policy is not None:
             self._group.set_x509_policy(policy.x509_policy)
 
-    def get_effective_policy(self) -> dict[str, int | None]:
+    def get_effective_policy(self) -> Dict[str, Optional[int]]:
         """Return effective runtime policy currently enforced by the group."""
         return self._group.get_runtime_policy()
 
@@ -284,7 +284,7 @@ class MLSGroupSession:
         cls,
         data: bytes,
         crypto: CryptoProvider,
-        policy: "MLSAppPolicy | None" = None,
+        policy: Optional["MLSAppPolicy"] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroupSession":
         """Restore a session from previously serialized group state.
