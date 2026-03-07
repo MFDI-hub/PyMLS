@@ -19,6 +19,9 @@ Welcome to the RFC9420 documentation! This directory contains comprehensive docu
 ### Architecture
 - **[Architecture](architecture.md)** - Internal architecture, component design, and implementation details.
 
+### Development
+- **[GitHub Actions](github-actions.md)** - CI workflows, triggers, and how to run the same checks locally.
+
 ## Quick Links
 
 - **Installation**: See [Getting Started](getting-started.md#installation)

@@ -31,6 +31,10 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.10",
 ]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+]
 
 [project.scripts]
 rfc9420-interop = "src.rfc9420.interop.cli:main"
@@ -43,6 +47,10 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.6.0",
   "mypy>=1.10.0",
+]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
 ]
 
 [tool.ruff]

@@ -1,0 +1,38 @@
+# MkDocs config for GitHub Pages
+site_name: RFC9420
+site_description: Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python
+site_url: https://YOUR_USERNAME.github.io/PyMLS/  # set in repo or override with env
+repo_url: https://github.com/YOUR_USERNAME/PyMLS
+repo_name: PyMLS
+edit_uri: edit/main/docs/
+docs_dir: docs
+strict: true
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+
+nav:
+  - Home: README.md
+  - Getting Started: getting-started.md
+  - API Reference: api-reference.md
+  - Advanced Features: advanced-features.md
+  - Examples: examples.md
+  - Architecture: architecture.md
+  - Development:
+    - GitHub Actions: github-actions.md
+
+plugins:
+  - search
