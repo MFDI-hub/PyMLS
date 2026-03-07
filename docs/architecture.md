@@ -4,13 +4,14 @@ This document describes the internal architecture of RFC9420 and how the various
 
 ## Overview
 
-RFC9420 is organized into several main modules:
+RFC9420 is organized into several main modules (package root: `src/rfc9420` or installed as `rfc9420`):
 
-- **`rfc9420.mls`**: High-level API (`Group` class)
+- **`rfc9420.mls`**: High-level API (`Group` class, `get_commit_sender_leaf_index`)
+- **`rfc9420.api`**: Session and policy (`MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`, `CommitIngestResult`)
 - **`rfc9420.protocol`**: Core protocol implementation (`MLSGroup`, data structures, messages)
 - **`rfc9420.crypto`**: Cryptographic operations and providers
 - **`rfc9420.codec`**: TLS encoding/decoding
-- **`rfc9420.extensions`**: Extension handling
+- **`rfc9420.extensions`**: Extension handling (`src/rfc9420/extensions/extensions.py`)
 - **`rfc9420.interop`**: Interoperability tools and test vectors
 
 ## High-Level Architecture
@@ -297,7 +298,13 @@ group._inner.set_x509_policy(policy)
 RFC9420 includes support for RFC 9420 test vectors:
 
 ```bash
-python -m src.rfc9420.interop.test_vectors_runner /path/to/vectors --suite 0x0001
+uv run python -m rfc9420.interop.test_vectors_runner /path/to/vectors --suite 0x0001
+```
+
+Or when using the project script (if installed):
+
+```bash
+rfc9420-interop /path/to/vectors --suite 0x0001
 ```
 
 ### Unit Tests

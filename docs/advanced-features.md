@@ -17,9 +17,9 @@ External commits allow parties that are not currently group members to join a gr
 ### Example: External Commit
 
 ```python
-from rfc9420.protocol.mls_group import MLSGroup
+from rfc9420 import Group
 
-# On the group side: Create external commit
+# On the group side: Create external commit (low-level MLSGroup)
 external_kp = create_key_package(...)
 external_kem_pk = generate_kem_public_key()
 
@@ -66,15 +66,15 @@ When a commit includes PSK proposals, a PSK binder is automatically computed and
 
 **PSK Binder Verification:**
 - By default, PSK binder verification is strict (required)
-- Configure with `group._inner.set_strict_psk_binders(False)` to relax verification
+- Configure with `group._inner.set_strict_psk_binders(False)` to relax verification (low-level only)
 
 ### Resumption PSKs
 
 Each epoch generates a resumption PSK that can be used to resume the group state:
 
 ```python
-# Export resumption PSK
-resumption_psk = group._inner.get_resumption_psk()
+# Export resumption PSK (on Group)
+resumption_psk = group.get_resumption_psk()
 
 # Store for later use
 # ... later, use PSK in a new group or epoch
@@ -112,15 +112,18 @@ RFC9420 supports out-of-order message decryption via a sliding window of skipped
 ### Configuration
 
 ```python
-from rfc9420.protocol.mls_group import MLSGroup
+from rfc9420 import Group
 
 # Create group with custom window size
-group = MLSGroup.create(
-    group_id=b"group1",
-    key_package=kp,
-    crypto_provider=crypto,
-    secret_tree_window_size=256  # Default is 128
+group = Group.create(
+    b"group1",
+    kp,
+    crypto,
+    secret_tree_window_size=256,  # Default is 128
 )
+
+# Or adjust at runtime
+group.configure_runtime_policy(secret_tree_window_size=256)
 ```
 
 ### How It Works
@@ -162,8 +165,8 @@ cred.verify_chain(trust_roots)
 ### Configuring Trust Roots
 
 ```python
-# Set trust roots for group
-group._inner.set_trust_roots([trust_root1_der, trust_root2_der])
+# Set trust roots for group (on Group)
+group.set_trust_roots([trust_root1_der, trust_root2_der])
 ```
 
 ### X.509 Revocation
@@ -188,8 +191,8 @@ policy = X509Policy(
     )
 )
 
-# Apply policy to group
-group._inner.set_x509_policy(policy)
+# Apply policy to group (on Group)
+group.set_x509_policy(policy)
 ```
 
 ### Revocation Behavior
@@ -237,13 +240,13 @@ commit, _ = group.commit(signing_key)
 Always handle exceptions appropriately:
 
 ```python
+from rfc9420 import InvalidCommitError, InvalidSignatureError
+
 try:
-    group.apply_commit(commit, sender_index)
-except ValueError as e:
-    # Commit validation failed
+    group.apply_commit(commit)  # sender_leaf_index optional, read from message
+except InvalidCommitError as e:
     print(f"Commit rejected: {e}")
 except InvalidSignatureError:
-    # Signature verification failed
     print("Invalid signature")
 ```
 

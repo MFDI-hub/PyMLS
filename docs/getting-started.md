@@ -8,7 +8,7 @@ RFC9420 uses `pyproject.toml` (PEP 621) for dependency management. We recommend 
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.9 or higher
 - `uv` package manager (optional but recommended)
 
 ### Install uv
@@ -27,8 +27,8 @@ cd PyMLS
 # Install dependencies
 uv sync --dev
 
-# Verify installation
-uv run python -c "from src.rfc9420 import Group, DefaultCryptoProvider; print('RFC9420 installed successfully!')"
+# Verify installation (from repo root; when installed as package use: from rfc9420 import ...)
+uv run python -c "from rfc9420 import Group, DefaultCryptoProvider; print('RFC9420 installed successfully!')"
 ```
 
 ### Development Setup
@@ -75,55 +75,53 @@ Let's create a simple two-member group:
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from src.rfc9420 import Group, DefaultCryptoProvider
-from src.rfc9420.protocol.key_packages import KeyPackage, LeafNode
-from src.rfc9420.protocol.data_structures import Credential, Signature
+from rfc9420 import Group, DefaultCryptoProvider
+from rfc9420.protocol.key_packages import KeyPackage, LeafNode, LeafNodeSource
+from rfc9420.protocol.data_structures import Credential, Signature
 
 # Initialize crypto provider
 crypto = DefaultCryptoProvider()  # Uses MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
 
 def make_member(identity: bytes):
     """Create a new member with keys and credentials."""
-    # Generate HPKE key pair for encryption
+    # HPKE key for leaf (ratchet tree)
     kem_sk = X25519PrivateKey.generate()
     kem_pk = kem_sk.public_key()
-    
-    # Generate signature key pair
+    # HPKE key for init (Welcome decryption; must differ from leaf per spec)
+    init_kem_sk = X25519PrivateKey.generate()
+    init_pk = init_kem_sk.public_key()
+
     sig_sk = Ed25519PrivateKey.generate()
     sig_pk = sig_sk.public_key()
-    
-    # Create credential
     cred = Credential(identity=identity, public_key=sig_pk.public_bytes_raw())
-    
-    # Create leaf node
+
     leaf = LeafNode(
         encryption_key=kem_pk.public_bytes_raw(),
         signature_key=sig_pk.public_bytes_raw(),
         credential=cred,
         capabilities=b"",
+        leaf_node_source=LeafNodeSource.KEY_PACKAGE,
         parent_hash=b"",
     )
-    
-    # Sign the leaf node
     sig = sig_sk.sign(leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
-    
-    return kp, kem_sk.private_bytes_raw(), sig_sk.private_bytes_raw()
+    kp = KeyPackage(leaf_node=leaf, signature=Signature(sig), init_key=init_pk.public_bytes_raw())
+
+    return kp, kem_sk.private_bytes_raw(), init_kem_sk.private_bytes_raw(), sig_sk.private_bytes_raw()
 
 # Create first member (Alice)
-kp_alice, kem_sk_alice, sig_sk_alice = make_member(b"alice")
+kp_alice, kem_sk_alice, init_sk_alice, sig_sk_alice = make_member(b"alice")
 group_alice = Group.create(b"my_group", kp_alice, crypto)
 
 # Create second member (Bob)
-kp_bob, kem_sk_bob, sig_sk_bob = make_member(b"bob")
+kp_bob, kem_sk_bob, init_sk_bob, sig_sk_bob = make_member(b"bob")
 
 # Alice adds Bob to the group
 prop = group_alice.add(kp_bob, sig_sk_alice)
-group_alice.process_proposal(prop, 0)  # Process the proposal
+group_alice.process_proposal(prop, sender_leaf_index=0)  # Process the proposal
 commit_pt, welcomes = group_alice.commit(sig_sk_alice)  # Create commit
 
-# Bob joins using the Welcome message
-group_bob = Group.join_from_welcome(welcomes[0], kem_sk_bob, crypto)
+# Bob joins using the Welcome message (use init key for decryption)
+group_bob = Group.join_from_welcome(welcomes[0], init_sk_bob, crypto)
 
 # Alice sends a message
 ciphertext = group_alice.protect(b"Hello, Bob!")
@@ -172,7 +170,7 @@ new_leaf = LeafNode(
 
 # Create update proposal
 update_prop = group.update(new_leaf, sig_sk)
-group.process_proposal(update_prop, your_leaf_index)
+group.process_proposal(update_prop, sender_leaf_index=your_leaf_index)
 commit, _ = group.commit(sig_sk)
 ```
 
@@ -181,7 +179,7 @@ commit, _ = group.commit(sig_sk)
 ```python
 # Create remove proposal
 remove_prop = group.remove(member_leaf_index, sig_sk)
-group.process_proposal(remove_prop, your_leaf_index)
+group.process_proposal(remove_prop, sender_leaf_index=your_leaf_index)
 commit, _ = group.commit(sig_sk)
 ```
 
@@ -189,13 +187,13 @@ commit, _ = group.commit(sig_sk)
 
 ### Common Issues
 
-**Import Errors**: Make sure you're using `src.rfc9420` as the import path:
+**Import Errors**: When the package is installed (`pip install -e .` or from wheel), use:
 ```python
-from src.rfc9420 import Group  # Correct
-from rfc9420 import Group      # Incorrect (unless installed as package)
+from rfc9420 import Group, DefaultCryptoProvider  # Correct when installed
 ```
+When running from repo root without installing, ensure the package is on `PYTHONPATH` or run with `uv run` so that `rfc9420` (from `src`) is importable.
 
-**HPKE Not Available**: Ensure you have cryptography >= 41.0.0:
+**HPKE Not Available**: Ensure you have cryptography >= 42:
 ```bash
 uv pip install --upgrade cryptography
 ```

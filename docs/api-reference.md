@@ -10,7 +10,7 @@ High-level API for MLS group operations. This is the recommended interface for m
 
 #### Class Methods
 
-##### `Group.create(group_id: bytes, key_package: KeyPackage, crypto: CryptoProvider) -> Group`
+##### `Group.create(group_id: bytes, key_package: KeyPackage, crypto: CryptoProvider, secret_tree_window_size: int = 128, max_generation_gap: int = 1000, aead_limit_bytes: int | None = None, tree_backend: str = DEFAULT_TREE_BACKEND) -> Group`
 
 Create a new MLS group with an initial member.
 
@@ -18,6 +18,10 @@ Create a new MLS group with an initial member.
 - `group_id` (bytes): Application-chosen identifier for the group
 - `key_package` (KeyPackage): KeyPackage of the initial member
 - `crypto` (CryptoProvider): CryptoProvider instance
+- `secret_tree_window_size` (int): Secret tree skipped-keys window size (default 128)
+- `max_generation_gap` (int): Max generation gap for out-of-order decryption (default 1000)
+- `aead_limit_bytes` (int | None): Optional AEAD usage limit per key
+- `tree_backend` (str): Ratchet tree backend (`BACKEND_ARRAY`, `BACKEND_PERFECT`, `BACKEND_LINKED`, or default)
 
 **Returns:**
 - `Group`: New group instance with epoch 0
@@ -27,20 +31,21 @@ Create a new MLS group with an initial member.
 group = Group.create(b"my_group", key_package, crypto)
 ```
 
-##### `Group.join_from_welcome(welcome: Welcome, hpke_private_key: bytes, crypto: CryptoProvider) -> Group`
+##### `Group.join_from_welcome(welcome: Welcome, hpke_private_key: bytes, crypto: CryptoProvider, secret_tree_window_size: int = 128, max_generation_gap: int = 1000, aead_limit_bytes: int | None = None, tree_backend: str = DEFAULT_TREE_BACKEND) -> Group`
 
 Join an existing group using a Welcome message.
 
 **Parameters:**
 - `welcome` (Welcome): Welcome message received out-of-band
-- `hpke_private_key` (bytes): HPKE private key for decrypting EncryptedGroupSecrets
+- `hpke_private_key` (bytes): HPKE private key (init key) for decrypting EncryptedGroupSecrets
 - `crypto` (CryptoProvider): CryptoProvider instance
+- Optional: `secret_tree_window_size`, `max_generation_gap`, `aead_limit_bytes`, `tree_backend` (same as `create`)
 
 **Returns:**
 - `Group`: New group instance initialized from Welcome
 
 **Raises:**
-- `CommitValidationError`: If no EncryptedGroupSecrets can be opened
+- `InvalidWelcomeError`: If no EncryptedGroupSecrets can be opened or GroupInfo is invalid
 - `InvalidSignatureError`: If GroupInfo signature verification fails
 
 **Example:**
@@ -83,17 +88,18 @@ Create a Remove proposal to remove a member.
 **Returns:**
 - `MLSPlaintext`: Proposal message
 
-##### `process_proposal(message: MLSPlaintext, sender_leaf_index: int) -> None`
+##### `process_proposal(message: MLSPlaintext, sender_leaf_index: int, sender_type: SenderType | int = SenderType.MEMBER) -> None`
 
 Verify and enqueue a received proposal.
 
 **Parameters:**
 - `message` (MLSPlaintext): Proposal message
 - `sender_leaf_index` (int): Leaf index of sender
+- `sender_type` (SenderType | int): `SenderType.MEMBER` (1), `SenderType.EXTERNAL` (2), etc. Use `SenderType` enum.
 
 **Raises:**
-- `CommitValidationError`: If verification fails
-- `InvalidSignatureError`: If signature verification fails
+- `InvalidProposalError`: If verification fails or sender is invalid
+- `InvalidSignatureError`: If signature or membership tag verification fails
 
 ##### `commit(signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]`
 
@@ -105,16 +111,16 @@ Create a commit with all pending proposals.
 **Returns:**
 - `tuple[MLSPlaintext, list[Welcome]]`: Commit message and Welcome messages for new members
 
-##### `apply_commit(message: MLSPlaintext, sender_leaf_index: int) -> None`
+##### `apply_commit(message: MLSPlaintext, sender_leaf_index: int | None = None) -> None`
 
 Verify and apply a received commit.
 
 **Parameters:**
 - `message` (MLSPlaintext): Commit message
-- `sender_leaf_index` (int): Leaf index of sender
+- `sender_leaf_index` (int | None): Leaf index of commit sender. If `None`, read from message (use `get_commit_sender_leaf_index(message.serialize())`).
 
 **Raises:**
-- `ValueError`: If commit validation fails
+- `InvalidCommitError`: If commit validation fails or sender is invalid
 
 ##### `protect(application_data: bytes) -> MLSCiphertext`
 
@@ -151,6 +157,82 @@ Current group epoch (read-only).
 ##### `group_id: bytes`
 
 Group identifier (read-only).
+
+##### `own_leaf_index: int`
+
+Local member's leaf index (read-only).
+
+##### `member_count: int`
+
+Number of members (leaves) in the group (read-only).
+
+#### Additional Methods
+
+##### `get_commit_sender_leaf_index(commit_bytes: bytes) -> int`
+
+Return the leaf index of the commit sender from serialized commit plaintext. Use so callers do not need to know message layout.
+
+**Parameters:** `commit_bytes`: Serialized MLSPlaintext of a commit.
+
+**Returns:** Sender's leaf index.
+
+**Raises:** `InvalidCommitError`: If message is not a commit or deserialization fails.
+
+##### `export_secret(label: bytes, context: bytes, length: int) -> bytes`
+
+Export external keying material using the MLS exporter.
+
+##### `get_resumption_psk() -> bytes`
+
+Return resumption PSK for the current epoch.
+
+##### `to_bytes() -> bytes`
+
+Serialize group state for persistence.
+
+##### `Group.from_bytes(data: bytes, crypto: CryptoProvider, tree_backend: str = DEFAULT_TREE_BACKEND) -> Group`
+
+Deserialize group state into a Group instance.
+
+##### `configure_runtime_policy(*, secret_tree_window_size: int | None = None, max_generation_gap: int | None = None, aead_limit_bytes: int | None = None) -> None`
+
+Set runtime limits for SecretTree receive/send enforcement.
+
+##### `get_runtime_policy() -> dict[str, int | None]`
+
+Return currently active runtime-limit values.
+
+##### `set_trust_roots(roots_pem: list[bytes]) -> None`
+
+Configure trust anchors for X.509 credential chain validation.
+
+##### `set_x509_policy(policy) -> None`
+
+Configure X.509 policy checks applied after chain validation.
+
+##### `iter_members()`
+
+Iterate over `(leaf_index, identity)` for each member.
+
+##### `close() -> None`
+
+Best-effort wipe of in-memory secrets.
+
+---
+
+### `get_commit_sender_leaf_index`
+
+Standalone function to get committer leaf index from serialized commit:
+
+```python
+from rfc9420 import get_commit_sender_leaf_index
+sender = get_commit_sender_leaf_index(commit.serialize())
+group.apply_commit(commit, sender_leaf_index=sender)  # or omit for auto
+```
+
+### `SenderType`
+
+Enum for sender type in proposals/commits: `SenderType.MEMBER` (1), `SenderType.EXTERNAL` (2), etc. Use with `process_proposal(..., sender_type=SenderType.MEMBER)`.
 
 ---
 
@@ -282,19 +364,24 @@ Configure X.509 trust roots.
 Container for a member's public keys and credentials.
 
 **Fields:**
-- `leaf` (LeafNode): Leaf node with keys and credential
+- `leaf_node` (LeafNode): Leaf node with keys and credential
 - `signature` (Signature): Signature over the leaf node
+- `init_key` (bytes): HPKE public key for Welcome decryption (must differ from `leaf_node.encryption_key`)
+- `version`, `cipher_suite`, `extensions` (optional)
 
 ### `LeafNode`
 
-Leaf node in the ratchet tree.
+Leaf node in the ratchet tree (RFC 9420 §7.2).
 
 **Fields:**
 - `encryption_key` (bytes): HPKE public key
 - `signature_key` (bytes): Signature public key
 - `credential` (Credential | None): Member credential
 - `capabilities` (bytes): Capabilities extension data
-- `parent_hash` (bytes): Parent hash for tree validation
+- `leaf_node_source` (LeafNodeSource): KEY_PACKAGE, UPDATE, or COMMIT
+- `parent_hash` (bytes): Parent hash for UPDATE/COMMIT
+- `lifetime_not_before`, `lifetime_not_after` (int): For KEY_PACKAGE
+- `extensions` (list): Extension list
 
 ### `Credential`
 
@@ -370,19 +457,54 @@ Get all registered ciphersuites.
 
 ---
 
+## Session and Policy API
+
+### `MLSGroupSession`
+
+Synchronous high-level session wrapper around `Group`. Provides byte-oriented handshake and application I/O. Create via `MLSGroupSession.create(group_id, key_package, crypto, policy=None, tree_backend=...)` or `MLSGroupSession.join_from_welcome(welcome, hpke_private_key, crypto, policy=None, tree_backend=...)`. Methods include `add_member`, `update_self`, `remove_member`, `process_proposal`, `commit`, `apply_commit`, `protect_application`, `unprotect_application`, and exporter-based key derivation.
+
+### `MLSAppPolicy`
+
+Dataclass for application policy: `update_interval_seconds`, `max_idle_before_update`, `max_resumption_epochs`, `secret_tree_window_size`, `max_generation_gap`, `aead_limit_bytes`, `conflict_resolution_strategy`, `enforce_epoch_lock`, `x509_mode`, `trust_roots`, `x509_policy`. Use `MLSAppPolicy.recommended()` for balanced defaults.
+
+### `MLSOrchestrator`
+
+Policy-aware helper for commit sequencing and retention. Construct with `MLSOrchestrator(session, policy)`. Methods: `note_activity`, `should_rotate_now`, `record_self_update`, `record_resumption_psk`, `list_resumption_psks`, and commit ingest helpers.
+
+### `CommitIngestResult`
+
+Result of commit ingest: `status`, `applied`, `epoch`, `reason`.
+
+## Ratchet Tree Backends
+
+- `BACKEND_ARRAY`, `BACKEND_PERFECT`, `BACKEND_LINKED`: Tree implementation names.
+- `DEFAULT_TREE_BACKEND`: Default backend name. Pass as `tree_backend` to `Group.create` / `Group.join_from_welcome` / `Group.from_bytes`.
+
 ## Exceptions
 
 ### `RFC9420Error`
 
 Base exception for all RFC9420 errors.
 
+### `InvalidWelcomeError`
+
+Raised when a Welcome message cannot be processed (e.g. no secret opens, invalid GroupInfo).
+
+### `InvalidProposalError`
+
+Raised when a proposal fails verification or validation.
+
+### `InvalidCommitError`
+
+Raised when a commit fails verification or validation.
+
 ### `CommitValidationError`
 
-Raised when commit validation fails.
+Raised internally when commit or referenced proposals fail validation.
 
 ### `InvalidSignatureError`
 
-Raised when signature verification fails.
+Raised when signature or membership tag verification fails.
 
 ### `UnsupportedCipherSuiteError`
 
@@ -391,4 +513,16 @@ Raised when an unsupported ciphersuite is requested.
 ### `ConfigurationError`
 
 Raised when configuration is invalid or missing.
+
+### `EpochMismatchError`
+
+Raised when an operation targets an unexpected or stale epoch.
+
+### `CredentialRevocationError`
+
+Raised when a credential is determined to be revoked (CRL/OCSP).
+
+### `CredentialValidationError`
+
+Raised for credential/chain validation failures unrelated to revocation.
 

@@ -8,7 +8,7 @@ Welcome to the RFC9420 documentation! This directory contains comprehensive docu
 - **[Getting Started Guide](getting-started.md)** - Start here! Installation, basic concepts, and your first MLS group.
 
 ### API Documentation
-- **[API Reference](api-reference.md)** - Complete API reference with detailed method documentation.
+- **[API Reference](api-reference.md)** - Complete API reference: `Group`, `MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`, `get_commit_sender_leaf_index`, `SenderType`, exceptions, and data structures.
 
 ### Advanced Topics
 - **[Advanced Features](advanced-features.md)** - External commits, PSKs, re-initialization, X.509 credentials, and more.
@@ -49,7 +49,7 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 - **RFC 9420**: [Messaging Layer Security](https://www.rfc-editor.org/rfc/rfc9420.html)
 - **RFC 9180**: [HPKE: Hybrid Public Key Encryption](https://www.rfc-editor.org/rfc/rfc9180.html)
-- **GitHub Repository**: [RFC9420 on GitHub](https://github.com/yourusername/RFC9420)
+- **GitHub Repository**: [PyMLS on GitHub](https://github.com/YOUR_USERNAME/PyMLS)
 
 ## Support
 
@@ -59,5 +59,5 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 ---
 
-**Note**: This documentation is for RFC9420 version 0.3.2. For version-specific information, check the [main README](../README.md).
+**Note**: This documentation is for RFC9420 (PyMLS) version 0.5.0. Requires Python 3.9+. For version-specific information, check the [main README](../README.md).
 
