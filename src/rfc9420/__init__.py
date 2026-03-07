@@ -42,4 +42,4 @@ __all__ = [
     "DEFAULT_TREE_BACKEND",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
