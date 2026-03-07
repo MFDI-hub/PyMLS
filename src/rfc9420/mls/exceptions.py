@@ -1,13 +1,27 @@
 """Custom exception hierarchy for RFC 9420 (MLS) operations.
 
 All protocol and crypto errors inherit from RFC9420Error.
+Consumers can catch specific types (InvalidWelcomeError, InvalidProposalError,
+InvalidCommitError) without relying on generic Exception or internal errors.
 """
 class RFC9420Error(Exception):
     """Base class for all RFC9420 errors."""
 
 
 class CommitValidationError(RFC9420Error):
-    """Raised when a Commit or its referenced proposals fail validation."""
+    """Raised when a Commit or its referenced proposals fail validation (internal)."""
+
+
+class InvalidWelcomeError(RFC9420Error):
+    """Raised when a Welcome message cannot be processed (e.g. no secret opens, invalid GroupInfo)."""
+
+
+class InvalidProposalError(RFC9420Error):
+    """Raised when a proposal fails verification or validation."""
+
+
+class InvalidCommitError(RFC9420Error):
+    """Raised when a commit fails verification or validation."""
 
 
 class InvalidSignatureError(RFC9420Error):

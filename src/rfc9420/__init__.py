@@ -4,21 +4,26 @@ This package provides a pure Python implementation of RFC 9420 (Messaging Layer 
 It includes core protocol types, cryptographic operations, and a high-level Group API
 for managing MLS groups.
 
-Main exports:
-    - Group: High-level API for MLS group operations
-    - DefaultCryptoProvider: Concrete crypto provider using cryptography library
-    - MLSGroup: Low-level protocol implementation
+Public API (prefer these so you do not depend on internals):
+    - Group: create/join, add/update/remove proposals, commit, apply_commit, protect/unprotect.
+      Use group.member_count, group.own_leaf_index, group.iter_members() instead of _inner.
+    - get_commit_sender_leaf_index(commit_bytes): get committer leaf index from serialized commit.
+    - SenderType: use SenderType.MEMBER, SenderType.EXTERNAL instead of magic integers.
+    - Exceptions: InvalidWelcomeError, InvalidProposalError, InvalidCommitError for precise handling.
 
 Example:
-    >>> from rfc9420 import Group, DefaultCryptoProvider
+    >>> from rfc9420 import Group, DefaultCryptoProvider, get_commit_sender_leaf_index, SenderType
     >>> crypto = DefaultCryptoProvider()
     >>> group = Group.create(b"group1", key_package, crypto)
+    >>> group.process_proposal(msg, sender_leaf_index=0, sender_type=SenderType.MEMBER)
+    >>> sender = get_commit_sender_leaf_index(commit.serialize())
+    >>> group.apply_commit(commit)  # sender optional, read from message
 """
 
-from .mls.group import Group  # High-level API
+from .mls.group import Group, get_commit_sender_leaf_index
 from .crypto.default_crypto_provider import DefaultCryptoProvider
-from .protocol.mls_group import MLSGroup  # Low-level protocol implementation
-from .protocol.data_structures import CipherSuite
+from .protocol.mls_group import MLSGroup
+from .protocol.data_structures import CipherSuite, Sender, SenderType
 from .api import MLSGroupSession, MLSAppPolicy, MLSOrchestrator, CommitIngestResult
 from .protocol.ratchet_tree_backend import (
     BACKEND_ARRAY,
@@ -26,9 +31,18 @@ from .protocol.ratchet_tree_backend import (
     BACKEND_LINKED,
     DEFAULT_TREE_BACKEND,
 )
+from .mls.exceptions import (
+    RFC9420Error,
+    CommitValidationError,
+    InvalidWelcomeError,
+    InvalidProposalError,
+    InvalidCommitError,
+    InvalidSignatureError,
+)
 
 __all__ = [
     "Group",
+    "get_commit_sender_leaf_index",
     "DefaultCryptoProvider",
     "MLSGroup",
     "MLSGroupSession",
@@ -36,10 +50,18 @@ __all__ = [
     "MLSOrchestrator",
     "CommitIngestResult",
     "CipherSuite",
+    "Sender",
+    "SenderType",
     "BACKEND_ARRAY",
     "BACKEND_PERFECT",
     "BACKEND_LINKED",
     "DEFAULT_TREE_BACKEND",
+    "RFC9420Error",
+    "CommitValidationError",
+    "InvalidWelcomeError",
+    "InvalidProposalError",
+    "InvalidCommitError",
+    "InvalidSignatureError",
 ]
 
 __version__ = "0.5.0"

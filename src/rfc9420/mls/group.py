@@ -4,10 +4,41 @@ from ..protocol.mls_group import MLSGroup as _ProtocolMLSGroup
 from ..protocol.ratchet_tree_backend import DEFAULT_TREE_BACKEND
 from ..crypto.crypto_provider import CryptoProvider
 from ..protocol.key_packages import KeyPackage, LeafNode
-from ..protocol.data_structures import Sender
-from ..protocol.messages import MLSPlaintext, MLSCiphertext
+from ..protocol.data_structures import Sender, SenderType
+from ..protocol.messages import MLSPlaintext, MLSCiphertext, ContentType
 from ..protocol.data_structures import Welcome
-from ..mls.exceptions import CommitValidationError
+from ..mls.exceptions import (
+    CommitValidationError,
+    InvalidWelcomeError,
+    InvalidProposalError,
+    InvalidCommitError,
+    InvalidSignatureError,
+)
+
+
+def get_commit_sender_leaf_index(commit_bytes: bytes) -> int:
+    """Return the leaf index of the commit sender from serialized commit plaintext.
+
+    Deserializes the MLSPlaintext and returns the sender's leaf index. Use this
+    so callers do not need to know the message layout (e.g. auth_content.tbs.framed_content.sender).
+
+    Args:
+        commit_bytes: Serialized MLSPlaintext of a commit message.
+
+    Returns:
+        The sender's leaf index (committer).
+
+    Raises:
+        InvalidCommitError: If the message is not a commit or deserialization fails.
+    """
+    try:
+        msg = MLSPlaintext.deserialize(commit_bytes)
+    except Exception as e:
+        raise InvalidCommitError(f"failed to deserialize commit: {e}") from e
+    ct = msg.auth_content.tbs.framed_content.content_type
+    if ct != ContentType.COMMIT:
+        raise InvalidCommitError("message is not a commit")
+    return msg.auth_content.tbs.framed_content.sender.sender
 
 
 class Group:
@@ -89,20 +120,22 @@ class Group:
             A new Group instance initialized from the Welcome.
 
         Raises:
-            CommitValidationError: If no EncryptedGroupSecrets can be opened.
-            InvalidSignatureError: If GroupInfo signature verification fails.
+            InvalidWelcomeError: If no EncryptedGroupSecrets can be opened or GroupInfo is invalid.
         """
-        return cls(
-            _ProtocolMLSGroup.from_welcome(
-                welcome=welcome,
-                hpke_private_key=hpke_private_key,
-                crypto_provider=crypto,
-                secret_tree_window_size=secret_tree_window_size,
-                max_generation_gap=max_generation_gap,
-                aead_limit_bytes=aead_limit_bytes,
-                tree_backend=tree_backend,
+        try:
+            return cls(
+                _ProtocolMLSGroup.from_welcome(
+                    welcome=welcome,
+                    hpke_private_key=hpke_private_key,
+                    crypto_provider=crypto,
+                    secret_tree_window_size=secret_tree_window_size,
+                    max_generation_gap=max_generation_gap,
+                    aead_limit_bytes=aead_limit_bytes,
+                    tree_backend=tree_backend,
+                )
             )
-        )
+        except (CommitValidationError, InvalidSignatureError) as e:
+            raise InvalidWelcomeError(str(e)) from e
 
     def add(self, key_package: KeyPackage, signing_key: bytes) -> MLSPlaintext:
         """Create an Add proposal to add a new member to the group.
@@ -143,7 +176,12 @@ class Group:
         """
         return self._inner.create_remove_proposal(removed_index, signing_key)
 
-    def process_proposal(self, message: MLSPlaintext, sender_leaf_index: int) -> None:
+    def process_proposal(
+        self,
+        message: MLSPlaintext,
+        sender_leaf_index: int,
+        sender_type: SenderType | int = SenderType.MEMBER,
+    ) -> None:
         """Verify and enqueue a received proposal.
 
         Verifies the proposal's signature and membership tag, validates credentials
@@ -152,12 +190,18 @@ class Group:
         Args:
             message: MLSPlaintext containing the proposal.
             sender_leaf_index: Leaf index of the proposal sender.
+            sender_type: SenderType.MEMBER (1), SenderType.EXTERNAL (2), etc.
+                Use the SenderType enum instead of magic integers.
 
         Raises:
-            CommitValidationError: If verification fails or sender is invalid.
+            InvalidProposalError: If verification fails or sender is invalid.
             InvalidSignatureError: If signature or membership tag verification fails.
         """
-        return self._inner.process_proposal(message, Sender(sender_leaf_index))
+        st = SenderType(sender_type) if isinstance(sender_type, int) else sender_type
+        try:
+            return self._inner.process_proposal(message, Sender(sender_leaf_index, st))
+        except CommitValidationError as e:
+            raise InvalidProposalError(str(e)) from e
 
     def commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create a commit with all pending proposals.
@@ -176,7 +220,11 @@ class Group:
         """
         return self._inner.create_commit(signing_key)
 
-    def apply_commit(self, message: MLSPlaintext, sender_leaf_index: int) -> None:
+    def apply_commit(
+        self,
+        message: MLSPlaintext,
+        sender_leaf_index: int | None = None,
+    ) -> None:
         """Verify and apply a received commit.
 
         Verifies the commit's signature and membership tag, validates proposal
@@ -184,14 +232,17 @@ class Group:
 
         Args:
             message: MLSPlaintext containing the commit.
-            sender_leaf_index: Leaf index of the commit sender.
+            sender_leaf_index: Leaf index of the commit sender. If None, it is
+                read from the message (convenience for commit messages).
 
         Raises:
-            ValueError: If commit validation fails (converted from CommitValidationError).
+            InvalidCommitError: If commit validation fails or sender is invalid.
         """
+        if sender_leaf_index is None:
+            sender_leaf_index = get_commit_sender_leaf_index(message.serialize())
         try:
             if sender_leaf_index < 0 or sender_leaf_index >= self._inner.get_member_count():
-                raise ValueError(f"invalid sender leaf index: {sender_leaf_index}")
+                raise InvalidCommitError(f"invalid sender leaf index: {sender_leaf_index}")
             # A joiner restored from Welcome may already be at the post-commit
             # epoch. Treat stale commit re-application as a no-op.
             msg_epoch = message.auth_content.tbs.framed_content.epoch
@@ -199,8 +250,7 @@ class Group:
                 return None
             return self._inner.process_commit(message, sender_leaf_index)
         except CommitValidationError as e:
-            # Convert to ValueError for compatibility with tests expecting ValueError
-            raise ValueError(str(e)) from e
+            raise InvalidCommitError(str(e)) from e
 
     def protect(self, application_data: bytes) -> MLSCiphertext:
         """Encrypt application data for this group.
@@ -285,6 +335,10 @@ class Group:
     def member_count(self) -> int:
         """Number of members (leaves) in the group."""
         return self._inner.get_member_count()
+
+    def iter_members(self):
+        """Iterate over (leaf_index, identity) for each member. Identity is credential.identity or b''."""
+        return iter(self._inner.get_member_identities())
 
     # --- Persistence passthroughs ---
     def to_bytes(self) -> bytes:

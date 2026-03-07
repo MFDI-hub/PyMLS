@@ -2346,6 +2346,18 @@ class MLSGroup:
         """Return the number of current group members (leaves)."""
         return int(self._ratchet_tree.n_leaves)
 
+    def get_member_identities(self) -> list[tuple[int, bytes]]:
+        """Return (leaf_index, identity) for each member. Identity is credential.identity or b'' if absent."""
+        out: list[tuple[int, bytes]] = []
+        n = self._ratchet_tree.n_leaves
+        for leaf_index in range(n):
+            node = self._ratchet_tree.get_node(leaf_index * 2)
+            identity = b""
+            if node.leaf_node is not None and node.leaf_node.credential is not None:
+                identity = getattr(node.leaf_node.credential, "identity", b"") or b""
+            out.append((leaf_index, identity))
+        return out
+
     def close(self) -> None:
         """Best-effort wipe of in-memory secrets and transient proposal state."""
         try:
