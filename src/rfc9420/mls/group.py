@@ -68,6 +68,7 @@ class Group:
         max_generation_gap: int = 1000,
         aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
+        initial_extensions: bytes = b"",
     ) -> "Group":
         """Create a new MLS group with an initial member.
 
@@ -78,6 +79,8 @@ class Group:
             group_id: Application-chosen identifier for the group.
             key_package: KeyPackage of the initial member to add.
             crypto: CryptoProvider instance for cryptographic operations.
+            initial_extensions: Optional serialized group context extensions
+                (e.g. external_senders for DAVE).
 
         Returns:
             A new Group instance with the initial member.
@@ -94,6 +97,7 @@ class Group:
                 max_generation_gap=max_generation_gap,
                 aead_limit_bytes=aead_limit_bytes,
                 tree_backend=tree_backend,
+                initial_extensions=initial_extensions,
             )
         )
 
@@ -205,7 +209,21 @@ class Group:
         except CommitValidationError as e:
             raise InvalidProposalError(str(e)) from e
 
-    def commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+    def revoke_proposal(self, proposal_ref: bytes) -> None:
+        """Remove a cached proposal by its ProposalRef (e.g. when the delivery service revokes it).
+
+        If the proposal_ref is not in the cache, this is a no-op.
+
+        Args:
+            proposal_ref: ProposalRef (hash of the proposal per RFC 9420 §5.2).
+        """
+        self._inner.revoke_proposal(proposal_ref)
+
+    def commit(
+        self,
+        signing_key: bytes,
+        return_per_joiner_welcomes: bool = False,
+    ) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create a commit with all pending proposals.
 
         Creates a commit message that includes all pending proposals, generates
@@ -213,6 +231,8 @@ class Group:
 
         Args:
             signing_key: Private signing key for authenticating the commit.
+            return_per_joiner_welcomes: If True, return one Welcome per added member
+                (each with a single EncryptedGroupSecrets), e.g. for DAVE voice gateway.
 
         Returns:
             Tuple of (commit MLSPlaintext, list of Welcome messages for new members).
@@ -220,7 +240,7 @@ class Group:
         Raises:
             RFC9420Error: If group is not initialized or commit creation fails.
         """
-        return self._inner.create_commit(signing_key)
+        return self._inner.create_commit(signing_key, return_per_joiner_welcomes)
 
     def apply_commit(
         self,

@@ -13,9 +13,16 @@ Conventions
 - Vector helpers implement TLS-style opaque vectors with 1-, 2-, 3-, or 4-byte
   length prefixes (opaque8/16/24/32), plus RFC 9420 §2.1.2 varint-prefixed
   opaque vectors (opaque_varint).
+- Optional value encoding (RFC 9420 §2.1.1): write_optional / read_optional
+  use a presence octet (0 = absent, 1 = present) followed by the value encoding
+  when present.
 """
 
 from __future__ import annotations
+
+from typing import Callable, TypeVar
+
+T = TypeVar("T")
 
 
 class TLSDecodeError(Exception):
@@ -430,3 +437,60 @@ def read_opaque_varint(buf: bytes, offset: int = 0) -> tuple[bytes, int]:
             f"opaque<V> length overflow at offset {offset}: declared length {length}, available {available}"
         )
     return buf[offset : offset + length], offset + length
+
+
+# --- RFC 9420 §2.1.1 Optional Value ---
+
+
+def write_optional(
+    value: T | None,
+    encode_fn: Callable[[T], bytes],
+) -> bytes:
+    """Encode an optional value per RFC 9420 §2.1.1.
+
+    Presence octet: 0 = absent, 1 = present. If present, the encoding of the
+    value follows (produced by encode_fn(value)).
+
+    Parameters
+    - value: The value to encode, or None for absent.
+    - encode_fn: Callable that takes the value and returns its encoded bytes.
+
+    Returns
+    - Encoded bytes (presence octet plus value encoding when present).
+    """
+    if value is None:
+        return write_uint8(0)
+    return write_uint8(1) + encode_fn(value)
+
+
+def read_optional(
+    buf: bytes,
+    offset: int,
+    decode_fn: Callable[[bytes, int], tuple[T, int]],
+) -> tuple[T | None, int]:
+    """Decode an optional value per RFC 9420 §2.1.1.
+
+    Reads the presence octet at offset; if 0 returns (None, offset+1). If 1,
+    decodes the value using decode_fn(buf, offset+1) and returns (value, new_offset).
+    Any other presence value raises TLSDecodeError (RFC 9420 §2.1.1: must be 0 or 1).
+
+    Parameters
+    - buf: Source bytes.
+    - offset: Starting index (at the presence octet).
+    - decode_fn: Callable (buffer, start_offset) -> (decoded_value, new_offset).
+
+    Returns
+    - (decoded_value or None, new_offset).
+
+    Raises
+    - TLSDecodeError: If buffer too short or presence octet not 0 or 1.
+    """
+    _require_length(buf[offset:], 1)
+    present = buf[offset]
+    if present == 0:
+        return None, offset + 1
+    if present != 1:
+        raise TLSDecodeError(
+            f"invalid optional value presence octet at offset {offset}: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
+        )
+    return decode_fn(buf, offset + 1)

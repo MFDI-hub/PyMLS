@@ -932,6 +932,17 @@ class Welcome:
 
         return cls(version, cipher_suite, secrets, encrypted_group_info)
 
+    def split_by_joiner(self) -> list["Welcome"]:
+        """Return one Welcome per joiner (each with a single EncryptedGroupSecrets).
+
+        Useful when the delivery service must send each new member only the secrets
+        encrypted for their KeyPackage (e.g. DAVE voice gateway).
+        """
+        return [
+            Welcome(self.version, self.cipher_suite, [s], self.encrypted_group_info)
+            for s in self.secrets
+        ]
+
 
 @dataclass(frozen=True)
 class GroupContext:

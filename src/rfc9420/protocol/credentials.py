@@ -31,6 +31,7 @@ def _encode_signature_scheme(s: SignatureScheme) -> bytes:
         SignatureScheme.ED448: 0x02,
         SignatureScheme.ECDSA_SECP256R1_SHA256: 0x11,
         SignatureScheme.ECDSA_SECP521R1_SHA512: 0x12,
+        SignatureScheme.ECDSA_SECP384R1_SHA384: 0x13,
     }
     return write_uint8(mapping[s])
 
@@ -42,6 +43,7 @@ def _decode_signature_scheme(b: int) -> SignatureScheme:
         0x02: SignatureScheme.ED448,
         0x11: SignatureScheme.ECDSA_SECP256R1_SHA256,
         0x12: SignatureScheme.ECDSA_SECP521R1_SHA512,
+        0x13: SignatureScheme.ECDSA_SECP384R1_SHA384,
     }
     if b not in reverse:
         raise UnsupportedCipherSuiteError(f"Unknown signature scheme code: {b}")

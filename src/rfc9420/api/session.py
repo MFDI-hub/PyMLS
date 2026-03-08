@@ -42,6 +42,7 @@ class MLSGroupSession:
         crypto: CryptoProvider,
         policy: Optional["MLSAppPolicy"] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
+        initial_extensions: bytes = b"",
     ) -> "MLSGroupSession":
         """Create a new MLS group and session as the founding member.
 
@@ -50,6 +51,8 @@ class MLSGroupSession:
             key_package: Key package for the creator (used as first member).
             crypto: Crypto provider for the group ciphersuite.
             tree_backend: Ratchet tree backend (e.g. DEFAULT_TREE_BACKEND).
+            initial_extensions: Optional serialized group context extensions
+                (e.g. external_senders for DAVE).
 
         Returns:
             MLSGroupSession for the new group.
@@ -70,6 +73,7 @@ class MLSGroupSession:
                 max_generation_gap=max_generation_gap,
                 aead_limit_bytes=aead_limit_bytes,
                 tree_backend=tree_backend,
+                initial_extensions=initial_extensions,
             )
         )
         if policy is not None:
@@ -168,16 +172,32 @@ class MLSGroupSession:
         pt = decode_handshake(handshake_bytes)
         self._group.process_proposal(pt, sender_leaf_index)
 
-    def commit(self, signing_key: bytes) -> Tuple[bytes, List[Welcome]]:
+    def revoke_proposal(self, proposal_ref: bytes) -> None:
+        """Remove a cached proposal by its ProposalRef (e.g. when the delivery service revokes it).
+
+        If the proposal_ref is not in the cache, this is a no-op.
+
+        Parameters:
+            proposal_ref: ProposalRef (hash of the proposal per RFC 9420 §5.2).
+        """
+        self._group.revoke_proposal(proposal_ref)
+
+    def commit(
+        self,
+        signing_key: bytes,
+        return_per_joiner_welcomes: bool = False,
+    ) -> Tuple[bytes, List[Welcome]]:
         """Create a Commit covering all pending proposals and generate Welcomes.
 
         Parameters:
             signing_key: Signing key for the Commit.
+            return_per_joiner_welcomes: If True, return one Welcome per added member
+                (each with a single EncryptedGroupSecrets), e.g. for DAVE voice gateway.
 
         Returns:
             (commit_handshake_bytes, list of Welcome messages for new members).
         """
-        pt, welcomes = self._group.commit(signing_key)
+        pt, welcomes = self._group.commit(signing_key, return_per_joiner_welcomes)
         return encode_handshake(pt), welcomes
 
     def apply_commit(self, handshake_bytes: bytes, sender_leaf_index: int) -> None:

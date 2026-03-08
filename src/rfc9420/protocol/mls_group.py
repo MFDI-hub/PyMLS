@@ -177,6 +177,7 @@ class MLSGroup:
         self._received_commit_for_current_epoch: bool = False  # §14 same-epoch conflict detection
         self._reinit_pending_welcome: bool = False
         self._resumption_psk_provider: Optional[Callable[[bytes, int], Optional[bytes]]] = None
+        self._external_psk_provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None
         # RFC 9420 §5.3.1: optional callback (credential, context_str) -> None; raise on invalid
         self._credential_validator: Optional[Callable[[object, str], None]] = None
 
@@ -204,15 +205,39 @@ class MLSGroup:
         """
         self._resumption_psk_provider = provider
 
-    def _get_psk_values(self, psk_ids: list) -> Optional[list[Optional[bytes]]]:
-        """Resolve resumption PSK values from provider when set; return list aligned with psk_ids.
-        None entries mean use fallback derivation for that slot.
+    def set_external_psk_provider(
+        self,
+        provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]],
+    ) -> None:
+        """Set a callback (PreSharedKeyID) -> psk_value_bytes for EXTERNAL PSKs.
+
+        When processing commits or creating commits that reference external PSKs,
+        the callback is invoked with each PreSharedKeyID; return the raw PSK value
+        or None to use the synthetic fallback (not suitable for production).
         """
-        if not self._resumption_psk_provider or not psk_ids:
+        self._external_psk_provider = provider
+
+    def _get_psk_values(self, psk_ids: list) -> Optional[list[Optional[bytes]]]:
+        """Resolve PSK values from resumption and external providers; return list aligned with psk_ids.
+        None entries mean use fallback derivation for that slot. Returns None if no provider is set.
+        """
+        if not psk_ids:
+            return None
+        if not self._resumption_psk_provider and not self._external_psk_provider:
             return None
         values: list[Optional[bytes]] = []
         for psk in psk_ids:
-            if getattr(psk, "psktype", None) == PSKType.RESUMPTION and getattr(psk, "usage", None) == ResumptionPSKUsage.APPLICATION and getattr(psk, "psk_group_id", None) is not None and getattr(psk, "psk_epoch", None) is not None:
+            psktype = getattr(psk, "psktype", None)
+            if psktype == PSKType.EXTERNAL and self._external_psk_provider:
+                val = self._external_psk_provider(psk)
+                values.append(val)
+            elif (
+                psktype == PSKType.RESUMPTION
+                and getattr(psk, "usage", None) == ResumptionPSKUsage.APPLICATION
+                and getattr(psk, "psk_group_id", None) is not None
+                and getattr(psk, "psk_epoch", None) is not None
+                and self._resumption_psk_provider
+            ):
                 val = self._resumption_psk_provider(psk.psk_group_id, psk.psk_epoch)
                 values.append(val)
             else:
@@ -248,6 +273,7 @@ class MLSGroup:
         max_generation_gap: int = 1000,
         aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
+        initial_extensions: bytes = b"",
     ) -> "MLSGroup":
         """Create a new group with an initial member represented by key_package.
 
@@ -259,6 +285,9 @@ class MLSGroup:
             group_id: New group identifier.
             key_package: Joiner's KeyPackage to insert as the first leaf.
             crypto_provider: Active CryptoProvider.
+            initial_extensions: Optional serialized group context extensions (e.g.
+                external_senders for DAVE). If provided, the group is created with
+                these extensions in the initial GroupContext.
 
         Returns:
             Initialized MLSGroup instance with epoch 0 and derived secrets.
@@ -286,6 +315,7 @@ class MLSGroup:
         group._group_context = GroupContext(
             group_id, 0, tree_hash, b"",
             cipher_suite_id=cs_id,
+            extensions=initial_extensions,
         )
         # From random epoch secret
         epoch_secret = os.urandom(crypto_provider.kdf_hash_len())
@@ -1582,7 +1612,28 @@ class MLSGroup:
         self._proposal_cache[prop_ref] = (proposal, sender.sender)
         self._pending_proposals.append(proposal)
 
-    def create_commit(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
+    def revoke_proposal(self, proposal_ref: bytes) -> None:
+        """Remove a cached proposal by its reference (ProposalRef), e.g. when the
+        delivery service revokes an in-flight proposal.
+
+        If the proposal_ref is not in the cache, this is a no-op.
+
+        Parameters:
+            proposal_ref: ProposalRef (hash of the proposal per RFC 9420 §5.2).
+        """
+        entry = self._proposal_cache.pop(proposal_ref, None)
+        if entry is not None:
+            proposal, _ = entry
+            try:
+                self._pending_proposals.remove(proposal)
+            except ValueError:
+                pass
+
+    def create_commit(
+        self,
+        signing_key: bytes,
+        return_per_joiner_welcomes: bool = False,
+    ) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create, sign, and return a Commit along with Welcome messages.
 
         This MVP flow:
@@ -1595,6 +1646,9 @@ class MLSGroup:
 
         Parameters
         - signing_key: Private key for signature generation.
+        - return_per_joiner_welcomes: If True, return one Welcome per added member
+          (each with a single EncryptedGroupSecrets), e.g. for delivery services
+          that target each joiner separately (DAVE voice gateway).
 
         Returns
         - (MLSPlaintext commit, list of Welcome messages).
@@ -2092,7 +2146,10 @@ class MLSGroup:
                 secrets,
                 enc_group_info,
             )
-            welcomes.append(welcome)
+            if return_per_joiner_welcomes:
+                welcomes.extend(welcome.split_by_joiner())
+            else:
+                welcomes.append(welcome)
 
 
 
