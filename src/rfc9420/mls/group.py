@@ -254,14 +254,16 @@ class Group:
         except CommitValidationError as e:
             raise InvalidCommitError(str(e)) from e
 
-    def protect(self, application_data: bytes) -> MLSCiphertext:
+    def protect(self, application_data: bytes, signing_key: Optional[bytes] = None) -> MLSCiphertext:
         """Encrypt application data for this group.
 
         Encrypts application data using the current epoch's application secret
-        and the secret tree.
+        and the secret tree. Optionally signs with signing_key for RFC 9420 §6.1
+        FramedContentAuthData (interoperability).
 
         Args:
             application_data: Plaintext application data to encrypt.
+            signing_key: Optional member leaf signature key for application message signing.
 
         Returns:
             MLSCiphertext containing the encrypted data.
@@ -269,7 +271,7 @@ class Group:
         Raises:
             RFC9420Error: If group is not initialized or a commit is pending.
         """
-        return self._inner.protect(application_data)
+        return self._inner.protect(application_data, signing_key=signing_key)
 
     def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:
         """Decrypt application ciphertext.

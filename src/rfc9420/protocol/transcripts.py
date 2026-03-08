@@ -80,11 +80,12 @@ class TranscriptState:
 
         where ConfirmedTranscriptHashInput = wire_format || FramedContent || signature
         """
-        # Build ConfirmedTranscriptHashInput from the plaintext
+        # Build ConfirmedTranscriptHashInput from the plaintext (RFC 9420 §8.2: use actual wire format).
         framed_content_bytes = plaintext.auth_content.tbs.framed_content.serialize()
         signature = plaintext.auth_content.signature
+        wire_format = plaintext.auth_content.tbs.wire_format
         input_bytes = serialize_confirmed_transcript_hash_input(
-            WireFormat.PUBLIC_MESSAGE,
+            wire_format,
             framed_content_bytes,
             signature,
         )

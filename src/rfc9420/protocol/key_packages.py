@@ -22,10 +22,14 @@ from ..crypto.ciphersuites import KEM, KDF, AEAD
 from ..mls.exceptions import InvalidSignatureError
 from ..extensions.extensions import (
     Extension,
+    ExtensionType,
     GREASE_VALUES,
+    is_grease_value,
     serialize_extensions,
     deserialize_extensions,
     make_capabilities_ext,
+    parse_capabilities_data,
+    parse_required_capabilities,
 )
 
 
@@ -237,16 +241,29 @@ class LeafNode:
         group_id: Optional[bytes] = None,
         leaf_index: Optional[int] = None,
         current_time: Optional[int] = None,
+        group_context=None,
+        expected_source: Optional[LeafNodeSource] = None,
+        replacing_encryption_key: Optional[bytes] = None,
     ) -> None:
         """Verify LeafNode validity according to RFC 9420 §7.3.
 
         Checks:
         - Signature verification (requires group_id/leaf_index for UPDATE/COMMIT source).
         - Validity of credential.
-        - Validity of capabilities and required extensions.
-        - Presence of parent_hash for UPDATE/COMMIT.
-        - Checks lifetime if KEY_PACKAGE.
+        - GroupContext required_capabilities when group_context is provided.
+        - Every extension in the LeafNode is listed in capabilities.extensions.
+        - expected_source when provided (e.g. UPDATE for Update proposals, COMMIT for UpdatePath).
+        - replacing_encryption_key: when provided (Update), encryption_key must differ.
+        - Lifetime if KEY_PACKAGE.
         """
+        # Source-specific checks (RFC §7.3)
+        if expected_source is not None and self.leaf_node_source != expected_source:
+            raise ValueError(
+                f"LeafNode source must be {expected_source.name}, got {self.leaf_node_source.name}"
+            )
+        if replacing_encryption_key is not None and self.encryption_key == replacing_encryption_key:
+            raise ValueError("Update LeafNode encryption_key must differ from the key being replaced")
+
         # 1. Verify semantics
         if self.leaf_node_source == LeafNodeSource.KEY_PACKAGE:
             # Check lifetime
@@ -259,26 +276,84 @@ class LeafNode:
                         f"LeafNode expired or not yet valid (now={current_time}, window=[{self.lifetime_not_before}, {self.lifetime_not_after}])"
                     )
         elif self.leaf_node_source in (LeafNodeSource.UPDATE, LeafNodeSource.COMMIT):
-            if not self.parent_hash:
-                # RFC 9420 §7.2: parent_hash present for UPDATE/COMMIT
-                # But it's opaque<V>, could be empty? RFC says "The parent hash...".
-                # Generally it should be non-empty unless root?
-                # For a single-leaf tree, parent_hash is empty.
-                pass
             if group_id is None or leaf_index is None:
                 raise ValueError(
                     "Validation of UPDATE/COMMIT LeafNode requires group_id and leaf_index"
                 )
 
+        # RFC §7.3: When group_context is provided, LeafNode capabilities must include
+        # the group's protocol version and cipher suite.
+        if group_context is not None and self.capabilities:
+            try:
+                _caps = parse_capabilities_data(self.capabilities)
+                supported_versions = _caps.get("versions", [])
+                supported_ciphersuites = _caps.get("ciphersuites", [])
+                gc_version = getattr(group_context, "version", None)
+                gc_cs = getattr(group_context, "cipher_suite_id", None)
+                if gc_version is not None and supported_versions and gc_version not in supported_versions:
+                    raise ValueError(
+                        f"LeafNode capabilities.versions does not include group version {gc_version}"
+                    )
+                if gc_cs is not None and supported_ciphersuites and gc_cs not in supported_ciphersuites:
+                    raise ValueError(
+                        f"LeafNode capabilities.ciphersuites does not include group cipher suite {gc_cs}"
+                    )
+            except ValueError:
+                raise
+            except Exception:
+                pass
+
+        # GroupContext required_capabilities (RFC §7.3): when group has required_capabilities,
+        # LeafNode's capabilities must satisfy them.
+        if group_context is not None and getattr(group_context, "extensions", None):
+            try:
+                gc_exts = deserialize_extensions(group_context.extensions)
+                req_cap_ext = next(
+                    (e for e in gc_exts if e.ext_type == ExtensionType.REQUIRED_CAPABILITIES),
+                    None,
+                )
+                if req_cap_ext:
+                    req_exts, req_props, req_creds = parse_required_capabilities(req_cap_ext.data)
+                    _caps = parse_capabilities_data(self.capabilities)
+                    supported_exts = _caps.get("extensions", [])
+                    supported_props = _caps.get("proposals", [])
+                    supported_creds = _caps.get("credentials", [])
+                    for req in req_exts:
+                        if req not in supported_exts:
+                            raise ValueError(f"LeafNode missing required extension capability: {req}")
+                    for req in req_props:
+                        if req not in supported_props:
+                            raise ValueError(f"LeafNode missing required proposal capability: {req}")
+                    for req in req_creds:
+                        if req not in supported_creds:
+                            raise ValueError(f"LeafNode missing required credential capability: {req}")
+            except ValueError:
+                raise
+            except Exception:
+                pass
+
+        # RFC §7.3: "Verify that the extensions in the LeafNode are supported by checking
+        # that the ID for each extension in the extensions field is listed in the
+        # capabilities.extensions field of the LeafNode."
         if self.capabilities:
             try:
-                from ..extensions.extensions import (
-                    parse_capabilities_data,
-                    ExtensionType,
-                    parse_required_capabilities,
-                )
+                _caps = parse_capabilities_data(self.capabilities)
+                supported_exts = set(_caps.get("extensions", []))
+                for ext in self.extensions or []:
+                    if is_grease_value(int(ext.ext_type)):
+                        continue
+                    if int(ext.ext_type) not in supported_exts:
+                        raise ValueError(
+                            f"LeafNode extension {ext.ext_type} not in capabilities.extensions"
+                        )
+            except ValueError:
+                raise
+            except Exception:
+                pass
 
-                # Check REQUIRED_CAPABILITIES from extensions against capabilities
+        if self.capabilities:
+            try:
+                # Check REQUIRED_CAPABILITIES from LeafNode's own extensions against capabilities
                 if self.extensions:
                     req_cap_ext = next(
                         (
@@ -292,7 +367,7 @@ class LeafNode:
                         required = parse_required_capabilities(req_cap_ext.data)
                         _caps = parse_capabilities_data(self.capabilities)
                         supported_exts = _caps.get("extensions", [])
-                        for req in required[0]:  # required[0] = extension_types
+                        for req in required[0]:
                             if req not in supported_exts:
                                 raise ValueError(f"LeafNode missing required capability: {req}")
             except Exception as e:
@@ -438,22 +513,40 @@ class KeyPackage:
             signature=signature,
         )
 
-    def verify(self, crypto_provider, group_context=None, current_time: Optional[int] = None) -> None:
+    def verify(
+        self,
+        crypto_provider,
+        group_context=None,
+        current_time: Optional[int] = None,
+        seen_init_keys: Optional[set] = None,
+    ) -> None:
         """Verify the KeyPackage signature and validity (RFC 9420 §10.1).
 
         Args:
             crypto_provider: The CryptoProvider to use for verification.
             group_context: Optional GroupContext. If provided, checks that KeyPackage
                            version and cipher suite match the group's.
+            seen_init_keys: Optional set of init_key bytes already in use. If provided and
+                           this KeyPackage's init_key is in the set, raises (RFC 9420 §10.1:
+                           client MUST ensure init_key is not used in more than one KeyPackage).
         """
         if self.leaf_node is None:
             raise InvalidSignatureError("missing leaf_node in KeyPackage")
         if not self.init_key:
             raise InvalidSignatureError("missing init_key in KeyPackage")
+        if seen_init_keys is not None and self.init_key in seen_init_keys:
+            raise InvalidSignatureError(
+                "RFC 9420 §10.1: init_key must be unique per client; this init_key was already used in another KeyPackage"
+            )
 
         # Validate the embedded LeafNode (signature, constraints, etc.)
         try:
-            self.leaf_node.validate(crypto_provider, current_time=current_time)
+            self.leaf_node.validate(
+                crypto_provider,
+                current_time=current_time,
+                group_context=group_context,
+                expected_source=LeafNodeSource.KEY_PACKAGE,
+            )
         except Exception as e:
             raise InvalidSignatureError(f"LeafNode validation failed: {e}")
 
@@ -508,20 +601,37 @@ class KeyPackage:
         if self.leaf_node.leaf_node_source != LeafNodeSource.KEY_PACKAGE:
             raise InvalidSignatureError("KeyPackage LeafNode must have source KEY_PACKAGE")
 
+        # RFC 9420 §7.2 / §10.1: LeafNode capabilities MUST be present and non-empty.
+        if not self.leaf_node.capabilities:
+            raise InvalidSignatureError(
+                "RFC 9420 §7.2: LeafNode capabilities MUST be present and non-empty"
+            )
+
+        # RFC 9420 §10.1: init_key MUST be a valid HPKE public key for the KeyPackage's ciphersuite.
+        old_suite_id = getattr(
+            getattr(crypto_provider, "active_ciphersuite", None), "suite_id", None
+        )
+        try:
+            crypto_provider.set_ciphersuite(self.cipher_suite.suite_id)
+            expected_pk_len = crypto_provider.kem_pk_size()
+        except Exception as e:
+            raise InvalidSignatureError(f"KeyPackage init_key validation failed: {e}") from e
+        finally:
+            if old_suite_id is not None:
+                try:
+                    crypto_provider.set_ciphersuite(old_suite_id)
+                except Exception:
+                    pass
+        if len(self.init_key) != expected_pk_len:
+            raise InvalidSignatureError(
+                f"KeyPackage init_key length {len(self.init_key)} does not match HPKE public key size {expected_pk_len} for ciphersuite (RFC 9420 §10.1)"
+            )
+
         # Enforce extensions in capabilities
         # RFC 9420 §10: "The LeafNode's capabilities field MUST include all extensions that are present in the KeyPackage."
-        # This applies to extensions in KeyPackage and extensions in LeafNode.
-
         from ..extensions.extensions import parse_capabilities_data
 
-        # If capabilities are present, we must verify against them.
-        # If no capabilities are present, technically we can't verify support, but default assumption?
-        # RFC 9420 §7.2: "capabilities... MUST be present in a LeafNode".
-        # So emptiness should be rejected during LeafNode.validate() or here.
-        if not self.leaf_node.capabilities:
-            # Code elsewhere might allow empty defaults, but strict check strictly requires them for extensions check.
-            pass
-        else:
+        if self.leaf_node.capabilities:
             try:
                 from ..extensions.extensions import parse_capabilities_data
 

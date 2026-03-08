@@ -13,6 +13,7 @@ from typing import Dict, Tuple, Optional
 from collections import OrderedDict
 
 from ..crypto.crypto_provider import CryptoProvider
+from ..crypto.utils import secure_wipe
 from . import tree_math
 
 
@@ -117,34 +118,47 @@ class SecretTree:
 
     # Application traffic
     def next_application(self, leaf: int) -> Tuple[bytes, bytes, int]:
-        """Advance application generation and return (key, nonce, generation)."""
+        """Advance application generation and return (key, nonce, generation). RFC 9420 §9.2: single-use, zeroize after use."""
         st = self._get_leaf_state(leaf)
         # Initialize branch ratchet secret lazily from the leaf secret
         if st.app_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.app_secret = self._crypto.derive_secret(leaf_secret, b"application")
+            try:
+                secure_wipe(bytearray(leaf_secret))
+            except Exception:
+                pass
             st.app_generation = 0
-            
+
         gen = st.app_generation
-        # Derive step and advance (delete current secret)
+        # Derive step and advance (delete current secret per §9.2)
         key, nonce, next_secret = self._ratchet_step(st.app_secret, gen)
         try:
-            ba = bytearray(st.app_secret)
-            for i in range(len(ba)):
-                ba[i] = 0
+            secure_wipe(bytearray(st.app_secret))
         except Exception:
             pass
         st.app_secret = next_secret
         st.app_generation += 1
-        return key, nonce, gen
+        # Return copies and zeroize originals per §9.2
+        key_out, nonce_out = bytes(key), bytes(nonce)
+        try:
+            secure_wipe(bytearray(key))
+            secure_wipe(bytearray(nonce))
+        except Exception:
+            pass
+        return key_out, nonce_out, gen
 
     def application_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
-        """Return (key, nonce, generation) for a specific application generation (receive path)."""
+        """Return (key, nonce, generation) for a specific application generation (receive path). RFC 9420 §9.2: zeroize after use."""
         st = self._get_leaf_state(leaf)
         # Initialize receive-side branch if needed
         if st.app_recv_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.app_recv_secret = self._crypto.derive_secret(leaf_secret, b"application")
+            try:
+                secure_wipe(bytearray(leaf_secret))
+            except Exception:
+                pass
             st.app_recv_generation = 0
         if generation - st.app_recv_generation > self._max_generation_gap:
             raise ValueError("application generation exceeds max_generation_gap")
@@ -155,23 +169,31 @@ class SecretTree:
         if generation < st.app_recv_generation:
             if generation in st.app_skipped:
                 key, nonce = st.app_skipped.pop(generation)
-                # RFC §9.2: zeroize consumed skipped key immediately (best-effort)
+                key_out, nonce_out = bytes(key), bytes(nonce)
                 try:
-                    _k = bytearray(key)
-                    _k[:] = b'\x00' * len(_k)
-                    _n = bytearray(nonce)
-                    _n[:] = b'\x00' * len(_n)
+                    secure_wipe(bytearray(key))
+                    secure_wipe(bytearray(nonce))
                 except Exception:
                     pass
-                return key, nonce, generation
+                return key_out, nonce_out, generation
             # Fallback: derive on-demand without affecting receive cursor
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             secret = self._crypto.derive_secret(leaf_secret, b"application")
-            key = nonce = b""
-            # Walk from 0 up to generation
+            try:
+                secure_wipe(bytearray(leaf_secret))
+            except Exception:
+                pass
+            key, nonce = b"", b""
             for g in range(generation + 1):
                 key, nonce, secret = self._ratchet_step(secret, g)
-            return key, nonce, generation
+            key_out, nonce_out = bytes(key), bytes(nonce)
+            try:
+                secure_wipe(bytearray(key))
+                secure_wipe(bytearray(nonce))
+                secure_wipe(bytearray(secret))
+            except Exception:
+                pass
+            return key_out, nonce_out, generation
 
         # Derive and cache intermediate generations (current .. generation-1)
         # for out-of-order decryption, respecting the sliding window size.
@@ -188,48 +210,64 @@ class SecretTree:
             st.app_recv_secret = temp_secret
             st.app_recv_generation = generation
 
-        # Derive key/nonce for the requested generation and advance cursor
+        # Derive key/nonce for the requested generation and advance cursor (§9.2: zeroize old secret)
         assert st.app_recv_secret is not None
         old_secret = st.app_recv_secret
         key, nonce, next_secret = self._ratchet_step(old_secret, generation)
         try:
-            ba = bytearray(old_secret)
-            for i in range(len(ba)):
-                ba[i] = 0
+            secure_wipe(bytearray(old_secret))
         except Exception:
             pass
         st.app_recv_secret = next_secret
         st.app_recv_generation = generation + 1
-        return key, nonce, generation
+        key_out, nonce_out = bytes(key), bytes(nonce)
+        try:
+            secure_wipe(bytearray(key))
+            secure_wipe(bytearray(nonce))
+        except Exception:
+            pass
+        return key_out, nonce_out, generation
 
     # Handshake traffic
     def next_handshake(self, leaf: int) -> Tuple[bytes, bytes, int]:
-        """Advance handshake generation and return (key, nonce, generation)."""
+        """Advance handshake generation and return (key, nonce, generation). RFC 9420 §9.2: single-use, zeroize after use."""
         st = self._get_leaf_state(leaf)
         if st.hs_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.hs_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
+            try:
+                secure_wipe(bytearray(leaf_secret))
+            except Exception:
+                pass
             st.hs_generation = 0
-            
+
         gen = st.hs_generation
         key, nonce, next_secret = self._ratchet_step(st.hs_secret, gen)
         try:
-            ba = bytearray(st.hs_secret)
-            for i in range(len(ba)):
-                ba[i] = 0
+            secure_wipe(bytearray(st.hs_secret))
         except Exception:
             pass
         st.hs_secret = next_secret
         st.hs_generation += 1
-        return key, nonce, gen
+        key_out, nonce_out = bytes(key), bytes(nonce)
+        try:
+            secure_wipe(bytearray(key))
+            secure_wipe(bytearray(nonce))
+        except Exception:
+            pass
+        return key_out, nonce_out, gen
 
     def handshake_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
-        """Return (key, nonce, generation) for a specific handshake generation (receive path)."""
+        """Return (key, nonce, generation) for a specific handshake generation (receive path). RFC 9420 §9.2: zeroize after use."""
         st = self._get_leaf_state(leaf)
         # Initialize receive-side branch if needed
         if st.hs_recv_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             st.hs_recv_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
+            try:
+                secure_wipe(bytearray(leaf_secret))
+            except Exception:
+                pass
             st.hs_recv_generation = 0
         if generation - st.hs_recv_generation > self._max_generation_gap:
             raise ValueError("handshake generation exceeds max_generation_gap")
@@ -237,22 +275,31 @@ class SecretTree:
         if generation < st.hs_recv_generation:
             if generation in st.hs_skipped:
                 key, nonce = st.hs_skipped.pop(generation)
-                # RFC §9.2: zeroize consumed skipped key immediately (best-effort)
+                key_out, nonce_out = bytes(key), bytes(nonce)
                 try:
-                    _k = bytearray(key)
-                    _k[:] = b'\x00' * len(_k)
-                    _n = bytearray(nonce)
-                    _n[:] = b'\x00' * len(_n)
+                    secure_wipe(bytearray(key))
+                    secure_wipe(bytearray(nonce))
                 except Exception:
                     pass
-                return key, nonce, generation
+                return key_out, nonce_out, generation
             # Fallback on-demand derivation for older gens outside window
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
             secret = self._crypto.derive_secret(leaf_secret, b"handshake")
-            key = nonce = b""
+            try:
+                secure_wipe(bytearray(leaf_secret))
+            except Exception:
+                pass
+            key, nonce = b"", b""
             for g in range(generation + 1):
                 key, nonce, secret = self._ratchet_step(secret, g)
-            return key, nonce, generation
+            key_out, nonce_out = bytes(key), bytes(nonce)
+            try:
+                secure_wipe(bytearray(key))
+                secure_wipe(bytearray(nonce))
+                secure_wipe(bytearray(secret))
+            except Exception:
+                pass
+            return key_out, nonce_out, generation
 
         if self._window_size > 0 and generation > st.hs_recv_generation:
             temp_secret = st.hs_recv_secret
@@ -269,17 +316,21 @@ class SecretTree:
         old_secret = st.hs_recv_secret
         key, nonce, next_secret = self._ratchet_step(old_secret, generation)
         try:
-            ba = bytearray(old_secret)
-            for i in range(len(ba)):
-                ba[i] = 0
+            secure_wipe(bytearray(old_secret))
         except Exception:
             pass
         st.hs_recv_secret = next_secret
         st.hs_recv_generation = generation + 1
-        return key, nonce, generation
+        key_out, nonce_out = bytes(key), bytes(nonce)
+        try:
+            secure_wipe(bytearray(key))
+            secure_wipe(bytearray(nonce))
+        except Exception:
+            pass
+        return key_out, nonce_out, generation
 
     def can_encrypt(self, plaintext_len: int) -> bool:
-        """Return whether encrypting plaintext_len bytes stays within configured AEAD bound."""
+        """Return whether encrypting plaintext_len bytes stays within configured AEAD bound (RFC 9420 §15.2)."""
         if self._aead_limit_bytes is None:
             return True
         return (self._encrypted_bytes_total + max(0, int(plaintext_len))) <= self._aead_limit_bytes
@@ -287,6 +338,11 @@ class SecretTree:
     def record_encryption(self, plaintext_len: int) -> None:
         """Track encrypted byte volume for AEAD-bound guardrails."""
         self._encrypted_bytes_total += max(0, int(plaintext_len))
+
+    @property
+    def encrypted_bytes_this_epoch(self) -> int:
+        """Total plaintext bytes encrypted this epoch (for §15.2 limit visibility)."""
+        return int(self._encrypted_bytes_total)
 
 
     def wipe(self) -> None:

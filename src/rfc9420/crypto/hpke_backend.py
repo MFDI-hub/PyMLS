@@ -81,6 +81,30 @@ def hpke_seal(
     return hpke.seal_base(recipient_public_key, info, aad, plaintext)
 
 
+def hpke_seal_and_export(
+    kem: KEM,
+    kdf: KDF,
+    aead: AEAD,
+    recipient_public_key: bytes,
+    info: bytes,
+    aad: bytes,
+    plaintext: bytes,
+    export_label: bytes,
+    export_length: int,
+) -> Tuple[bytes, bytes, bytes]:
+    """HPKE base mode seal and export a secret from the sender context (RFC 9420 §8.3).
+
+    Used when the sender (e.g. external joiner) must use the exported value as
+    prev_init_secret. Returns (kem_output, ciphertext, exported_secret).
+    """
+    kem_id, kdf_id, aead_id = map_hpke_enums(kem, kdf, aead)
+    hpke = HPKE(kem_id, kdf_id, aead_id)
+    enc, ctx = hpke.setup.setup_base_sender(recipient_public_key, info)
+    ct = ctx.seal(aad, plaintext)
+    exported = ctx.export(export_label, export_length)
+    return enc, ct, exported
+
+
 def hpke_open(
     kem: KEM,
     kdf: KDF,

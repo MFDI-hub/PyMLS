@@ -191,6 +191,49 @@ def parse_external_pub_ext(data: bytes) -> bytes:
     return data
 
 
+@dataclass(frozen=True)
+class ExternalSender:
+    """RFC 9420 §12.1.8.1 ExternalSender entry.
+
+    struct {
+        SignaturePublicKey signature_key;
+        Credential credential;
+    } ExternalSender;
+    """
+    signature_key: bytes
+    credential_data: bytes
+
+
+def parse_external_senders(data: bytes) -> list[ExternalSender]:
+    """Parse the external_senders extension payload (RFC 9420 §12.1.8.1).
+
+    Handles both raw entry sequences and varint-length-prefixed vectors.
+    Each ExternalSender = opaque<V>(signature_key) || Credential.
+    Credential = uint16(type) || opaque<V>(body).
+    """
+    from ..codec.tls import read_varint as _read_varint
+    results: list[ExternalSender] = []
+    off = 0
+    # Detect optional outer vector length prefix
+    if len(data) > 0:
+        try:
+            total_len, vec_off = _read_varint(data, off)
+            if vec_off + total_len == len(data):
+                off = vec_off
+        except Exception:
+            pass
+    while off < len(data):
+        sig_key, off = read_opaque_varint(data, off)
+        cred_start = off
+        _cred_type, off = read_uint16(data, off)
+        _cred_body, off = read_opaque_varint(data, off)
+        results.append(ExternalSender(
+            signature_key=sig_key,
+            credential_data=data[cred_start:off],
+        ))
+    return results
+
+
 def build_capabilities_data(
     ciphersuite_ids: list[int],
     supported_exts: list[int],

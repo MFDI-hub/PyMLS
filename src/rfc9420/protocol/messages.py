@@ -11,7 +11,8 @@ from enum import IntEnum
 from typing import Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from .data_structures import Sender, PreSharedKeyID
+    from .data_structures import Sender, PreSharedKeyID, Welcome, GroupInfo
+    from .key_packages import KeyPackage
 from .data_structures import PreSharedKeyID
 import os
 
@@ -116,7 +117,13 @@ def derive_psk_secret(
     psk_ids: list[PreSharedKeyID],
     psk_values: Optional[list[bytes]] = None,
 ) -> bytes:
-    """Derive the PSK secret per RFC 9420 §8.4."""
+    """Derive the PSK secret per RFC 9420 §8.4.
+
+    RFC 9420 §8.4 specifies:
+      psk_extracted_[i] = KDF.Extract(0, psk_[i])
+      psk_input_[i] = ExpandWithLabel(psk_extracted_[i], "derived psk", PSKLabel, KDF.Nh)
+      psk_secret_[i] = KDF.Extract(psk_input_[i-1], psk_secret_[i-1])
+    """
     n = len(psk_ids)
     if n == 0:
         return bytes(crypto.kdf_hash_len())
@@ -128,26 +135,26 @@ def derive_psk_secret(
     psk_secret = bytes(hash_len)
 
     for i in range(n):
-        # Get or derive the PSK value
-        if psk_values is not None and i < len(psk_values):
+        # Get or derive the PSK value (psk_[i] in the RFC)
+        if psk_values is not None and i < len(psk_values) and psk_values[i] is not None and len(psk_values[i]) > 0:
             psk_val = psk_values[i]
         else:
             # MVP fallback: derive a synthetic PSK from the ID serialization
             # This is NOT secure for production without real PSK storage
             psk_val = crypto.kdf_extract(b"psk", psk_ids[i].serialize())
 
-        # psk_extracted = KDF.Extract(0, psk[i])
+        # psk_extracted_[i] = KDF.Extract(0, psk_[i]) per RFC 9420 §8.4
         psk_extracted = crypto.kdf_extract(zero_ikm, psk_val)
 
         # PSKLabel for this iteration
         label = PSKLabel(psk_id=psk_ids[i], index=i, count=n)
 
-        # psk_input = ExpandWithLabel(psk_extracted, "derived psk", PSKLabel, Nh)
+        # psk_input_[i] = ExpandWithLabel(psk_extracted_[i], "derived psk", PSKLabel, Nh)
         psk_input = crypto.expand_with_label(
             psk_extracted, b"derived psk", label.serialize(), hash_len
         )
 
-        # psk_secret[i+1] = KDF.Extract(psk_input, psk_secret[i])
+        # psk_secret_[i+1] = KDF.Extract(psk_input_[i], psk_secret_[i])
         psk_secret = crypto.kdf_extract(psk_input, psk_secret)
 
     return psk_secret
@@ -640,21 +647,32 @@ def sign_authenticated_content(
     crypto: CryptoProvider,
     group_context: Optional[bytes] = None,
     wire_format: int = WireFormat.PUBLIC_MESSAGE,
+    sender_type: Optional["SenderType"] = None,
 ) -> MLSPlaintext:
     """Build MLSPlaintext by signing AuthenticatedContentTBS per RFC 9420 §6.1.
 
     Membership tag is left empty for the caller to attach via
     attach_membership_tag(), since it depends on the group membership key.
+    For sender_type EXTERNAL or NEW_MEMBER_PROPOSAL, group_context is not included in TBS
+    and the caller must not attach a membership tag. For NEW_MEMBER_COMMIT, RFC 9420 §6.1
+    requires GroupContext to be included in TBS; the caller must pass group_context.
 
     Parameters
     - group_context: Serialized GroupContext bytes (required for member senders).
     - wire_format: WireFormat value (default: PUBLIC_MESSAGE).
+    - sender_type: SenderType (default: MEMBER). Use NEW_MEMBER_PROPOSAL for proposals
+      from a new member not yet in the tree (e.g. Add for self).
     """
-    from .data_structures import Sender as _Sender
+    from .data_structures import Sender as _Sender, SenderType as _DST
+    st = _DST(sender_type.value) if sender_type is not None else _DST.MEMBER
+    sender = _Sender(sender_leaf_index, st)
+    # RFC 9420 §6.1: GroupContext is included in TBS for member and new_member_commit only.
+    if st in (_DST.EXTERNAL, _DST.NEW_MEMBER_PROPOSAL):
+        group_context = None
     framed = FramedContent(
         group_id=group_id,
         epoch=epoch,
-        sender=_Sender(sender_leaf_index),
+        sender=sender,
         authenticated_data=authenticated_data,
         content_type=content_type,
         content=content,
@@ -752,35 +770,33 @@ def protect_content_handshake(
     crypto: CryptoProvider,
     confirmation_tag: Optional[bytes] = None,
     content_type: ContentType = ContentType.COMMIT,
+    pad_to: int = 32,
 ) -> MLSCiphertext:
     """
     Encrypt handshake content using the secret tree handshake branch.
     Derive SenderData keys from a ciphertext sample (RFC §6.3.2).
-    
-    Constructs PrivateMessageContent = content || auth || padding.
+
+    Constructs PrivateMessageContent = content || auth || padding (RFC 9420 §15.1).
+    pad_to: padding boundary in bytes (0 = no padding). Default 32.
     """
     # Obtain per-sender handshake key/nonce and generation
     key, nonce, generation = secret_tree.next_handshake(sender_leaf_index)
-    
+
     # Build PrivateMessageContent
     # For Handshake (Proposal/Commit), content is just the bytes (serialization of Proposal/Commit).
     # RFC §6.3:
     # select (content_type) { case proposal: Proposal; case commit: Commit; }
     # So NO length prefix for the content part itself (it's self-describing or consumed).
     pmc = content
-    
+
     # Append AuthData
     auth = FramedContentAuthData(signature=signature, confirmation_tag=confirmation_tag)
     pmc += auth.serialize()
-    
-    # Padding (RFC says: "The sender MUST check that the padding field contains all zeros")
-    # We just append zeros if we want padding. 
-    # MVP: No extra padding for handshake usually, or maybe minimal?
-    # padding = b"" 
-    # But let's pad to some boundary if desired. For now, empty padding is valid (length 0).
-    # If we want to hide length, we should pad.
-    # Legacy: we didn't pad handshake.
-    
+
+    # Padding per RFC 9420 §15.1 (configurable boundary)
+    if pad_to > 0:
+        pmc = add_zero_padding(pmc, pad_to)
+
     aad = compute_ciphertext_aad(group_id, epoch, content_type, authenticated_data)
     
     # Random reuse guard and final content nonce (nonce XOR reuse_guard)
@@ -807,6 +823,39 @@ def protect_content_handshake(
     )
 
 
+def sign_application_framed_content(
+    group_id: bytes,
+    epoch: int,
+    sender_leaf_index: int,
+    authenticated_data: bytes,
+    content_prefixed: bytes,
+    group_context: bytes,
+    signing_private_key: bytes,
+    crypto: CryptoProvider,
+) -> bytes:
+    """Compute signature over FramedContentTBS for an application PrivateMessage (RFC 9420 §6.1).
+
+    content_prefixed MUST be the length-prefixed application data (write_opaque_varint(app_data))
+    as it appears in PrivateMessageContent.
+    """
+    from .data_structures import Sender, SenderType
+    sender = Sender(sender_leaf_index, SenderType.MEMBER)
+    framed = FramedContent(
+        group_id=group_id,
+        epoch=epoch,
+        sender=sender,
+        authenticated_data=authenticated_data,
+        content_type=ContentType.APPLICATION,
+        content=content_prefixed,
+    )
+    tbs = AuthenticatedContentTBS(
+        wire_format=WireFormat.PRIVATE_MESSAGE,
+        framed_content=framed,
+        group_context=group_context,
+    )
+    return crypto.sign_with_label(signing_private_key, b"FramedContentTBS", tbs.serialize())
+
+
 def protect_content_application(
     group_id: bytes,
     epoch: int,
@@ -817,23 +866,26 @@ def protect_content_application(
     key_schedule: KeySchedule,
     secret_tree,
     crypto: CryptoProvider,
+    pad_to: int = 32,
 ) -> MLSCiphertext:
     """
     Encrypt application content using the secret tree application branch.
     Derive SenderData keys from a ciphertext sample (RFC §6.3.2).
+    pad_to: padding boundary in bytes (0 = no padding). Default 32 (RFC 9420 §15.1).
     """
     key, nonce, generation = secret_tree.next_application(sender_leaf_index)
-    
+
     # Build PrivateMessageContent
     # Case application: opaque application_data<V>;
     # So we MUST write length prefix.
     pmc = write_opaque_varint(content)
-    
+
     # AuthData
     auth = FramedContentAuthData(signature=signature, confirmation_tag=None)
     pmc += auth.serialize()
-    
-    pmc = add_zero_padding(pmc, pad_to=32)
+
+    if pad_to > 0:
+        pmc = add_zero_padding(pmc, pad_to)
     
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
     
@@ -971,17 +1023,44 @@ def unprotect_content_application(
 
 @dataclass(frozen=True)
 class MLSMessage:
-    """Top-level MLSMessage wrapper per RFC 9420 §6."""
+    """Top-level MLSMessage wrapper per RFC 9420 §6 with typed dispatch.
+
+    select (MLSMessage.wire_format) {
+        case mls_public_message:  PublicMessage (AuthenticatedContent);
+        case mls_private_message: PrivateMessage (MLSCiphertext);
+        case mls_welcome:         Welcome;
+        case mls_group_info:     GroupInfo;
+        case mls_key_package:    KeyPackage;
+    };
+    """
     version: ProtocolVersion
     wire_format: WireFormat
-    content: bytes  # PublicMessage | PrivateMessage | ...
-    
+    content: bytes  # Raw bytes; use get_parsed_content() for typed access
+
     def serialize(self) -> bytes:
         out = write_uint16(self.version)
         out += write_uint16(self.wire_format)
         out += self.content
         return out
-        
+
+    def get_parsed_content(
+        self,
+    ) -> Union["AuthenticatedContent", "MLSCiphertext", "Welcome", "GroupInfo", "KeyPackage"]:
+        """Parse and return the inner message based on wire_format (RFC 9420 §6 typed dispatch)."""
+        from .data_structures import GroupInfo, Welcome
+        from .key_packages import KeyPackage
+        if self.wire_format == WireFormat.PUBLIC_MESSAGE:
+            return AuthenticatedContent.deserialize(self.content)
+        if self.wire_format == WireFormat.PRIVATE_MESSAGE:
+            return MLSCiphertext.deserialize(self.content)
+        if self.wire_format == WireFormat.WELCOME:
+            return Welcome.deserialize(self.content)
+        if self.wire_format == WireFormat.GROUP_INFO:
+            return GroupInfo.deserialize(self.content)
+        if self.wire_format == WireFormat.KEY_PACKAGE:
+            return KeyPackage.deserialize(self.content)
+        raise ValueError(f"unknown wire_format {self.wire_format}")
+
     @classmethod
     def deserialize(cls, data: bytes) -> "MLSMessage":
         off = 0
@@ -989,3 +1068,28 @@ class MLSMessage:
         wf, off = read_uint16(data, off)
         content = data[off:]
         return cls(ProtocolVersion(v), WireFormat(wf), content)
+
+    @classmethod
+    def from_public_message(cls, msg: "AuthenticatedContent", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+        """Build MLSMessage from AuthenticatedContent (PublicMessage)."""
+        return cls(version, WireFormat.PUBLIC_MESSAGE, msg.serialize())
+
+    @classmethod
+    def from_private_message(cls, msg: "MLSCiphertext", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+        """Build MLSMessage from MLSCiphertext (PrivateMessage)."""
+        return cls(version, WireFormat.PRIVATE_MESSAGE, msg.serialize())
+
+    @classmethod
+    def from_welcome(cls, msg: "Welcome", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+        """Build MLSMessage from Welcome."""
+        return cls(version, WireFormat.WELCOME, msg.serialize())
+
+    @classmethod
+    def from_group_info(cls, msg: "GroupInfo", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+        """Build MLSMessage from GroupInfo."""
+        return cls(version, WireFormat.GROUP_INFO, msg.serialize())
+
+    @classmethod
+    def from_key_package(cls, msg: "KeyPackage", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+        """Build MLSMessage from KeyPackage."""
+        return cls(version, WireFormat.KEY_PACKAGE, msg.serialize())

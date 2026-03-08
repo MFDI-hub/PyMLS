@@ -308,6 +308,23 @@ class DefaultCryptoProvider(CryptoProvider):
             export_length=export_length,
         )
 
+    def hpke_seal_and_export(
+        self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes, export_label: bytes, export_length: int
+    ) -> tuple[bytes, bytes, bytes]:
+        """HPKE seal and export from sender context (RFC 9420 §8.3 external joiner init_secret)."""
+        from .hpke_backend import hpke_seal_and_export as _hpke_seal_export_backend
+        return _hpke_seal_export_backend(
+            kem=self._suite.kem,
+            kdf=self._suite.kdf,
+            aead=self._suite.aead,
+            recipient_public_key=public_key,
+            info=info,
+            aad=aad,
+            plaintext=ptxt,
+            export_label=export_label,
+            export_length=export_length,
+        )
+
     def generate_key_pair(self) -> tuple[bytes, bytes]:
         """Generate a KEM key pair using rfc9180-py."""
         hpke = self._get_hpke_instance()

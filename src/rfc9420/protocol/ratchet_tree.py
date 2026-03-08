@@ -6,7 +6,7 @@ UpdatePath structures used in commits.
 """
 from typing import Optional, Set
 from .key_packages import KeyPackage, LeafNode, LeafNodeSource
-from ..codec.tls import write_uint8, write_uint16, write_uint32, write_varint, write_opaque16, read_uint8, read_uint16, read_opaque16, write_opaque_varint, read_varint, read_uint32
+from ..codec.tls import write_uint8, write_uint16, write_uint32, write_varint, write_opaque16, read_uint8, read_uint16, read_opaque16, write_opaque_varint, read_opaque_varint, read_varint, read_uint32
 from .data_structures import UpdatePath, Signature, serialize_bytes, UpdatePathNode
 from . import tree_math
 from ..crypto.crypto_provider import CryptoProvider
@@ -33,7 +33,7 @@ class RatchetTreeNode:
         self.parent_hash: Optional[bytes] = None
         self.leaf_node: Optional[LeafNode] = None
         self.hash: Optional[bytes] = None
-        # RFC §7.1: track unmerged leaves for parent nodes
+        # RFC ?7.1: track unmerged leaves for parent nodes
         self.unmerged_leaves: list[int] = [] if not is_leaf else []
 
 
@@ -60,15 +60,15 @@ class RatchetTree:
         return self._nodes[index]
 
     def add_leaf(self, key_package: KeyPackage) -> int:
-        """Place new leaf at leftmost blank position (RFC §12.1.1), or extend tree.
+        """Place new leaf at leftmost blank position (RFC ?12.1.1), or extend tree.
 
         After placement, all non-blank ancestors on the direct path have the new
-        leaf index appended to their unmerged_leaves list (RFC §7.1).
+        leaf index appended to their unmerged_leaves list (RFC ?7.1).
         """
         if key_package.leaf_node is None:
             raise ValueError("KeyPackage.leaf_node must be present to add a leaf")
 
-        # Find leftmost blank leaf (RFC §12.1.1)
+        # Find leftmost blank leaf (RFC ?12.1.1)
         leaf_index: Optional[int] = None
         for i in range(self._n_leaves):
             node = self.get_node(i * 2)
@@ -76,7 +76,7 @@ class RatchetTree:
                 leaf_index = i
                 break
         if leaf_index is None:
-            # No blank leaf found – extend tree
+            # No blank leaf found ��� extend tree
             leaf_index = self._n_leaves
             self._n_leaves += 1
 
@@ -85,7 +85,7 @@ class RatchetTree:
         node.public_key = key_package.leaf_node.encryption_key
         node.leaf_node = key_package.leaf_node
 
-        # RFC §7.1: add new leaf index to unmerged_leaves of non-blank ancestors
+        # RFC ?7.1: add new leaf index to unmerged_leaves of non-blank ancestors
         for ancestor_idx in tree_math.direct_path(node_index, self._n_leaves):
             ancestor = self.get_node(ancestor_idx)
             if ancestor.public_key is not None:
@@ -97,14 +97,14 @@ class RatchetTree:
         return leaf_index
 
     def remove_leaf(self, index: int) -> None:
-        """Blank a leaf and its direct path; then resize to 2^d leaves (RFC §12.1.3)."""
+        """Blank a leaf and its direct path; then resize to 2^d leaves (RFC ?12.1.3)."""
         node_index = index * 2
         node = self.get_node(node_index)
         node.public_key = None
         node.private_key = None
         node.leaf_node = None
 
-        # Blank the direct path (RFC §12.1.3)
+        # Blank the direct path (RFC ?12.1.3)
         for p_idx in tree_math.direct_path(node_index, self.n_leaves):
             p_node = self.get_node(p_idx)
             p_node.public_key = None
@@ -113,7 +113,7 @@ class RatchetTree:
 
         self._recalculate_hashes_from(node_index)
 
-        # RFC §12.1.3: truncate to smallest 2^d where 2^d >= (rightmost non-blank leaf + 1)
+        # RFC ?12.1.3: truncate to smallest 2^d where 2^d >= (rightmost non-blank leaf + 1)
         rightmost = -1
         for i in range(self._n_leaves - 1, -1, -1):
             n = self.get_node(i * 2)
@@ -130,13 +130,13 @@ class RatchetTree:
             self._n_leaves = target
 
     def update_leaf(self, index: int, leaf_node: LeafNode) -> None:
-        """Replace leaf metadata and blank direct-path intermediate nodes (RFC §12.1.2)."""
+        """Replace leaf metadata and blank direct-path intermediate nodes (RFC ?12.1.2)."""
         node_index = index * 2
         node = self.get_node(node_index)
         node.public_key = leaf_node.encryption_key
         node.leaf_node = leaf_node
 
-        # RFC §12.1.2: blank all intermediate nodes on the direct path
+        # RFC ?12.1.2: blank all intermediate nodes on the direct path
         for p_idx in tree_math.direct_path(node_index, self.n_leaves):
             p_node = self.get_node(p_idx)
             p_node.public_key = None
@@ -147,7 +147,7 @@ class RatchetTree:
         self._recalculate_hashes_from(node_index)
 
     def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes:
-        """Compute parent hash binding of a leaf to current direct-path nodes (RFC 9420 §7.9)."""
+        """Compute parent hash binding of a leaf to current direct-path nodes (RFC 9420 ?7.9)."""
         if self.n_leaves == 0:
             return b""
         leaf_node_index = leaf_index * 2
@@ -171,7 +171,7 @@ class RatchetTree:
             
             if not node.public_key:
                 # If parent is blank, parent_hash passes through?
-                # RFC 9420 §7.9: "If the node at height h is blank, then the parent hash... is the same as the parent hash of the node at height h+1."
+                # RFC 9420 ?7.9: "If the node at height h is blank, then the parent hash... is the same as the parent hash of the node at height h+1."
                 # effectively, we don't hash it, just keep the accumulator?
                 # or do we exclude it from the chain?
                 # "The parent hash... is defined as..."
@@ -195,6 +195,95 @@ class RatchetTree:
             parent_hash = self._crypto_provider.hash(phi)
             
         return parent_hash
+
+    def _compute_parent_hash_of_parent_node(self, parent_index: int, copath_sibling_index: int) -> bytes:
+        """Compute the parent hash of parent node P with copath child S (RFC 9420 ?7.9).
+
+        Returns hash(ParentHashInput) = H(P.encryption_key || P.parent_hash || original_sibling_tree_hash(S)).
+        Used to verify that a descendant node D's parent_hash field equals this value.
+        """
+        node = self.get_node(parent_index)
+        if not node.public_key:
+            return b""
+        sibling_hash = self._compute_original_sibling_tree_hash(parent_index, copath_sibling_index)
+        phi = serialize_bytes(node.public_key)
+        phi += serialize_bytes(node.parent_hash or b"")
+        phi += serialize_bytes(sibling_hash)
+        return self._crypto_provider.hash(phi)
+
+    def verify_parent_hash_chains(self) -> None:
+        """Verify that every non-blank parent node is parent-hash valid (RFC 9420 ?7.9.2).
+
+        When joining a group, the new member MUST authenticate that each non-blank parent
+        node P is parent-hash valid (chainable back to a leaf). Raises CommitValidationError
+        if any parent node fails.
+        """
+        if self.n_leaves == 0:
+            return
+        root_idx = tree_math.root(self.n_leaves)
+        valid_parents: Set[int] = set()
+        for leaf_index in range(self.n_leaves):
+            leaf_node_index = leaf_index * 2
+            node = self.get_node(leaf_node_index)
+            if not node.leaf_node or not getattr(node.leaf_node, "parent_hash", None):
+                continue
+            leaf_ph = node.leaf_node.parent_hash or b""
+            if not leaf_ph:
+                continue
+            try:
+                p_idx = tree_math.parent(leaf_node_index, self.n_leaves)
+            except Exception:
+                continue
+            p_node = self.get_node(p_idx)
+            if not p_node.public_key:
+                continue
+            s_idx = tree_math.sibling(leaf_node_index, self.n_leaves)
+            expected = self._compute_parent_hash_of_parent_node(p_idx, s_idx)
+            if leaf_ph != expected:
+                raise CommitValidationError(
+                    "parent hash chain invalid: leaf parent_hash does not match computed parent hash"
+                )
+            # RFC 9420 ?7.9.2 third criterion: D in resolution(C), and
+            # intersection(P.unmerged_leaves, subtree(C)) == resolution(C) \ {D}
+            d_node = leaf_index * 2
+            res_indices = self.resolve_indices(s_idx)
+            if d_node not in res_indices:
+                raise CommitValidationError(
+                    "parent hash invalid: leaf not in resolution of copath sibling"
+                )
+            res_leaf_indices = {idx // 2 for idx in res_indices if self.get_node(idx).is_leaf}
+            leaves_under_s = self._leaf_indices_under(s_idx)
+            intersection = set(p_node.unmerged_leaves) & leaves_under_s
+            expected_set = res_leaf_indices - {leaf_index}
+            if intersection != expected_set:
+                raise CommitValidationError(
+                    "parent hash invalid: unmerged_leaves intersection with subtree does not match resolution minus D"
+                )
+            valid_parents.add(p_idx)
+            current = p_idx
+            while current != root_idx:
+                try:
+                    p_idx = tree_math.parent(current, self.n_leaves)
+                except Exception:
+                    break
+                p_node = self.get_node(p_idx)
+                if not p_node.public_key:
+                    break
+                s_idx = tree_math.sibling(current, self.n_leaves)
+                expected = self._compute_parent_hash_of_parent_node(p_idx, s_idx)
+                current_ph = self.get_node(current).parent_hash or b""
+                if current_ph != expected:
+                    break
+                valid_parents.add(p_idx)
+                current = p_idx
+        for idx in range(self.node_width()):
+            n = self.get_node(idx)
+            if n.is_leaf:
+                continue
+            if n.public_key and idx not in valid_parents:
+                raise CommitValidationError(
+                    f"parent node at index {idx} is not parent-hash valid (RFC 9420 ?7.9.2)"
+                )
 
     def _is_leaf_descendant_of(self, leaf_index: int, ancestor_index: int) -> bool:
         """Return True if the given leaf is contained in ancestor_index's subtree."""
@@ -228,7 +317,7 @@ class RatchetTree:
         n.public_key, n.private_key, n.parent_hash, n.leaf_node, n.hash, n.unmerged_leaves = snap
 
     def _compute_original_sibling_tree_hash(self, parent_index: int, sibling_index: int) -> bytes:
-        """Compute RFC 9420 §7.9 original_sibling_tree_hash for a parent/copath sibling pair."""
+        """Compute RFC 9420 ?7.9 original_sibling_tree_hash for a parent/copath sibling pair."""
         parent_node = self.get_node(parent_index)
         if not parent_node.unmerged_leaves:
             self._hash_node(sibling_index)
@@ -289,7 +378,7 @@ class RatchetTree:
             self._hash_node(node_index)
 
     def _hash_node(self, node_index: int):
-        """Compute and cache the hash (NodeHash) for a node using RFC 9420 §7.8 TreeHashInput."""
+        """Compute and cache the hash (NodeHash) for a node using RFC 9420 ?7.8 TreeHashInput."""
         node = self.get_node(node_index)
         if node.is_leaf:
             # TreeHashInput: node_type=1 (leaf)
@@ -361,7 +450,7 @@ class RatchetTree:
 
     def resolve(self, node_index: int) -> list[RatchetTreeNode]:
         """
-        Return the resolution of a node as defined in RFC 9420 §4.1.1.
+        Return the resolution of a node as defined in RFC 9420 ?4.1.1.
         The resolution is an ordered list of non-blank nodes that cover all non-blank
         descendants of the node.
         """
@@ -370,7 +459,7 @@ class RatchetTree:
         # itself plus any unmerged leaves.
         if node.public_key is not None:
              res = [node]
-             # Append unmerged leaves (RFC §4.1.1: local unmerged leaves)
+             # Append unmerged leaves (RFC ?4.1.1: local unmerged leaves)
              # Note: logic for unmerged leaves in resolution might be complex depending on
              # where they are stored. The RFC says "plus the ordered list of unmerged leaves
              # for the node". Our `unmerged_leaves` field stores indices.
@@ -397,9 +486,44 @@ class RatchetTree:
             # If children don't exist (e.g. right child out of bounds), treat as empty
             return []
 
+    def resolve_indices(self, node_index: int) -> list[int]:
+        """Return the resolution of a node as a list of node indices (RFC 9420 ?4.1.1)."""
+        node = self.get_node(node_index)
+        if node.public_key is not None:
+            res = [node_index]
+            for leaf_idx in node.unmerged_leaves:
+                leaf_node_idx = leaf_idx * 2
+                if leaf_node_idx < self.node_width():
+                    res.append(leaf_node_idx)
+            return res
+        if node.is_leaf:
+            return []
+        try:
+            left_res = self.resolve_indices(tree_math.left(node_index))
+            right_res = self.resolve_indices(tree_math.right(node_index, self.n_leaves))
+            return left_res + right_res
+        except Exception:
+            return []
+
+    def _leaf_indices_under(self, node_index: int) -> Set[int]:
+        """Return set of leaf indices that are descendants of the given node."""
+        out: Set[int] = set()
+        node = self.get_node(node_index)
+        if node.is_leaf:
+            out.add(node_index // 2)
+            return out
+        try:
+            left_idx = tree_math.left(node_index)
+            right_idx = tree_math.right(node_index, self.n_leaves)
+            out |= self._leaf_indices_under(left_idx)
+            out |= self._leaf_indices_under(right_idx)
+        except Exception:
+            pass
+        return out
+
     def filtered_direct_path(self, node_index: int) -> list[int]:
         """
-        Return the filtered direct path of a node (RFC 9420 §4.1.2).
+        Return the filtered direct path of a node (RFC 9420 ?4.1.2).
         The filtered direct path is the direct path with nodes removed if their
         child on the copath has an empty resolution.
         """
@@ -460,7 +584,7 @@ class RatchetTree:
     ) -> tuple[UpdatePath, bytes]:
         """Create an UpdatePath for the committer and derive the commit secret.
 
-        RFC 9420 §7.4: Generate a fresh path_secret at the leaf and derive
+        RFC 9420 ?7.4: Generate a fresh path_secret at the leaf and derive
         subsequent path/node secrets top-down up the direct path. For each
         direct-path node, derive a deterministic key pair from the node_secret.
         Encrypt the path_secret for the copath resolution. Attach a parent hash
@@ -469,7 +593,7 @@ class RatchetTree:
 
         Args:
             excluded_leaf_pubkeys: HPKE public keys of newly added members that
-                MUST be excluded from path-secret encryption (RFC §7.4). These
+                MUST be excluded from path-secret encryption (RFC ?7.4). These
                 members were added in the same commit and cannot decrypt path
                 secrets because they don't yet have the tree secrets.
         """
@@ -479,13 +603,11 @@ class RatchetTree:
 
         if not full_direct_path:
              # Single-member tree
-             # Serialize with filtered path (empty) logic?
-             # Just return leaf + empty updates.
              update_path = UpdatePath(new_leaf_node.serialize(), [])
              commit_secret = self._crypto_provider.kdf_extract(b"", b"")
-             return update_path, commit_secret
+             return update_path, commit_secret, {}
 
-        # RFC §7.4: path_secret[0] = random; use current, THEN derive next (use-then-derive)
+        # RFC ?7.4: path_secret[0] = random; use current, THEN derive next (use-then-derive)
         current_path_secret = os.urandom(self._crypto_provider.kdf_hash_len())
 
         # For each node on the direct path, use current secret for this node, then advance
@@ -528,7 +650,7 @@ class RatchetTree:
                 path_secret = path_secret_by_node[node_index]
                 resolution_nodes = self.resolve(copath_node_index)
 
-                # RFC §7.4: exclude newly-added leaves — they were added in this
+                # RFC ?7.4: exclude newly-added leaves ��� they were added in this
                 # commit and have no tree secrets to decrypt path secrets.
                 if excluded_leaf_pubkeys:
                     resolution_nodes = [
@@ -571,16 +693,17 @@ class RatchetTree:
         )
 
         update_path = UpdatePath(leaf_for_path.serialize(), update_path_nodes)
-        # RFC §7.4: commit_secret = path_secret[root], i.e. the path_secret for the
+        # RFC ?7.4: commit_secret = path_secret[root], i.e. the path_secret for the
         # root node, NOT the one advanced past the root after the loop ends.
         root_node_index = full_direct_path[-1]
         commit_secret = path_secret_by_node.get(root_node_index, current_path_secret)
-        return update_path, commit_secret
+        # RFC 9420 ?12.4.3: Return path_secret_by_node so Welcome can include path_secret for each joiner's LCA.
+        return update_path, commit_secret, path_secret_by_node
 
     def merge_update_path(self, update_path: UpdatePath, committer_index: int, group_context_bytes: bytes) -> bytes:
         """Merge an UpdatePath from a received commit and return the commit secret.
 
-        RFC 9420 §7.4 receive path:
+        RFC 9420 ?7.4 receive path:
         - Verify parent hash binding for provided leaf (if present)
         - Decrypt exactly one path_secret corresponding to a copath node on our
           direct path; then derive subsequent path/node secrets upward
@@ -594,11 +717,11 @@ class RatchetTree:
         # The UpdatePath nodes correspond to the *filtered direct path*.
         # We need to map them to our direct path.
         
-        # RFC 9420 §7.4:
+        # RFC 9420 ?7.4:
         # "The receiver... identifies the first node in the filtered direct path... for which it possesses a private key in the resolution of the copath node."
         
         filtered_path = self.filtered_direct_path(committer_index * 2)
-        # RFC 9420 §12.4.2: path encryption keys MUST be unique in the tree.
+        # RFC 9420 ?12.4.2: path encryption keys MUST be unique in the tree.
         try:
             from .validations import validate_update_path_key_uniqueness
 
@@ -631,7 +754,7 @@ class RatchetTree:
 
             up_node = update_path.nodes[i]
 
-            # Update the node's public key; clear unmerged_leaves (RFC §7.5)
+            # Update the node's public key; clear unmerged_leaves (RFC ?7.5)
             nd = self.get_node(node_index)
             nd.public_key = up_node.encryption_key
             nd.unmerged_leaves = []
@@ -680,12 +803,11 @@ class RatchetTree:
             
             copath_node_index = tree_math.sibling(node_index, self.n_leaves)
             resolution = self.resolve(copath_node_index)
-            
+            # RFC 9420 ?7.6: Reject when encrypted_path_secret count does not match resolution count.
             if len(up_node.encrypted_path_secrets) != len(resolution):
-                # Valid warnings, but maybe resolution differs due to update?
-                # Sender used *their* view (pre-commit?).
-                # We use *our* view. They should match.
-               continue
+                raise CommitValidationError(
+                    "UpdatePath node encrypted_path_secret count does not match copath resolution length (RFC 9420 ?7.6)"
+                )
             
             for j, res_node in enumerate(resolution):
                 # Do we have the private key for `res_node`?
@@ -723,8 +845,10 @@ class RatchetTree:
                 pass # Continue loop to update remaining public keys
             
         if current_path_secret is None:
-            # Unable to decrypt any path secret; derive a neutral commit_secret
-            return self._crypto_provider.kdf_extract(b"", b"")
+            # RFC 9420 ?7.6: decryption failure MUST cause the commit to be rejected
+            raise CommitValidationError(
+                "merge_update_path: could not decrypt any path secret from UpdatePath"
+            )
 
         # From the decrypted node onward, derive subsequent path/node secrets upward
         # We need to find where `decrypted_index` is in the full direct path.
@@ -741,7 +865,7 @@ class RatchetTree:
             node_secret = self._crypto_provider.derive_secret(current_path_secret, b"node")
             priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
             
-            # RFC §7.4: MUST verify that the derived key matches the key in UpdatePath.
+            # RFC ?7.4: MUST verify that the derived key matches the key in UpdatePath.
             # The UpdatePath node for this index (if it's in filtered_path)
             if node_index in filtered_path:
                 up_idx = filtered_path.index(node_index)
@@ -752,12 +876,21 @@ class RatchetTree:
                             f"Derived public key at node {node_index} does not match UpdatePath"
                         )
 
-            # Update the node — we have the private key for decrypted/derived nodes.
+            # Update the node ��� we have the private key for decrypted/derived nodes.
             self.get_node(node_index).private_key = priv_key
             self.get_node(node_index).public_key = pub_key
 
 
         self._recalculate_hashes_from(committer_index * 2)
+        # RFC 9420 ?7.5: Compute and store parent_hash on each node of the sender's filtered direct path.
+        for path_node_index in filtered_path:
+            try:
+                parent_idx = tree_math.parent(path_node_index, self.n_leaves)
+                s_idx = tree_math.sibling(path_node_index, self.n_leaves)
+                ph = self._compute_parent_hash_of_parent_node(parent_idx, s_idx)
+                self.get_node(parent_idx).parent_hash = ph if ph else None
+            except Exception:
+                continue
         # Re-verify parent hash after applying path secrets to ensure consistency
         try:
             if provided_leaf.parent_hash:
@@ -772,6 +905,23 @@ class RatchetTree:
         # Commit secret is the final path_secret at the root of the direct path
         commit_secret = current_path_secret
         return commit_secret
+
+    def apply_joiner_path_secret(self, leaf_index: int, path_secret_at_leaf: bytes) -> None:
+        """Apply path_secret from GroupSecrets when joining via Welcome (RFC 9420 ?12.4.3.1).
+
+        Derives path secrets from the joiner's leaf up to the root and stores the
+        resulting private keys in the tree. Call after loading the tree from the
+        ratchet_tree extension and before deriving epoch secrets.
+        """
+        full_direct_path = tree_math.direct_path(leaf_index * 2, self.n_leaves)
+        current = path_secret_at_leaf
+        for node_index in full_direct_path:
+            node_secret = self._crypto_provider.derive_secret(current, b"node")
+            priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
+            self.get_node(node_index).private_key = priv_key
+            self.get_node(node_index).public_key = pub_key
+            current = self._crypto_provider.derive_secret(current, b"path")
+        self._recalculate_hashes_from(leaf_index * 2)
 
     # --- Welcome ratchet_tree extension helpers ---
     def serialize_tree_for_welcome(self) -> bytes:
@@ -792,44 +942,48 @@ class RatchetTree:
 
     def serialize_full_tree_for_welcome(self) -> bytes:
         """
-        Serialize the ratchet tree including internal nodes sufficient for a joiner.
-        Format:
-          uint16 n_leaves
-          uint16 node_count (array width)
-          repeated {
-            uint8 node_type (0=blank, 1=leaf, 2=parent)
-            if leaf:
-              opaque16 leaf_node (may be empty if blank)
-            if parent:
-              opaque16 public_key (may be empty if blank)
-              opaque16 parent_hash (may be empty)
-          }
+        Serialize the ratchet tree per RFC 9420 ?12.4.3.1: optional<Node> ratchet_tree<V>.
+
+        Nodes are in array order (left-to-right in-order). Blank nodes after the
+        last non-blank node are omitted per RFC. Each optional<Node> is encoded
+        as varint(0) for blank or varint(1) + Node (NodeType + LeafNode or ParentNode).
         """
-        out = write_uint16(self.n_leaves)
         width = tree_math.node_width(self.n_leaves)
-        out += write_uint16(width)
+        # Find last non-blank index (RFC: sender MUST NOT include blank after last non-blank)
+        last_non_blank = -1
         for idx in range(width):
             node = self.get_node(idx)
             if node.is_leaf:
-                if node.leaf_node:
-                    out += write_uint8(1)
-                    out += write_opaque16(node.leaf_node.serialize())
-                else:
-                    out += write_uint8(0)
+                if node.leaf_node is not None:
+                    last_non_blank = idx
             else:
                 if node.public_key or node.parent_hash:
-                    out += write_uint8(2)
-                    out += write_opaque16(node.public_key or b"")
-                    out += write_opaque16(node.parent_hash or b"")
-                    # RFC 9420 §7.1: unmerged_leaves<V>
-                    # Serialize as repeated uint32, sorted.
-                    ul_data = b""
-                    for ul in sorted(node.unmerged_leaves):
-                        ul_data += write_uint32(ul)
-                    out += write_varint(len(ul_data)) + ul_data
+                    last_non_blank = idx
+        if last_non_blank < 0:
+            return write_varint(0)  # empty vector
+        content = b""
+        for idx in range(last_non_blank + 1):
+            node = self.get_node(idx)
+            if node.is_leaf:
+                if node.leaf_node:
+                    # optional present: varint(1) + Node(leaf(1) + LeafNode)
+                    content += write_varint(1)
+                    content += write_uint8(1)  # NodeType.leaf
+                    content += write_opaque_varint(node.leaf_node.serialize())
                 else:
-                    out += write_uint8(0)
-        return out
+                    content += write_varint(0)
+            else:
+                if node.public_key or node.parent_hash:
+                    content += write_varint(1)
+                    content += write_uint8(2)  # NodeType.parent
+                    # ParentNode: encryption_key, parent_hash, unmerged_leaves<V>
+                    content += serialize_bytes(node.public_key or b"")
+                    content += serialize_bytes(node.parent_hash or b"")
+                    ul_data = b"".join(write_uint32(ul) for ul in sorted(node.unmerged_leaves))
+                    content += write_varint(len(ul_data)) + ul_data
+                else:
+                    content += write_varint(0)
+        return write_varint(len(content)) + content
 
     def load_tree_from_welcome_bytes(self, data: bytes) -> None:
         """
@@ -852,43 +1006,85 @@ class RatchetTree:
             self._recalculate_hashes_from(0)
 
     def load_full_tree_from_welcome_bytes(self, data: bytes) -> None:
-        """Load the tree from bytes produced by serialize_full_tree_for_welcome()."""
+        """
+        Load the tree from RFC 9420 ?12.4.3.1 optional<Node> ratchet_tree<V>.
+
+        The receiver extends with blank nodes until length is 2^(d+1)-1, then
+        infers n_leaves = 2^d.
+        """
+        from ..codec.tls import TLSDecodeError
         off = 0
-        n, off = read_uint16(data, off)
-        width, off = read_uint16(data, off)
-        self._n_leaves = 0
-        self._nodes.clear()
-        # First pass: set leaf count
-        for _ in range(n):
-            self._n_leaves += 1
-        # Populate nodes
-        for idx in range(width):
-            node_type, off = read_uint8(data, off)
-            if node_type == 0:
+        total_len, off = read_varint(data, off)
+        if total_len == 0:
+            self._n_leaves = 0
+            self._nodes.clear()
+            return
+        end = off + total_len
+        if end > len(data):
+            raise TLSDecodeError("ratchet_tree extension shorter than declared length")
+        entries: list[Optional[tuple[int, object]]] = []  # (node_type, payload) or None for blank
+        while off < end:
+            opt_len, off = read_varint(data, off)
+            if opt_len == 0:
+                entries.append(None)
                 continue
-            node = self.get_node(idx)
-            if node.is_leaf:
-                blob, off = read_opaque16(data, off)
-                if blob:
-                    leaf = LeafNode.deserialize(blob)
-                    node.public_key = leaf.encryption_key
-                    node.leaf_node = leaf
-            else:
-                pk, off = read_opaque16(data, off)
-                ph, off = read_opaque16(data, off)
-                
-                # RFC 9420 §7.1: unmerged_leaves<V> (vector of uint32)
-                # Parse vector length first (varint)
-                ul_len, off = read_varint(data, off)
+            if opt_len != 1:
+                raise TLSDecodeError("optional<Node> must have length 0 or 1")
+            node_type, off = read_uint8(data, off)
+            if node_type == 1:  # leaf
+                leaf_bytes, consumed = read_opaque_varint(data, off)
+                off += consumed
+                entries.append((1, leaf_bytes))
+            elif node_type == 2:  # parent: encryption_key, parent_hash, unmerged_leaves<V>
+                pk, consumed = read_opaque_varint(data, off)
+                off += consumed
+                ph, consumed2 = read_opaque_varint(data, off)
+                off += consumed2
+                ul_len, consumed3 = read_varint(data, off)
+                off += consumed3
+                unmerged_leaves: list[int] = []
                 ul_end = off + ul_len
-                unmerged_leaves = []
-                while off < ul_end:
+                while off < ul_end and off + 4 <= len(data):
                     ul_val, off = read_uint32(data, off)
                     unmerged_leaves.append(ul_val)
-                
+                entries.append((2, (pk, ph, unmerged_leaves)))
+            else:
+                raise TLSDecodeError(f"invalid NodeType {node_type}")
+        # RFC: extend with blank until length = 2^(d+1)-1
+        n_entries = len(entries)
+        if n_entries == 0:
+            self._n_leaves = 0
+            self._nodes.clear()
+            return
+        # Minimum width = 2^(d+1)-1 >= n_entries => d = ceil(log2(n_entries+1)) - 1
+        d = 0
+        while (1 << (d + 1)) - 1 < n_entries:
+            d += 1
+        width = (1 << (d + 1)) - 1
+        n_leaves = 1 << d
+        self._n_leaves = n_leaves
+        self._nodes.clear()
+        for i in range(width):
+            self._nodes[i] = RatchetTreeNode(is_leaf=(i % 2 == 0))
+        # Fill from entries (entries may be shorter; rest are blank)
+        off = 0
+        for idx in range(width):
+            if idx >= len(entries):
+                continue
+            ent = entries[idx]
+            if ent is None:
+                continue
+            node_type, payload = ent
+            node = self.get_node(idx)
+            if node_type == 1:
+                leaf = LeafNode.deserialize(payload)
+                node.public_key = leaf.encryption_key
+                node.leaf_node = leaf
+            else:
+                pk, ph, unmerged_leaves = payload
                 node.public_key = pk if pk else None
                 node.parent_hash = ph if ph else None
-                node.unmerged_leaves = unmerged_leaves
+                node.unmerged_leaves = list(unmerged_leaves) if unmerged_leaves else []
         if self.n_leaves > 0:
             self._recalculate_hashes_from(0)
 

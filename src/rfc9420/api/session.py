@@ -191,16 +191,17 @@ class MLSGroupSession:
         self._group.apply_commit(pt, sender_leaf_index)
 
     # --- Application data (byte I/O) ---
-    def protect_application(self, plaintext: bytes) -> bytes:
+    def protect_application(self, plaintext: bytes, signing_key: Optional[bytes] = None) -> bytes:
         """Encrypt application data for the group.
 
         Parameters:
             plaintext: Application message to encrypt.
+            signing_key: Optional member leaf signature key for RFC 9420 §6.1 signing.
 
         Returns:
             Encoded MLSCiphertext bytes.
         """
-        ct: MLSCiphertext = self._group.protect(plaintext)
+        ct: MLSCiphertext = self._group.protect(plaintext, signing_key=signing_key)
         return encode_application(ct)
 
     def unprotect_application(self, ciphertext_bytes: bytes) -> Tuple[int, bytes]:

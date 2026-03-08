@@ -38,6 +38,7 @@ from .mls.exceptions import (
     InvalidProposalError,
     InvalidCommitError,
     InvalidSignatureError,
+    SameEpochCommitError,
 )
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "InvalidProposalError",
     "InvalidCommitError",
     "InvalidSignatureError",
+    "SameEpochCommitError",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

@@ -32,6 +32,14 @@ class EpochMismatchError(RFC9420Error):
     """Raised when an operation targets an unexpected or stale epoch."""
 
 
+class SameEpochCommitError(RFC9420Error):
+    """Raised when a commit is received for the current epoch (RFC 9420 §14).
+
+    Applications MUST implement conflict resolution when multiple commits
+    exist for the same epoch; catch this error to detect and resolve.
+    """
+
+
 class UnsupportedCipherSuiteError(RFC9420Error):
     """Raised when an unsupported cipher suite, KEM, KDF, or AEAD is requested."""
 

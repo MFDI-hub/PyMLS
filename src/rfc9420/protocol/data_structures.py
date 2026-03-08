@@ -189,15 +189,10 @@ class Credential:
         try:
             ct = CredentialType(ct_val)
         except ValueError:
-            # Not a valid credential type — try legacy format
-            identity, rest = deserialize_bytes(data)
-            public_key_bytes = b""
-            if rest:
-                try:
-                    public_key_bytes, _ = deserialize_bytes(rest)
-                except Exception:
-                    pass
-            return cls(identity, public_key_bytes)
+            # RFC 9420 §13.3: Reject unknown credential_type; do not fall back to BASIC.
+            raise RFC9420Error(
+                f"Unknown or unsupported credential_type: {ct_val} (RFC 9420 §13.3)"
+            )
         
         rest = data[2:]
         if ct == CredentialType.BASIC:
@@ -222,8 +217,10 @@ class Credential:
                 cert_data = cert_data[off:]
             return cls(b"", b"", ct, certificates=certs)
         
-        # Fallback for unknown types (should not happen if enum covers all)
-        return cls(b"", b"", ct)
+        # RFC 9420 §13.3: No opaque preservation for unknown types; reject.
+        raise RFC9420Error(
+            f"Unsupported credential_type in Credential.deserialize: {ct} (RFC 9420 §13.3)"
+        )
 
 
 @dataclass(frozen=True)
@@ -312,8 +309,11 @@ class Proposal(ABC):
             return ExternalInitProposal.deserialize(content)
         if proposal_type == ProposalType.GROUP_CONTEXT_EXTENSIONS:
             return GroupContextExtensionsProposal.deserialize(content)
-        if proposal_type == ProposalType.APP_ACK:
-            return AppAckProposal.deserialize(content)
+        # RFC 9420 §17.4: APP_ACK (8) is not in IANA Table 10; reject when parsing from wire.
+        if proposal_type == 8:
+            raise RFC9420Error(
+                "Proposal type 8 (APP_ACK) is not in RFC 9420 IANA registry; rejected for compliance (RFC 9420 §17.4)"
+            )
 
         raise RFC9420Error(f"Unknown proposal type: {proposal_type}")
 
@@ -1076,20 +1076,28 @@ class GroupSecrets:
 
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupSecrets":
-        """Decode per RFC 9420 §12.4.3.1."""
+        """Decode per RFC 9420 §12.4.3.1. Rejects presence octets not in {0, 1} per §2.1.1."""
         js, rest = deserialize_bytes(data)
 
-        # optional path_secret
+        # optional path_secret (RFC 9420 §2.1.1: presence octet must be 0 or 1)
         path_secret = None
         if rest:
             present, rest = rest[0], rest[1:]
+            if present not in (0, 1):
+                raise RFC9420Error(
+                    f"Invalid optional value presence octet for path_secret: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
+                )
             if present == 1 and rest:
                 path_secret, rest = deserialize_bytes(rest)
 
-        # optional psks
+        # optional psks (RFC 9420 §2.1.1: presence octet must be 0 or 1)
         psks: "Optional[list[PreSharedKeyID]]" = None
         if rest:
             present, rest = rest[0], rest[1:]
+            if present not in (0, 1):
+                raise RFC9420Error(
+                    f"Invalid optional value presence octet for psks: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
+                )
             if present == 1 and rest:
                 psks_blob, rest = deserialize_bytes(rest)
                 psks = []

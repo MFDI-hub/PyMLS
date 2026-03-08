@@ -29,10 +29,7 @@ class KeySchedule:
         - psk_secret: Optional pre-shared key secret blended into update_secret.
         - crypto_provider: Active CryptoProvider exposing labeled KDFs.
         """
-        self._init_secret = init_secret
-        self._commit_secret = commit_secret
         self._group_context = group_context
-        self._psk_secret = psk_secret
         self._crypto_provider = crypto_provider
         self._wiped = False
 
@@ -40,15 +37,17 @@ class KeySchedule:
         hash_len = self._crypto_provider.kdf_hash_len()
         gc_bytes = self._group_context.serialize()
         # Step 1: Extract(init_secret, commit_secret) — salt=init_secret, IKM=commit_secret
-        pre_joiner = self._crypto_provider.kdf_extract(self._init_secret, self._commit_secret)
-        # Step 2: joiner_secret = ExpandWithLabel(pre_joiner, "joiner", GroupContext, Nh)
-        joiner_secret = self._crypto_provider.expand_with_label(pre_joiner, b"joiner", gc_bytes, hash_len)
-        # Step 3: PSK blending — Extract(salt=joiner_secret, ikm=psk_secret) per RFC 9420 §8
-        if self._psk_secret:
-            joiner_secret = self._crypto_provider.kdf_extract(joiner_secret, self._psk_secret)
-        self._joiner_secret = joiner_secret
-        # epoch_secret := ExpandWithLabel(joiner_secret, "epoch", GroupContext, Hash.length)
-        self._epoch_secret = self._crypto_provider.expand_with_label(joiner_secret, b"epoch", gc_bytes, hash_len)
+        pre_joiner = self._crypto_provider.kdf_extract(init_secret, commit_secret)
+        # Step 2: joiner_secret (pre-PSK) — sent in Welcome; receiver blends PSK in from_joiner_secret
+        joiner_secret_pre = self._crypto_provider.expand_with_label(pre_joiner, b"joiner", gc_bytes, hash_len)
+        self._joiner_secret = joiner_secret_pre
+        # Step 3: PSK blending only for epoch_secret (RFC 9420 §8.4); do not overwrite joiner_secret
+        if psk_secret:
+            blended = self._crypto_provider.kdf_extract(joiner_secret_pre, psk_secret)
+        else:
+            blended = joiner_secret_pre
+        # epoch_secret := ExpandWithLabel(blended, "epoch", GroupContext, Hash.length)
+        self._epoch_secret = self._crypto_provider.expand_with_label(blended, b"epoch", gc_bytes, hash_len)
 
         # Derive key schedule branches using labeled derivations (RFC 9420 §8)
         self._encryption_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"encryption")
@@ -56,6 +55,19 @@ class KeySchedule:
         self._external_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"external")
         self._sender_data_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"sender data")
         self._init_secret_derived = self._crypto_provider.derive_secret(self._epoch_secret, b"init")
+
+        # RFC 9420 §9.2: zero input and intermediate secrets after use
+        from ..crypto.utils import secure_wipe
+        for buf in (init_secret, commit_secret, pre_joiner):
+            if buf:
+                ba = bytearray(buf)
+                secure_wipe(ba)
+        if psk_secret:
+            ba = bytearray(psk_secret)
+            secure_wipe(ba)
+        self._init_secret = b""
+        self._commit_secret = b""
+        self._psk_secret = None
 
     @classmethod
     def from_epoch_secret(cls, epoch_secret: bytes, group_context: GroupContext, crypto_provider: CryptoProvider) -> "KeySchedule":

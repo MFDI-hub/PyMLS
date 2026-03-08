@@ -104,3 +104,14 @@ def copath(x: int, n: int) -> list[int]:
     r = root(n)
     path_from_x = [x] + [y for y in direct_path(x, n) if y != r]
     return [sibling(y, n) for y in path_from_x]
+
+
+def lca(node_a: int, node_b: int, n: int) -> int:
+    """Lowest common ancestor of two nodes (RFC 9420 §12.4.3: path_secret for joiner's LCA)."""
+    path_a = [node_a] + direct_path(node_a, n)
+    path_b_set = {node_b}
+    path_b_set.update(direct_path(node_b, n))
+    for node in path_a:
+        if node in path_b_set:
+            return node
+    return root(n)

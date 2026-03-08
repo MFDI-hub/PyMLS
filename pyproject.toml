@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rfc9420"
-version = "0.5.0"
+version = "0.6.0"
 description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -44,6 +44,7 @@ packages = ["src/rfc9420"]
 
 [dependency-groups]
 dev = [
+  "python-dotenv>=1.0.0",
   "pytest>=8.0.0",
   "ruff>=0.6.0",
   "mypy>=1.10.0",

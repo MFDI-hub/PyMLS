@@ -127,6 +127,12 @@ class CryptoProvider(ABC):
         """HPKE SetupBaseR + Context.Export."""
         pass
 
+    def hpke_seal_and_export(
+        self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes, export_label: bytes, export_length: int
+    ) -> tuple[bytes, bytes, bytes]:
+        """HPKE seal and export from sender context (RFC 9420 §8.3). Returns (kem_output, ciphertext, exported_secret)."""
+        raise NotImplementedError("hpke_seal_and_export")
+
     @abstractmethod
     def generate_key_pair(self) -> tuple[bytes, bytes]:
         """Generate a key pair for the active KEM's underlying curve/algorithm."""
