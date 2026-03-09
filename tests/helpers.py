@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from rfc9420 import DefaultCryptoProvider, Group
+from rfc9420.extensions.extensions import ExtensionType, build_capabilities_data
 from rfc9420.protocol.data_structures import Credential, Signature
 from rfc9420.protocol.key_packages import KeyPackage, LeafNode, LeafNodeSource
 
@@ -46,11 +47,16 @@ def make_member(identity: bytes, crypto: DefaultCryptoProvider | None = None) ->
     sign_sk, sign_pk = _ed25519_keypair()
     now = int(time.time())
 
+    # LeafNode serialization adds the capabilities extension (0xFF02); include it so verify passes.
+    capabilities = build_capabilities_data(
+        ciphersuite_ids=[1],
+        supported_exts=[int(ExtensionType.CAPABILITIES)],
+    )
     leaf_unsigned = LeafNode(
         encryption_key=leaf_hpke_pk,
         signature_key=sign_pk,
         credential=Credential(identity=identity, public_key=sign_pk),
-        capabilities=b"",
+        capabilities=capabilities,
         leaf_node_source=LeafNodeSource.KEY_PACKAGE,
         lifetime_not_before=max(0, now - 3600),
         lifetime_not_after=now + 3600 * 24,

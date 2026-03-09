@@ -99,7 +99,8 @@ def hpke_seal_and_export(
     """
     kem_id, kdf_id, aead_id = map_hpke_enums(kem, kdf, aead)
     hpke = HPKE(kem_id, kdf_id, aead_id)
-    enc, ctx = hpke.setup.setup_base_sender(recipient_public_key, info)
+    pk = hpke._deserialize_public_key(recipient_public_key)
+    enc, ctx = hpke.setup.setup_base_sender(pk, info)
     ct = ctx.seal(aad, plaintext)
     exported = ctx.export(export_label, export_length)
     return enc, ct, exported

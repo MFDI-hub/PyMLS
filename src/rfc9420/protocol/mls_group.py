@@ -57,6 +57,7 @@ from .messages import (
     verify_plaintext,
     protect_content_application,
     unprotect_content_application,
+    SenderType as MsgSenderType,
 )
 from .ratchet_tree_backend import (
     DEFAULT_TREE_BACKEND,
@@ -163,7 +164,9 @@ class MLSGroup:
         self._own_leaf_index = own_leaf_index
         self._external_private_key: Optional[bytes] = None
         self._external_public_key: Optional[bytes] = None
-        self._external_init_secret_for_commit: Optional[bytes] = None  # RFC 9420 §8.3 joiner HPKE export
+        self._external_init_secret_for_commit: Optional[bytes] = (
+            None  # RFC 9420 §8.3 joiner HPKE export
+        )
         self._trust_roots: list[bytes] = []
         self._strict_psk_binders: bool = True
         self._x509_policy = None
@@ -181,9 +184,7 @@ class MLSGroup:
         # RFC 9420 §5.3.1: optional callback (credential, context_str) -> None; raise on invalid
         self._credential_validator: Optional[Callable[[object, str], None]] = None
 
-    def set_credential_validator(
-        self, validator: Optional[Callable[[object, str], None]]
-    ) -> None:
+    def set_credential_validator(self, validator: Optional[Callable[[object, str], None]]) -> None:
         """Set callback for credential validation at RFC §5.3.1 events.
 
         Called with (credential, context) where context is one of:
@@ -246,7 +247,7 @@ class MLSGroup:
 
     def _update_external_key_pair(self) -> None:
         """Derive the group's external key pair from the current external_secret.
-        
+
         RFC 9420 ?8:
         external_priv, external_pub = KEM.DeriveKeyPair(external_secret)
         """
@@ -256,8 +257,9 @@ class MLSGroup:
             return
 
         try:
-            self._external_private_key, self._external_public_key = \
+            self._external_private_key, self._external_public_key = (
                 self._crypto_provider.derive_key_pair(self._key_schedule.external_secret)
+            )
         except Exception:
             # Fallback for KEMs that don't support deterministic derivation (should not happen for standard MLS KEMs)
             self._external_private_key = None
@@ -313,7 +315,10 @@ class MLSGroup:
         tree_hash = group._ratchet_tree.calculate_tree_hash()
         cs_id = crypto_provider.active_ciphersuite.suite_id
         group._group_context = GroupContext(
-            group_id, 0, tree_hash, b"",
+            group_id,
+            0,
+            tree_hash,
+            b"",
             cipher_suite_id=cs_id,
             extensions=initial_extensions,
         )
@@ -333,8 +338,8 @@ class MLSGroup:
         # Bootstrap initial interim transcript hash per RFC ?11
         # confirmed_transcript_hash is the zero-length octet string at epoch 0
         ts = TranscriptState(crypto_provider, interim=None, confirmed=None)
-        
-        # RFC 11: 
+
+        # RFC 11:
         # 1. Derive confirmation_key (done in KeySchedule init above)
         # 2. Compute confirmation_tag over empty confirmed_transcript_hash
         # Note: We cannot use ts.compute_confirmation_tag here because it expects
@@ -342,14 +347,14 @@ class MLSGroup:
         # Section 11 says: "calculate the interim transcript hash by... (2) Computing a confirmation_tag over the empty confirmed_transcript_hash"
         # So we MAC the empty string.
         confirmation_tag = crypto_provider.hmac_sign(group._key_schedule.confirmation_key, b"")
-        
+
         # 3. Compute updated interim_transcript_hash
         group._interim_transcript_hash = ts.bootstrap_initial_interim(confirmation_tag)
         group._confirmed_transcript_hash = b""  # RFC ?11: empty confirmed hash
-        
+
         # Derive external key pair from the initial key schedule
         group._update_external_key_pair()
-        
+
         return group
 
     @classmethod
@@ -404,7 +409,9 @@ class MLSGroup:
         joiner_secret = None
         group_secrets = None
         # context for HPKE decapsulation = encrypted_group_info (RFC ?12.4.3.1)
-        enc_gi_context = welcome.encrypted_group_info if hasattr(welcome, 'encrypted_group_info') else b""
+        enc_gi_context = (
+            welcome.encrypted_group_info if hasattr(welcome, "encrypted_group_info") else b""
+        )
         for egs in welcome.secrets:
             try:
                 pbytes = decrypt_with_label(
@@ -446,7 +453,11 @@ class MLSGroup:
         gi = GroupInfoStruct.deserialize(gi_bytes)
 
         # RFC 9420 §12.4.3.1: Verify cipher suite matches joiner's KeyPackage when provided
-        if key_package is not None and hasattr(key_package, "cipher_suite") and key_package.cipher_suite:
+        if (
+            key_package is not None
+            and hasattr(key_package, "cipher_suite")
+            and key_package.cipher_suite
+        ):
             kp_suite_id = getattr(key_package.cipher_suite, "suite_id", None)
             if kp_suite_id is not None and gi.group_context.cipher_suite_id != kp_suite_id:
                 raise CommitValidationError(
@@ -455,42 +466,56 @@ class MLSGroup:
 
         # RFC 9420 §12.4.3.1: Verify group_id is unique among client's groups
         if existing_group_ids is not None and gi.group_context.group_id in existing_group_ids:
-            raise CommitValidationError(
-                "Welcome group_id already exists among client groups"
-            )
+            raise CommitValidationError("Welcome group_id already exists among client groups")
 
         # RFC 9420 §11.2/§11.3: Validate ReInit/Branch epoch and parameter match
         # If the Welcome contains a Resumption PSK with usage reinit or branch, the epoch MUST be 1.
         if group_secrets is not None and group_secrets.psks:
             try:
                 from .data_structures import PSKType, ResumptionPSKUsage
+
                 for psk in group_secrets.psks:
                     if psk.psktype == PSKType.RESUMPTION and (
-                        psk.usage == ResumptionPSKUsage.REINIT or psk.usage == ResumptionPSKUsage.BRANCH
+                        psk.usage == ResumptionPSKUsage.REINIT
+                        or psk.usage == ResumptionPSKUsage.BRANCH
                     ):
                         if gi.group_context.epoch != 1:
                             raise CommitValidationError(
                                 f"Welcome for {psk.usage.name} must have epoch 1, got {gi.group_context.epoch}"
                             )
                         # §11.3: branch PSK must reference the OLD group.
-                        if psk.usage == ResumptionPSKUsage.BRANCH and psk.psk_group_id == gi.group_context.group_id:
+                        if (
+                            psk.usage == ResumptionPSKUsage.BRANCH
+                            and psk.psk_group_id == gi.group_context.group_id
+                        ):
                             raise CommitValidationError(
                                 "branch PSK group_id must differ from the new subgroup group_id"
                             )
                         # §11.3: Branch Welcome version and cipher_suite MUST match the old group when provided.
-                        if psk.usage == ResumptionPSKUsage.BRANCH and (branch_old_version is not None or branch_old_cipher_suite is not None):
-                            if branch_old_version is not None and getattr(gi.group_context, "version", None) is not None and int(gi.group_context.version) != int(branch_old_version):
+                        if psk.usage == ResumptionPSKUsage.BRANCH and (
+                            branch_old_version is not None or branch_old_cipher_suite is not None
+                        ):
+                            if (
+                                branch_old_version is not None
+                                and getattr(gi.group_context, "version", None) is not None
+                                and int(gi.group_context.version) != int(branch_old_version)
+                            ):
                                 raise CommitValidationError(
                                     "Branch Welcome GroupContext version does not match old group (RFC 9420 §11.3)"
                                 )
-                            if branch_old_cipher_suite is not None and gi.group_context.cipher_suite_id != branch_old_cipher_suite:
+                            if (
+                                branch_old_cipher_suite is not None
+                                and gi.group_context.cipher_suite_id != branch_old_cipher_suite
+                            ):
                                 raise CommitValidationError(
                                     "Branch Welcome GroupContext cipher_suite does not match old group (RFC 9420 §11.3)"
                                 )
                         # §11.2: ReInit Welcome GroupContext version and extensions MUST match ReInit proposal.
                         if psk.usage == ResumptionPSKUsage.REINIT:
                             if reinit_proposal is not None:
-                                if getattr(gi.group_context, "version", None) is not None and int(gi.group_context.version) != int(reinit_proposal.version):
+                                if getattr(gi.group_context, "version", None) is not None and int(
+                                    gi.group_context.version
+                                ) != int(reinit_proposal.version):
                                     raise CommitValidationError(
                                         "ReInit Welcome GroupContext version does not match ReInit proposal (RFC 9420 §11.2)"
                                     )
@@ -504,9 +529,16 @@ class MLSGroup:
                                     raise CommitValidationError(
                                         "ReInit Welcome GroupContext extensions do not match ReInit proposal (RFC 9420 §11.2)"
                                     )
-                            elif key_package is not None and hasattr(key_package, "cipher_suite") and key_package.cipher_suite:
+                            elif (
+                                key_package is not None
+                                and hasattr(key_package, "cipher_suite")
+                                and key_package.cipher_suite
+                            ):
                                 kp_suite = getattr(key_package.cipher_suite, "suite_id", None)
-                                if kp_suite is not None and gi.group_context.cipher_suite_id != kp_suite:
+                                if (
+                                    kp_suite is not None
+                                    and gi.group_context.cipher_suite_id != kp_suite
+                                ):
                                     raise CommitValidationError(
                                         "ReInit Welcome cipher_suite does not match KeyPackage"
                                     )
@@ -663,7 +695,10 @@ class MLSGroup:
                 for leaf in range(group._ratchet_tree.n_leaves):
                     node = group._ratchet_tree.get_node(leaf * 2)
                     if node.leaf_node:
-                        if credential_validator is not None and node.leaf_node.credential is not None:
+                        if (
+                            credential_validator is not None
+                            and node.leaf_node.credential is not None
+                        ):
                             credential_validator(node.leaf_node.credential, "group_info_join")
                         try:
                             node.leaf_node.validate(
@@ -698,6 +733,7 @@ class MLSGroup:
         if gi.confirmation_tag is None or len(gi.confirmation_tag) == 0:
             raise CommitValidationError("GroupInfo confirmation_tag missing in Welcome")
         from .validations import validate_confirmation_tag
+
         try:
             validate_confirmation_tag(
                 crypto_provider,
@@ -724,10 +760,14 @@ class MLSGroup:
                                 raise CommitValidationError("member lacks required capability")
                         for req in req_props:
                             if req not in prop_types:
-                                raise CommitValidationError("member lacks required proposal capability")
+                                raise CommitValidationError(
+                                    "member lacks required proposal capability"
+                                )
                         for req in req_creds:
                             if req not in cred_types:
-                                raise CommitValidationError("member lacks required credential capability")
+                                raise CommitValidationError(
+                                    "member lacks required credential capability"
+                                )
         except Exception:
             # If we cannot enforce, default to strict behavior: raise
             raise
@@ -746,7 +786,7 @@ class MLSGroup:
             pass
         # Derive external key pair from the initial key schedule
         group._update_external_key_pair()
-        
+
         return group
 
     @classmethod
@@ -834,7 +874,9 @@ class MLSGroup:
             except Exception as e:
                 raise CommitValidationError(f"invalid ratchet_tree in GroupInfo: {e}") from e
         if not verifier_keys:
-            raise CommitValidationError("GroupInfo has no external_pub or ratchet_tree extension for signature verification")
+            raise CommitValidationError(
+                "GroupInfo has no external_pub or ratchet_tree extension for signature verification"
+            )
         verified = False
         tbs = gi.tbs_serialize()
         for vk in verifier_keys:
@@ -849,7 +891,9 @@ class MLSGroup:
         if group._ratchet_tree.n_leaves > 0:
             computed_th = group._ratchet_tree.calculate_tree_hash()
             if computed_th != group._group_context.tree_hash:
-                raise CommitValidationError("ratchet tree hash does not match GroupContext.tree_hash")
+                raise CommitValidationError(
+                    "ratchet tree hash does not match GroupContext.tree_hash"
+                )
             group._ratchet_tree.verify_parent_hash_chains()
         if credential_validator is not None:
             group._credential_validator = credential_validator
@@ -988,7 +1032,7 @@ class MLSGroup:
 
     def branch_group(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create a subgroup branch commit (RFC 9420 ?11.3).
-        
+
         Creates a commit that effectively branches the group into a subgroup
         by injecting a Resumption PSK with usage BRANCH.
         """
@@ -1004,14 +1048,14 @@ class MLSGroup:
             usage=ResumptionPSKUsage.BRANCH,
             psk_group_id=self._group_id,
             psk_epoch=self._group_context.epoch,
-            psk_nonce=nonce
+            psk_nonce=nonce,
         )
-        
+
         # 2. Create and process PSK Proposal
         # We process it locally to ensure it is in our pending proposals list
         msg = self.create_psk_proposal(psk_id, signing_key)
         self.process_proposal(msg, Sender(self._own_leaf_index, SenderType.MEMBER))
-        
+
         # 3. Create Commit
         return self.create_commit(signing_key)
 
@@ -1051,6 +1095,7 @@ class MLSGroup:
                     "RFC 9420 §11.3: subgroup KeyPackage leaf must match a member of the original group"
                 )
         import os as _os
+
         new_group_id = _os.urandom(16)
         new_group = MLSGroup.create(
             new_group_id,
@@ -1073,9 +1118,11 @@ class MLSGroup:
         )
         old_gid, old_epoch = self._group_id, self._group_context.epoch
         rpsk = self._key_schedule.resumption_psk
-        new_group.set_resumption_psk_provider(
-            lambda gid, epoch, og=old_gid, oe=old_epoch, rp=rpsk: rp if (gid, epoch) == (og, oe) else None
-        )
+
+        def _resumption_psk_provider(gid: bytes, epoch: int) -> Optional[bytes]:
+            return rpsk if (gid, epoch) == (old_gid, old_epoch) else None
+
+        new_group.set_resumption_psk_provider(_resumption_psk_provider)
         new_group._pending_proposals.append(PreSharedKeyProposal(psk_id))
         _, welcomes = new_group.create_commit(signing_key)
         return new_group, welcomes
@@ -1098,7 +1145,9 @@ class MLSGroup:
                         )
         except Exception as e:
             raise CommitValidationError(f"invalid KeyPackage in Add proposal: {e}") from e
-        self._validate_credential_if_set(key_package.leaf_node.credential if key_package.leaf_node else None, "add_key_package")
+        self._validate_credential_if_set(
+            key_package.leaf_node.credential if key_package.leaf_node else None, "add_key_package"
+        )
         proposal = AddProposal(key_package.serialize())
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -1152,9 +1201,7 @@ class MLSGroup:
         )
         return attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
 
-    def create_external_init_proposal(
-        self, kem_output: bytes, signing_key: bytes
-    ) -> MLSPlaintext:
+    def create_external_init_proposal(self, kem_output: bytes, signing_key: bytes) -> MLSPlaintext:
         """Create and sign an ExternalInit proposal carrying the HPKE KEM output."""
         if self._group_context is None or self._key_schedule is None:
             raise RFC9420Error("group not initialized")
@@ -1186,6 +1233,7 @@ class MLSGroup:
         nh = self._crypto_provider.kdf_hash_len()
         if len(psk.psk_nonce) != nh:
             import os as _os
+
             psk = PreSharedKeyID(
                 psktype=psk.psktype,
                 psk_id=psk.psk_id,
@@ -1220,6 +1268,7 @@ class MLSGroup:
         set_resumption_psk_provider() so the value is available when creating the commit.
         """
         import os as _os
+
         nonce = _os.urandom(self._crypto_provider.kdf_hash_len())
         psk_id = PreSharedKeyID(
             PSKType.RESUMPTION,
@@ -1234,7 +1283,11 @@ class MLSGroup:
         """Create and sign a ReInit proposal proposing a new group_id."""
         if self._group_context is None or self._key_schedule is None:
             raise RFC9420Error("group not initialized")
-        cs_id = self._crypto_provider.active_ciphersuite.suite_id if self._crypto_provider and hasattr(self._crypto_provider, 'active_ciphersuite') else 0x0001
+        cs_id = (
+            self._crypto_provider.active_ciphersuite.suite_id
+            if self._crypto_provider and hasattr(self._crypto_provider, "active_ciphersuite")
+            else 0x0001
+        )
         proposal = ReInitProposal(new_group_id, version=0x0001, cipher_suite=cs_id)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
@@ -1278,7 +1331,7 @@ class MLSGroup:
             crypto=self._crypto_provider,
             group_context=None,
             wire_format=WireFormat.PUBLIC_MESSAGE,
-            sender_type=SenderType.EXTERNAL,
+            sender_type=MsgSenderType.EXTERNAL,
         )
         return pt
 
@@ -1303,7 +1356,7 @@ class MLSGroup:
             crypto=self._crypto_provider,
             group_context=None,
             wire_format=WireFormat.PUBLIC_MESSAGE,
-            sender_type=SenderType.EXTERNAL,
+            sender_type=MsgSenderType.EXTERNAL,
         )
         return pt
 
@@ -1319,6 +1372,7 @@ class MLSGroup:
         nh = self._crypto_provider.kdf_hash_len()
         if len(psk.psk_nonce) != nh:
             import os as _os
+
             psk = PreSharedKeyID(
                 psktype=psk.psktype,
                 psk_id=psk.psk_id,
@@ -1339,7 +1393,7 @@ class MLSGroup:
             crypto=self._crypto_provider,
             group_context=None,
             wire_format=WireFormat.PUBLIC_MESSAGE,
-            sender_type=SenderType.EXTERNAL,
+            sender_type=MsgSenderType.EXTERNAL,
         )
         return pt
 
@@ -1369,7 +1423,7 @@ class MLSGroup:
             crypto=self._crypto_provider,
             group_context=None,
             wire_format=WireFormat.PUBLIC_MESSAGE,
-            sender_type=SenderType.EXTERNAL,
+            sender_type=MsgSenderType.EXTERNAL,
         )
         return pt
 
@@ -1395,7 +1449,7 @@ class MLSGroup:
             crypto=self._crypto_provider,
             group_context=self._group_context.serialize(),
             wire_format=WireFormat.PUBLIC_MESSAGE,
-            sender_type=SenderType.MEMBER,
+            sender_type=MsgSenderType.MEMBER,
         )
         return pt
 
@@ -1421,7 +1475,7 @@ class MLSGroup:
             crypto=self._crypto_provider,
             group_context=None,
             wire_format=WireFormat.PUBLIC_MESSAGE,
-            sender_type=SenderType.EXTERNAL,
+            sender_type=MsgSenderType.EXTERNAL,
         )
         return pt
 
@@ -1460,7 +1514,10 @@ class MLSGroup:
         if self._key_schedule is None:
             raise RFC9420Error("group not initialized")
         # RFC 9420 §12.1.8: external proposals MUST be sent as PublicMessage
-        if wire_format is not None and sender.sender_type in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_PROPOSAL):
+        if wire_format is not None and sender.sender_type in (
+            SenderType.EXTERNAL,
+            SenderType.NEW_MEMBER_PROPOSAL,
+        ):
             if wire_format != WireFormat.PUBLIC_MESSAGE:
                 raise CommitValidationError(
                     "external and new_member proposals MUST be sent as PublicMessage"
@@ -1471,13 +1528,14 @@ class MLSGroup:
             tbs_fc = message.auth_content.tbs.framed_content
             proposal = Proposal.deserialize(tbs_fc.content)
             _EXTERNAL_ALLOWED = (
-                AddProposal, RemoveProposal, PreSharedKeyProposal,
-                ReInitProposal, GroupContextExtensionsProposal,
+                AddProposal,
+                RemoveProposal,
+                PreSharedKeyProposal,
+                ReInitProposal,
+                GroupContextExtensionsProposal,
             )
             if not isinstance(proposal, _EXTERNAL_ALLOWED):
-                raise CommitValidationError(
-                    "proposal type not allowed for external senders"
-                )
+                raise CommitValidationError("proposal type not allowed for external senders")
 
             # RFC §6.1: look up signature key from external_senders extension
             # by sender_index (sender.sender for EXTERNAL type)
@@ -1486,6 +1544,7 @@ class MLSGroup:
                 ExtensionType as _ET,
                 deserialize_extensions as _de,
             )
+
             if self._group_context is None or not self._group_context.extensions:
                 raise ConfigurationError("no GroupContext extensions for external sender lookup")
             ext_senders_list = []
@@ -1503,7 +1562,10 @@ class MLSGroup:
             # RFC §6.1: TBS does NOT include GroupContext for external senders
             # RFC §6.2: no membership tag for external senders
             verify_plaintext(
-                message, verification_key, None, self._crypto_provider,
+                message,
+                verification_key,
+                None,
+                self._crypto_provider,
                 group_context=None,
             )
         elif sender.sender_type == SenderType.NEW_MEMBER_PROPOSAL:
@@ -1519,22 +1581,20 @@ class MLSGroup:
                 raise CommitValidationError("Add proposal KeyPackage missing leaf signature key")
             verification_key = kp.leaf_node.signature_key
             verify_plaintext(
-                message, verification_key, None, self._crypto_provider,
+                message,
+                verification_key,
+                None,
+                self._crypto_provider,
                 group_context=None,
             )
         else:
             # MEMBER sender: key from ratchet tree
             sender_leaf_node = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
             if not sender_leaf_node:
-                raise CommitValidationError(
-                    f"No leaf node found for sender index {sender.sender}"
-                )
+                raise CommitValidationError(f"No leaf node found for sender index {sender.sender}")
 
             # RFC §6.1: TBS includes GroupContext for member senders
-            gc_bytes = (
-                self._group_context.serialize()
-                if self._group_context else None
-            )
+            gc_bytes = self._group_context.serialize() if self._group_context else None
             verify_plaintext(
                 message,
                 sender_leaf_node.signature_key,
@@ -1542,15 +1602,15 @@ class MLSGroup:
                 self._crypto_provider,
                 group_context=gc_bytes,
             )
-            proposal = Proposal.deserialize(
-                message.auth_content.tbs.framed_content.content
-            )
+            proposal = Proposal.deserialize(message.auth_content.tbs.framed_content.content)
         # Validate credentials for Add/Update/GCE proposals (RFC 9420 §5.3.1)
         try:
             if isinstance(proposal, AddProposal):
                 kp = KeyPackage.deserialize(proposal.key_package)
                 kp.verify(self._crypto_provider, group_context=self._group_context)
-                self._validate_credential_if_set(kp.leaf_node.credential if kp.leaf_node else None, "add_proposal")
+                self._validate_credential_if_set(
+                    kp.leaf_node.credential if kp.leaf_node else None, "add_proposal"
+                )
                 validate_leaf_node_unique_against_tree(
                     self._ratchet_tree,
                     kp.leaf_node,
@@ -1560,7 +1620,11 @@ class MLSGroup:
                 from .key_packages import LeafNode as _LeafNode
 
                 leaf = _LeafNode.deserialize(proposal.leaf_node)
-                pk = getattr(leaf.credential, "public_key", None) if leaf.credential is not None else None
+                pk = (
+                    getattr(leaf.credential, "public_key", None)
+                    if leaf.credential is not None
+                    else None
+                )
                 if pk and pk != leaf.signature_key:
                     raise CommitValidationError(
                         "leaf credential public key does not match signature key"
@@ -1573,7 +1637,9 @@ class MLSGroup:
                         leaf_index=sender.sender,
                         group_context=self._group_context,
                         expected_source=LeafNodeSource.UPDATE,
-                        replacing_encryption_key=current_leaf.encryption_key if current_leaf else None,
+                        replacing_encryption_key=current_leaf.encryption_key
+                        if current_leaf
+                        else None,
                     )
                 except Exception as e:
                     raise CommitValidationError(f"Update proposal LeafNode invalid: {e}") from e
@@ -1586,10 +1652,13 @@ class MLSGroup:
             elif isinstance(proposal, GroupContextExtensionsProposal):
                 try:
                     from ..extensions.extensions import parse_external_senders
+
                     for ext in deserialize_extensions(proposal.extensions):
                         if int(ext.ext_type) == int(ExtensionType.EXTERNAL_SENDERS):
                             for es in parse_external_senders(ext.data):
-                                self._validate_credential_if_set(getattr(es, "credential", None), "external_senders")
+                                self._validate_credential_if_set(
+                                    getattr(es, "credential", None), "external_senders"
+                                )
                             break
                 except Exception:
                     pass
@@ -1734,10 +1803,11 @@ class MLSGroup:
                 for gp in gce_props:
                     merged_gce_exts.extend(deserialize_extensions(gp.extensions))
                 effective_group_extensions = serialize_extensions(merged_gce_exts)
-                
+
                 # RFC 9420 ?11.1: Validate RequiredCapabilities in GCE
                 # Gather capabilities from all members
                 from .validations import validate_group_context_extensions
+
                 for gp in gce_props:
                     validate_group_context_extensions(gp, member_caps)
 
@@ -1766,7 +1836,9 @@ class MLSGroup:
                             leaf_index=proposer_idx,
                             group_context=self._group_context,
                             expected_source=LeafNodeSource.UPDATE,
-                            replacing_encryption_key=current_leaf.encryption_key if current_leaf else None,
+                            replacing_encryption_key=current_leaf.encryption_key
+                            if current_leaf
+                            else None,
                         )
                     except Exception as e:
                         raise CommitValidationError(f"Update proposal LeafNode invalid: {e}") from e
@@ -1781,7 +1853,9 @@ class MLSGroup:
         # Build joiner_infos (leaf_index, KeyPackage) for Welcome generation (RFC §12.4.3).
         joiner_infos: list[tuple[int, KeyPackage]] = []
         for kp in adds_kps:
-            self._validate_credential_if_set(kp.leaf_node.credential if kp.leaf_node else None, "add")
+            self._validate_credential_if_set(
+                kp.leaf_node.credential if kp.leaf_node else None, "add"
+            )
             if effective_group_extensions and kp.leaf_node:
                 kp_caps = parse_capabilities_data(kp.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
@@ -1823,10 +1897,16 @@ class MLSGroup:
                     # Fallback to existing leaf node if deserialization fails
                     pass
             # Use provisional GroupContext for path encryption (RFC �12.4.1).
-            provisional_epoch = 1 if reinit_prop else ((self._group_context.epoch + 1) if self._group_context else 0)
+            provisional_epoch = (
+                1
+                if reinit_prop
+                else ((self._group_context.epoch + 1) if self._group_context else 0)
+            )
             provisional_group_id = reinit_prop.new_group_id if reinit_prop else self._group_id
             provisional_tree_hash = self._ratchet_tree.calculate_tree_hash()
-            provisional_confirmed = self._group_context.confirmed_transcript_hash if self._group_context else b""
+            provisional_confirmed = (
+                self._group_context.confirmed_transcript_hash if self._group_context else b""
+            )
             provisional_gc = GroupContext(
                 provisional_group_id,
                 provisional_epoch,
@@ -1844,7 +1924,9 @@ class MLSGroup:
                 if _kp.leaf_node and _kp.leaf_node.encryption_key:
                     new_add_pubkeys.add(_kp.leaf_node.encryption_key)
             update_path, commit_secret, path_secret_by_node = self._ratchet_tree.create_update_path(
-                self._own_leaf_index, new_leaf_node, gc_bytes,
+                self._own_leaf_index,
+                new_leaf_node,
+                gc_bytes,
                 excluded_leaf_pubkeys=new_add_pubkeys if new_add_pubkeys else None,
             )
         else:
@@ -1873,9 +1955,7 @@ class MLSGroup:
                                 ProposalOrRef(ProposalOrRefType.REFERENCE, reference=ref)
                             )
                             continue
-                    proposals_union.append(
-                        ProposalOrRef(ProposalOrRefType.PROPOSAL, proposal=p)
-                    )
+                    proposals_union.append(ProposalOrRef(ProposalOrRefType.PROPOSAL, proposal=p))
 
         from .data_structures import (
             GroupContextExtensionsProposal as _GCE,
@@ -1922,7 +2002,7 @@ class MLSGroup:
             signing_private_key=signing_key,
             crypto=self._crypto_provider,
             group_context=self._group_context.serialize(),
-            sender_type=SenderType.NEW_MEMBER_COMMIT if has_ext_init else None,
+            sender_type=MsgSenderType.NEW_MEMBER_COMMIT if has_ext_init else None,
         )
         transcripts = TranscriptState(
             self._crypto_provider,
@@ -1942,7 +2022,11 @@ class MLSGroup:
         tree_hash = self._ratchet_tree.calculate_tree_hash()
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         new_group_context = GroupContext(
-            new_group_id, new_epoch, tree_hash, b"", effective_group_extensions,
+            new_group_id,
+            new_epoch,
+            tree_hash,
+            b"",
+            effective_group_extensions,
             cipher_suite_id=cs_id,
         )  # filled after confirm tag
 
@@ -1951,10 +2035,9 @@ class MLSGroup:
         if psk_ids:
             from .messages import derive_psk_secret
 
-            psk_values = self._get_psk_values(psk_ids)
-            psk_secret = derive_psk_secret(
-                self._crypto_provider, psk_ids, psk_values=psk_values
-            )
+            psk_values_raw = self._get_psk_values(psk_ids)
+            psk_values = [v for v in psk_values_raw if v is not None] if psk_values_raw else None
+            psk_secret = derive_psk_secret(self._crypto_provider, psk_ids, psk_values=psk_values)
         # RFC 9420 §8.3: When committer is external joiner, use init_secret from HPKE export as prev_init_secret.
         if has_ext_init:
             prev_init_secret = self._external_init_secret_for_commit
@@ -2000,7 +2083,11 @@ class MLSGroup:
         self._confirmed_transcript_hash = transcripts.confirmed
         # update group context with confirmed hash (for the new epoch)
         self._group_context = GroupContext(
-            self._group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"", effective_group_extensions,
+            self._group_id,
+            new_epoch,
+            tree_hash,
+            self._confirmed_transcript_hash or b"",
+            effective_group_extensions,
             cipher_suite_id=cs_id,
         )
         self._received_commit_for_current_epoch = False  # §14: clear after advancing epoch
@@ -2031,6 +2118,7 @@ class MLSGroup:
             # RFC 9420 §13.5: include a GREASE extension in GroupInfo.extensions.
             try:
                 from ..extensions.extensions import random_grease_values
+
                 used_types = {int(e.ext_type) for e in exts}
                 for grease_type in random_grease_values(2):
                     if grease_type in used_types:
@@ -2039,18 +2127,21 @@ class MLSGroup:
                     break
             except Exception:
                 pass
-            # Include REQUIRED_CAPABILITIES so joiners can enforce support
-            try:
-                from ..extensions.extensions import build_required_capabilities
+            # # Include REQUIRED_CAPABILITIES so joiners can enforce support
+            # try:
+            #     from ..extensions.extensions import build_required_capabilities
 
-                req: list[int] = [int(ExtensionType.RATCHET_TREE)]
-                if self._external_public_key:
-                    req.append(int(ExtensionType.EXTERNAL_PUB))
-                exts.append(
-                    Extension(ExtensionType.REQUIRED_CAPABILITIES, build_required_capabilities(req))
-                )
-            except Exception:
-                pass
+            #     req: list[int] = [int(ExtensionType.RATCHET_TREE)]
+            #     if self._external_public_key:
+            #         req.append(int(ExtensionType.EXTERNAL_PUB))
+            #     exts.append(
+            #         Extension(ExtensionType.REQUIRED_CAPABILITIES, build_required_capabilities(req))
+            #     )
+            # except Exception:
+            #     pass
+            # RFC 9420 §7.2: ratchet_tree and external_pub are *default* extensions
+            # that MUST NOT be listed in capabilities/required_capabilities.
+            # Only add REQUIRED_CAPABILITIES for non-default extensions here.
             # Merge GroupContextExtensions proposals into GroupInfo extensions if present
             if merged_gce_exts:
                 try:
@@ -2064,7 +2155,11 @@ class MLSGroup:
             )
             # Build GroupInfo with all fields populated (including confirmation_tag)
             group_info_tbs = GroupInfo(
-                self._group_context, Signature(b""), ext_bytes, confirm_tag_local, self._own_leaf_index
+                self._group_context,
+                Signature(b""),
+                ext_bytes,
+                confirm_tag_local,
+                self._own_leaf_index,
             )
             gi_sig = self._crypto_provider.sign_with_label(
                 signing_key, b"GroupInfoTBS", group_info_tbs.tbs_serialize()
@@ -2089,6 +2184,7 @@ class MLSGroup:
             )
             secrets: list[EncryptedGroupSecrets] = []
             from . import tree_math as _tree_math
+
             for joiner_leaf_idx, kp in joiner_infos:
                 if kp.leaf_node is None:
                     continue
@@ -2112,13 +2208,18 @@ class MLSGroup:
                 psks_to_inject = []
                 if reinit_prop:
                     import os as _os
-                    psks_to_inject.append(PreSharedKeyID(
-                        PSKType.RESUMPTION,
-                        usage=ResumptionPSKUsage.REINIT,
-                        psk_group_id=old_group_id,
-                        psk_epoch=old_epoch + 1,
-                        psk_nonce=_os.urandom(self._crypto_provider.kdf_hash_len())  # random nonce per RFC ?11.2
-                    ))
+
+                    psks_to_inject.append(
+                        PreSharedKeyID(
+                            PSKType.RESUMPTION,
+                            usage=ResumptionPSKUsage.REINIT,
+                            psk_group_id=old_group_id,
+                            psk_epoch=old_epoch + 1,
+                            psk_nonce=_os.urandom(
+                                self._crypto_provider.kdf_hash_len()
+                            ),  # random nonce per RFC ?11.2
+                        )
+                    )
 
                 gs = GroupSecrets(
                     joiner_secret=joiner_secret,
@@ -2151,19 +2252,19 @@ class MLSGroup:
             else:
                 welcomes.append(welcome)
 
-
-
         # Attach confirmation_tag to the commit MLSPlaintext (RFC ?6.2)
         from .messages import AuthenticatedContent as _AC, FramedContentAuthData
+
         new_auth = FramedContentAuthData(
-            signature=pt.auth_content.signature,
-            confirmation_tag=confirm_tag
+            signature=pt.auth_content.signature, confirmation_tag=confirm_tag
         )
-        pt = MLSPlaintext(_AC(
-            tbs=pt.auth_content.tbs,
-            auth=new_auth,
-            membership_tag=pt.auth_content.membership_tag,
-        ))
+        pt = MLSPlaintext(
+            _AC(
+                tbs=pt.auth_content.tbs,
+                auth=new_auth,
+                membership_tag=pt.auth_content.membership_tag,
+            )
+        )
         # RFC §12.4.3.2: new_member_commit sender has no membership tag; only MEMBER commits get it.
         if not has_ext_init:
             pt = attach_membership_tag(pt, self._key_schedule.membership_key, self._crypto_provider)
@@ -2285,18 +2386,22 @@ class MLSGroup:
 
         # Derive PSK secret from ALL resolved proposals (referenced + inline) per RFC ?12.3
         psk_secret = None
-        all_psk_ids = [
-            p.psk for p in resolved if isinstance(p, PreSharedKeyProposal)
-        ]
+        all_psk_ids = [p.psk for p in resolved if isinstance(p, PreSharedKeyProposal)]
         if all_psk_ids:
             from .messages import derive_psk_secret
-            psk_values = self._get_psk_values(all_psk_ids)
+
+            psk_values_raw = self._get_psk_values(all_psk_ids)
+            psk_values = [v for v in psk_values_raw if v is not None] if psk_values_raw else None
             psk_secret = derive_psk_secret(
                 self._crypto_provider, all_psk_ids, psk_values=psk_values
             )
-        gce_prop = next((p for p in resolved if isinstance(p, GroupContextExtensionsProposal)), None)
+        gce_prop = next(
+            (p for p in resolved if isinstance(p, GroupContextExtensionsProposal)), None
+        )
         effective_group_extensions = (
-            gce_prop.extensions if gce_prop is not None else (self._group_context.extensions if self._group_context else b"")
+            gce_prop.extensions
+            if gce_prop is not None
+            else (self._group_context.extensions if self._group_context else b"")
         )
 
         # RFC 9420 §12.3: Apply proposals in order GCE -> Update -> Remove -> Add.
@@ -2376,16 +2481,18 @@ class MLSGroup:
             self._proposal_cache.pop(pref, None)
 
         # Derive commit secret (path_secret_by_node for Welcome path_secret per RFC 9420 §12.4.3)
-        path_secret_by_node: dict = {}
         if commit.path:
             provisional_epoch = (
-                1 if any(isinstance(p, ReInitProposal) for p in resolved)
+                1
+                if any(isinstance(p, ReInitProposal) for p in resolved)
                 else ((self._group_context.epoch + 1) if self._group_context else 0)
             )
-            provisional_group_id = (
-                next((p.new_group_id for p in resolved if isinstance(p, ReInitProposal)), self._group_id)
+            provisional_group_id = next(
+                (p.new_group_id for p in resolved if isinstance(p, ReInitProposal)), self._group_id
             )
-            provisional_confirmed = self._group_context.confirmed_transcript_hash if self._group_context else b""
+            provisional_confirmed = (
+                self._group_context.confirmed_transcript_hash if self._group_context else b""
+            )
             provisional_gc = GroupContext(
                 provisional_group_id,
                 provisional_epoch,
@@ -2428,7 +2535,7 @@ class MLSGroup:
         if reinit_prop:
             new_epoch = 1  # RFC 9420 ?11.2
             new_group_id = reinit_prop.new_group_id
-            self._group_id = new_group_id # Update instance group_id to the new one
+            self._group_id = new_group_id  # Update instance group_id to the new one
             self._reinit_pending_welcome = True
 
         else:
@@ -2445,29 +2552,37 @@ class MLSGroup:
         transcripts.update_with_handshake(message)
         # Prepare new group context (confirmed hash will be set after computing tag)
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
-        new_group_context = GroupContext(new_group_id, new_epoch, tree_hash, b"", effective_group_extensions,
-                                        cipher_suite_id=cs_id)
+        new_group_context = GroupContext(
+            new_group_id,
+            new_epoch,
+            tree_hash,
+            b"",
+            effective_group_extensions,
+            cipher_suite_id=cs_id,
+        )
 
         if self._key_schedule is None:
             raise RFC9420Error("group not initialized")
-        
+
         # Determine init_secret (ExternalInit vs chain)
         external_init_prop = next(
             (p for p in referenced if isinstance(p, ExternalInitProposal)), None
         )
         if external_init_prop:
             if not self._external_private_key:
-                raise CommitValidationError("ExternalInit proposal received but no external key pair available")
+                raise CommitValidationError(
+                    "ExternalInit proposal received but no external key pair available"
+                )
             try:
                 prev_init_secret = self._crypto_provider.hpke_export_secret(
                     private_key=self._external_private_key,
                     kem_output=external_init_prop.kem_output,
                     info=b"",
                     export_label=b"MLS 1.0 external init secret",
-                    export_length=self._crypto_provider.kdf_hash_len()
+                    export_length=self._crypto_provider.kdf_hash_len(),
                 )
             except Exception as e:
-                 raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
+                raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
         else:
             prev_init_secret = self._key_schedule.init_secret
         try:
@@ -2500,7 +2615,11 @@ class MLSGroup:
         self._confirmed_transcript_hash = transcripts.confirmed
         # Update group context with confirmed hash (for the new epoch)
         self._group_context = GroupContext(
-            new_group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"", effective_group_extensions,
+            new_group_id,
+            new_epoch,
+            tree_hash,
+            self._confirmed_transcript_hash or b"",
+            effective_group_extensions,
             cipher_suite_id=cs_id,
         )
         self._received_commit_for_current_epoch = False  # §14: clear after advancing epoch
@@ -2566,22 +2685,21 @@ class MLSGroup:
                 except Exception:
                     pass
         if not verify_keys:
-            raise ConfigurationError("no external signature verification key configured for this group")
+            raise ConfigurationError(
+                "no external signature verification key configured for this group"
+            )
         # Verify signature only (no membership tag), trying available external verification keys.
         # RFC §6.1: new_member_commit TBS includes GroupContext
-        sender_type = message.auth_content.tbs.framed_content.sender
-        needs_gc = getattr(sender_type, "sender_type", None) in (
-            SenderType.MEMBER, SenderType.NEW_MEMBER_COMMIT,
+        sender_obj = message.auth_content.tbs.framed_content.sender
+        needs_gc = getattr(sender_obj, "sender_type", None) in (
+            SenderType.MEMBER,
+            SenderType.NEW_MEMBER_COMMIT,
         )
-        ext_gc = (
-            self._group_context.serialize()
-            if needs_gc and self._group_context else None
-        )
+        ext_gc = self._group_context.serialize() if needs_gc and self._group_context else None
         last_sig_err: Optional[Exception] = None
         for key in verify_keys:
             try:
-                verify_plaintext(message, key, None, self._crypto_provider,
-                                 group_context=ext_gc)
+                verify_plaintext(message, key, None, self._crypto_provider, group_context=ext_gc)
                 last_sig_err = None
                 break
             except InvalidSignatureError as e:
@@ -2618,11 +2736,17 @@ class MLSGroup:
         if committer_index < 0 or committer_index >= max(1, self._ratchet_tree.n_leaves):
             raise CommitValidationError("external commit sender index out of range")
         ext_init_count = sum(1 for p in resolved if isinstance(p, ExternalInitProposal))
-        if sender_type in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_COMMIT) and ext_init_count != 1:
+        if (
+            sender_type in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_COMMIT)
+            and ext_init_count != 1
+        ):
             raise CommitValidationError(
                 "external commit must contain exactly one ExternalInit proposal (RFC ?12.4.3.2)"
             )
-        if sender_type in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_COMMIT) and commit.path is None:
+        if (
+            sender_type in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_COMMIT)
+            and commit.path is None
+        ):
             raise CommitValidationError("external commit must include an UpdatePath")
         remove_count = sum(1 for p in resolved if isinstance(p, RemoveProposal))
         if remove_count > 1:
@@ -2640,11 +2764,10 @@ class MLSGroup:
 
         # Derive PSK secret from ALL resolved PSK proposals (RFC ?12.3)
         psk_secret = None
-        all_psk_ids = [
-            p.psk for p in resolved if isinstance(p, PreSharedKeyProposal)
-        ]
+        all_psk_ids = [p.psk for p in resolved if isinstance(p, PreSharedKeyProposal)]
         if all_psk_ids:
             from .messages import derive_psk_secret
+
             psk_secret = derive_psk_secret(self._crypto_provider, all_psk_ids)
 
         # RFC 9420 §12.3: Apply in order Add -> Remove -> Update (external commit has no Add/Update, only Remove).
@@ -2673,15 +2796,21 @@ class MLSGroup:
             # RFC ss12.4.3.2: merge_update_path uses the *provisional* new GroupContext
             # (incremented epoch, new tree_hash, old confirmed hash), not current epoch.
             _prov_ext_epoch = self._group_context.epoch + 1 if self._group_context else 1
-            _prov_ext_gid = next((p.new_group_id for p in resolved if isinstance(p, ReInitProposal)), self._group_id)
+            _prov_ext_gid = next(
+                (p.new_group_id for p in resolved if isinstance(p, ReInitProposal)), self._group_id
+            )
             _prov_ext_exts = self._group_context.extensions if self._group_context else b""
-            _prov_ext_confirmed = self._group_context.confirmed_transcript_hash if self._group_context else b""
+            _prov_ext_confirmed = (
+                self._group_context.confirmed_transcript_hash if self._group_context else b""
+            )
             _prov_ext_cs = self._crypto_provider.active_ciphersuite.suite_id
             _prov_ext_gc = GroupContext(
-                _prov_ext_gid, _prov_ext_epoch,
+                _prov_ext_gid,
+                _prov_ext_epoch,
                 self._ratchet_tree.calculate_tree_hash(),
                 _prov_ext_confirmed,
-                _prov_ext_exts, cipher_suite_id=_prov_ext_cs,
+                _prov_ext_exts,
+                cipher_suite_id=_prov_ext_cs,
             )
             gc_bytes = _prov_ext_gc.serialize()
             # RFC §7.3: UpdatePath leaf must have leaf_node_source commit
@@ -2730,31 +2859,36 @@ class MLSGroup:
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         effective_group_extensions = self._group_context.extensions if self._group_context else b""
         new_group_context = GroupContext(
-            new_group_id, new_epoch, tree_hash, b"",
+            new_group_id,
+            new_epoch,
+            tree_hash,
+            b"",
             effective_group_extensions,
             cipher_suite_id=cs_id,
         )
 
         if self._key_schedule is None:
             raise RFC9420Error("group not initialized")
-        
+
         # Determine init_secret: find ExternalInit prop in ALL resolved proposals
         external_init_prop = next(
             (p for p in resolved if isinstance(p, ExternalInitProposal)), None
         )
         if external_init_prop:
             if not self._external_private_key:
-                raise CommitValidationError("ExternalInit proposal received but no external key pair available")
+                raise CommitValidationError(
+                    "ExternalInit proposal received but no external key pair available"
+                )
             try:
                 prev_init_secret = self._crypto_provider.hpke_export_secret(
                     private_key=self._external_private_key,
                     kem_output=external_init_prop.kem_output,
                     info=b"",
                     export_label=b"MLS 1.0 external init secret",
-                    export_length=self._crypto_provider.kdf_hash_len()
+                    export_length=self._crypto_provider.kdf_hash_len(),
                 )
             except Exception as e:
-                 raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
+                raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
         else:
             prev_init_secret = self._key_schedule.init_secret
         try:
@@ -2786,7 +2920,10 @@ class MLSGroup:
         self._interim_transcript_hash = transcripts.interim
         self._confirmed_transcript_hash = transcripts.confirmed
         self._group_context = GroupContext(
-            new_group_id, new_epoch, tree_hash, self._confirmed_transcript_hash or b"",
+            new_group_id,
+            new_epoch,
+            tree_hash,
+            self._confirmed_transcript_hash or b"",
             effective_group_extensions,
             cipher_suite_id=cs_id,
         )
@@ -2809,6 +2946,7 @@ class MLSGroup:
         if not sender_confirm_tag:
             raise CommitValidationError("confirmation tag missing on external commit")
         from .validations import validate_confirmation_tag
+
         validate_confirmation_tag(
             self._crypto_provider,
             self._key_schedule.confirmation_key,
@@ -2833,10 +2971,15 @@ class MLSGroup:
         Returns:
             Tuple of (MLSPlaintext commit, list of Welcome messages).
         """
-        cs_id = self._crypto_provider.active_ciphersuite.suite_id if self._crypto_provider and hasattr(self._crypto_provider, 'active_ciphersuite') else 0x0001
-        self._pending_proposals.append(ReInitProposal(new_group_id, version=0x0001, cipher_suite=cs_id))
+        cs_id = (
+            self._crypto_provider.active_ciphersuite.suite_id
+            if self._crypto_provider and hasattr(self._crypto_provider, "active_ciphersuite")
+            else 0x0001
+        )
+        self._pending_proposals.append(
+            ReInitProposal(new_group_id, version=0x0001, cipher_suite=cs_id)
+        )
         return self.create_commit(signing_key)
-
 
     def get_resumption_psk(self) -> bytes:
         """Export current resumption PSK from the key schedule.
@@ -2883,15 +3026,14 @@ class MLSGroup:
             raise RFC9420Error("sending not allowed after ReInit commit until Welcome is processed")
         # RFC 9420 §15.2: Senders MUST NOT exceed AEAD encryption limits per epoch
         if not self._secret_tree.can_encrypt(len(app_data)):
-            raise RFC9420Error(
-                "AEAD encryption bound reached for this epoch (RFC 9420 §15.2)"
-            )
+            raise RFC9420Error("AEAD encryption bound reached for this epoch (RFC 9420 §15.2)")
         signature = b""
         if signing_key is not None:
             from .messages import (
                 sign_application_framed_content,
                 write_opaque_varint,
             )
+
             content_prefixed = write_opaque_varint(app_data)
             signature = sign_application_framed_content(
                 group_id=self._group_id,
@@ -2949,9 +3091,16 @@ class MLSGroup:
         if auth.signature:
             from .messages import write_opaque_varint
             from .data_structures import Sender, SenderType
+
             sender_node = self._ratchet_tree.get_node(sender * 2)
-            if not sender_node or not sender_node.leaf_node or not sender_node.leaf_node.signature_key:
-                raise InvalidSignatureError("cannot verify application message: sender leaf has no signature key")
+            if (
+                not sender_node
+                or not sender_node.leaf_node
+                or not sender_node.leaf_node.signature_key
+            ):
+                raise InvalidSignatureError(
+                    "cannot verify application message: sender leaf has no signature key"
+                )
             content_prefixed = write_opaque_varint(body)
             framed = FramedContent(
                 group_id=message.group_id,
@@ -3057,7 +3206,9 @@ class MLSGroup:
             ext_prv, rest = deserialize_bytes(rest)
             backend_id_bytes, rest = deserialize_bytes(rest)
             try:
-                backend_id = backend_id_bytes.decode("ascii") if backend_id_bytes else DEFAULT_TREE_BACKEND
+                backend_id = (
+                    backend_id_bytes.decode("ascii") if backend_id_bytes else DEFAULT_TREE_BACKEND
+                )
             except Exception:
                 backend_id = DEFAULT_TREE_BACKEND
             tree_state, rest = deserialize_bytes(rest)

@@ -1,4 +1,5 @@
 """Transcript hash maintenance for MLS handshake flows (RFC 9420 §8.2)."""
+
 from __future__ import annotations
 from typing import Optional
 
@@ -6,7 +7,7 @@ from typing import Optional
 from ..codec.tls import write_uint16, write_opaque_varint
 from ..crypto.crypto_provider import CryptoProvider
 from ..mls.exceptions import RFC9420Error
-from .messages import MLSPlaintext, WireFormat
+from .messages import MLSPlaintext
 
 
 def serialize_confirmed_transcript_hash_input(
@@ -22,11 +23,7 @@ def serialize_confirmed_transcript_hash_input(
         opaque signature<V>;
     } ConfirmedTranscriptHashInput;
     """
-    return (
-        write_uint16(wire_format)
-        + framed_content_bytes
-        + write_opaque_varint(signature)
-    )
+    return write_uint16(wire_format) + framed_content_bytes + write_opaque_varint(signature)
 
 
 def serialize_interim_transcript_hash_input(
@@ -56,7 +53,12 @@ class TranscriptState:
       where InterimTranscriptHashInput = confirmation_tag
     """
 
-    def __init__(self, crypto: CryptoProvider, interim: Optional[bytes] = None, confirmed: Optional[bytes] = None):
+    def __init__(
+        self,
+        crypto: CryptoProvider,
+        interim: Optional[bytes] = None,
+        confirmed: Optional[bytes] = None,
+    ):
         self._crypto = crypto
         self._interim = interim
         self._confirmed = confirmed
@@ -128,7 +130,7 @@ class TranscriptState:
             1. Deriving the confirmation_key for the epoch (Section 8).
             2. Computing a confirmation_tag over the empty confirmed_transcript_hash using the confirmation_key (Section 6.1).
             3. Computing the updated interim_transcript_hash from the confirmed_transcript_hash and the confirmation_tag (Section 8.2).
-        
+
         Args:
             confirmation_tag: The confirmation tag computed over the empty confirmed transcript hash.
 
@@ -137,7 +139,7 @@ class TranscriptState:
         """
         # confirmed_transcript_hash is the zero-length octet string at epoch 0
         self._confirmed = b""
-        
+
         # interim_transcript_hash = Hash(confirmed || InterimTranscriptHashInput(confirmation_tag))
         input_bytes = serialize_interim_transcript_hash_input(confirmation_tag)
         self._interim = self._crypto.hash(self._confirmed + input_bytes)

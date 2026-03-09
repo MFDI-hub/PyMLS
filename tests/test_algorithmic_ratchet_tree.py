@@ -23,7 +23,7 @@ class TestAlgorithmicRatchetTree(unittest.TestCase):
         self.tree.add_leaf(b)
         leaf_node = self.tree.get_node(0).leaf_node
         assert leaf_node is not None
-        update_path, _ = self.tree.create_update_path(0, leaf_node, b"context")
+        update_path, _, _ = self.tree.create_update_path(0, leaf_node, b"context")
         self.assertIsNotNone(update_path)
 
     def test_welcome_tree_serialization_non_empty(self):
