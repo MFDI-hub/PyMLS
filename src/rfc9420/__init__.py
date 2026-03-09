@@ -40,8 +40,7 @@ from .mls.exceptions import (
     InvalidSignatureError,
     SameEpochCommitError,
 )
-from .dave import KeyRatchet
-from .dave.key_ratchet import KeyRatchetError
+
 
 __all__ = [
     "Group",
@@ -66,8 +65,6 @@ __all__ = [
     "InvalidCommitError",
     "InvalidSignatureError",
     "SameEpochCommitError",
-    "KeyRatchet",
-    "KeyRatchetError",
 ]
 
 __version__ = "0.6.0"

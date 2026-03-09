@@ -506,6 +506,10 @@ Raised internally when commit or referenced proposals fail validation.
 
 Raised when signature or membership tag verification fails.
 
+### `SameEpochCommitError`
+
+Raised when a commit is received for the current epoch (RFC 9420 §14). Applications must implement conflict resolution when multiple commits exist for the same epoch; catch this error to detect and resolve.
+
 ### `UnsupportedCipherSuiteError`
 
 Raised when an unsupported ciphersuite is requested.
@@ -525,4 +529,5 @@ Raised when a credential is determined to be revoked (CRL/OCSP).
 ### `CredentialValidationError`
 
 Raised for credential/chain validation failures unrelated to revocation.
+
 

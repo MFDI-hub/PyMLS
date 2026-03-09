@@ -8,7 +8,7 @@ Welcome to the RFC9420 documentation! This directory contains comprehensive docu
 - **[Getting Started Guide](getting-started.md)** - Start here! Installation, basic concepts, and your first MLS group.
 
 ### API Documentation
-- **[API Reference](api-reference.md)** - Complete API reference: `Group`, `MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`, `get_commit_sender_leaf_index`, `SenderType`, exceptions, and data structures.
+- **[API Reference](api-reference.md)** - Complete API reference: `Group`, `MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`, `get_commit_sender_leaf_index`, `SenderType`, `KeyRatchet`, exceptions, and data structures.
 
 ### Advanced Topics
 - **[Advanced Features](advanced-features.md)** - External commits, PSKs, re-initialization, X.509 credentials, and more.
@@ -20,7 +20,7 @@ Welcome to the RFC9420 documentation! This directory contains comprehensive docu
 - **[Architecture](architecture.md)** - Internal architecture, component design, and implementation details.
 
 ### Development
-- **[GitHub Actions](https://github.com/YOUR_USERNAME/PyMLS/blob/main/docs/github-actions.md)** - CI workflows, triggers, and how to run the same checks locally.
+- Run the same checks locally: `uv run ruff check .`, `uv run mypy src`, `uv run pytest -q` (see [Getting Started](getting-started.md#development-setup)).
 
 ## Quick Links
 
@@ -49,7 +49,7 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 - **RFC 9420**: [Messaging Layer Security](https://www.rfc-editor.org/rfc/rfc9420.html)
 - **RFC 9180**: [HPKE: Hybrid Public Key Encryption](https://www.rfc-editor.org/rfc/rfc9180.html)
-- **GitHub Repository**: [PyMLS on GitHub](https://github.com/YOUR_USERNAME/PyMLS)
+- **GitHub Repository**: [PyMLS on GitHub](https://github.com/MFDI-hub/PyMLS)
 
 ## Support
 
@@ -59,5 +59,5 @@ Found an error or want to improve the documentation? Contributions are welcome!
 
 ---
 
-**Note**: This documentation is for RFC9420 (PyMLS) version 0.5.0. Requires Python 3.9+. For version-specific information, see the [project README on GitHub](https://github.com/YOUR_USERNAME/PyMLS/blob/main/README.md).
+**Note**: This documentation is for RFC9420 (PyMLS) version 0.6.0. Requires Python 3.9+. For version-specific information, see the [project README on GitHub](https://github.com/MFDI-hub/PyMLS/blob/main/README.md).
 

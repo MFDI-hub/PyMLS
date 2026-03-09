@@ -25,7 +25,7 @@ git clone https://github.com/yourusername/PyMLS.git
 cd PyMLS
 
 # Install dependencies
-uv sync --dev
+uv sync
 
 # Verify installation (from repo root; when installed as package use: from rfc9420 import ...)
 uv run python -c "from rfc9420 import Group, DefaultCryptoProvider; print('RFC9420 installed successfully!')"
@@ -53,6 +53,7 @@ uv run pytest -q
 ### MLS Groups
 
 An MLS group is a collection of members who can send encrypted messages to each other. Each group has:
+
 - A unique `group_id`
 - An `epoch` number that increments with each state change
 - A ratchet tree for managing member keys
@@ -188,12 +189,15 @@ commit, _ = group.commit(sig_sk)
 ### Common Issues
 
 **Import Errors**: When the package is installed (`pip install -e .` or from wheel), use:
+
 ```python
 from rfc9420 import Group, DefaultCryptoProvider  # Correct when installed
 ```
+
 When running from repo root without installing, ensure the package is on `PYTHONPATH` or run with `uv run` so that `rfc9420` (from `src`) is importable.
 
 **HPKE Not Available**: Ensure you have cryptography >= 42:
+
 ```bash
 uv pip install --upgrade cryptography
 ```

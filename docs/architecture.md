@@ -13,29 +13,30 @@ RFC9420 is organized into several main modules (package root: `src/rfc9420` or i
 - **`rfc9420.codec`**: TLS encoding/decoding
 - **`rfc9420.extensions`**: Extension handling (`src/rfc9420/extensions/extensions.py`)
 - **`rfc9420.interop`**: Interoperability tools and test vectors
+- **`rfc9420.dave`** (optional): DAVE protocol helpers (per-sender key ratchet, displayable codes, frame encryption)
 
 ## High-Level Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Application Layer                     │
-│  (Uses Group API for MLS operations)                     │
+│                    Application Layer                    │
+│  (Uses Group API for MLS operations)                    │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
-│                  Group (High-Level API)                  │
-│  - Ergonomic wrapper around MLSGroup                     │
+│                  Group (High-Level API)                 │
+│  - Ergonomic wrapper around MLSGroup                    │
 │  - Simplified interface for common operations           │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
-│              MLSGroup (Protocol Layer)                   │
-│  - Ratchet tree management                               │
-│  - Key schedule derivation                               │
-│  - Proposal processing                                    │
-│  - Commit creation/processing                            │
-│  - Message protection                                    │
-└──────┬──────────────┬──────────────┬─────────────────────┘
+│              MLSGroup (Protocol Layer)                  │
+│  - Ratchet tree management                              │
+│  - Key schedule derivation                              │
+│  - Proposal processing                                  │
+│  - Commit creation/processing                           │
+│  - Message protection                                   │
+└──────┬──────────────┬──────────────┬────────────────────┘
        │              │              │
 ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼──────┐
 │ RatchetTree │ │KeySchedule │ │SecretTree │
@@ -47,12 +48,12 @@ RFC9420 is organized into several main modules (package root: `src/rfc9420` or i
        │              │              │
        └──────────────┼──────────────┘
                       │
-            ┌─────────▼─────────┐
-            │  CryptoProvider    │
-            │  (Abstract)        │
-            └─────────┬─────────┘
+            ┌─────────▼───────────┐
+            │  CryptoProvider     │
+            │  (Abstract)         │
+            └─────────┬───────────┘
                       │
-            ┌─────────▼─────────┐
+            ┌─────────▼───────────┐
             │DefaultCryptoProvider│
             │  (cryptography)     │
             └─────────────────────┘
@@ -95,7 +96,9 @@ The ratchet tree is a binary tree structure where:
 - `update_leaf()`: Update a member's keys
 - `calculate_tree_hash()`: Compute tree hash for GroupContext
 
-**Location:** `src/rfc9420/protocol/ratchet_tree.py`
+**Backends:** The implementation supports pluggable backends (`array`, `perfect`, `linked`) via `create_tree_backend()`; see [API Reference](api-reference.md#ratchet-tree-backends).
+
+**Location:** `src/rfc9420/protocol/ratchet_tree.py`, `ratchet_tree_backend.py`, `ratchet_tree_perfect.py`, `ratchet_tree_linked.py`
 
 ### Key Schedule
 
@@ -145,18 +148,18 @@ Abstract interface for cryptographic operations:
 ```
 Member A                    Member B
    │                           │
-   ├─ Create Proposal ────────┤
+   ├─ Create Proposal ─────────┤
    │                           │
    ├─ Sign & Send ────────────►│
    │                           │
    │                    ┌──────▼──────┐
-   │                    │ Verify Sig   │
-   │                    │ Cache Prop   │
-   │                    │ Queue Prop   │
+   │                    │ Verify Sig  │
+   │                    │ Cache Prop  │
+   │                    │ Queue Prop  │
    │                    └─────────────┘
    │                           │
    │                    ┌──────▼──────┐
-   │                    │ Process Prop │
+   │                    │Process Prop │
    │                    └─────────────┘
 ```
 
@@ -165,7 +168,7 @@ Member A                    Member B
 ```
 Member A                    Member B
    │                           │
-   ├─ Create Commit ──────────┤
+   ├─ Create Commit ───────────┤
    │  - Order proposals        │
    │  - Generate UpdatePath    │
    │  - Compute PSK binder     │
@@ -187,7 +190,7 @@ Member A                    Member B
 ```
 Sender                       Receiver
    │                            │
-   ├─ Protect Message ─────────┤
+   ├─ Protect Message ──────────┤
    │  - Get sender key          │
    │  - Encrypt content         │
    │  - Add sender data         │

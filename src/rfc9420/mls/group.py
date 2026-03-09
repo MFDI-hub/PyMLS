@@ -274,7 +274,9 @@ class Group:
         except CommitValidationError as e:
             raise InvalidCommitError(str(e)) from e
 
-    def protect(self, application_data: bytes, signing_key: Optional[bytes] = None) -> MLSCiphertext:
+    def protect(
+        self, application_data: bytes, signing_key: Optional[bytes] = None
+    ) -> MLSCiphertext:
         """Encrypt application data for this group.
 
         Encrypts application data using the current epoch's application secret
@@ -408,4 +410,3 @@ class Group:
     ) -> "Group":
         """Deserialize group state into a Group instance."""
         return cls(_ProtocolMLSGroup.from_bytes(data, crypto, tree_backend=tree_backend))
-

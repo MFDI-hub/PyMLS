@@ -213,7 +213,7 @@ group_bob.apply_commit(commit)
 ### Using X.509 Certificates
 
 ```python
-from src.rfc9420.crypto.x509 import X509Credential
+from rfc9420.crypto.x509 import X509Credential
 
 def create_x509_key_package(cert_der: bytes, private_key_der: bytes):
     """Create key package with X.509 credential."""
@@ -336,7 +336,7 @@ class MLSChatGroup:
     def __init__(self, identity: bytes, group_id: bytes):
         self.identity = identity
         self.crypto = DefaultCryptoProvider()
-        kp, self.kem_sk, self.sig_sk = create_key_package(identity)
+        kp, self.kem_sk, self.init_sk, self.sig_sk = create_key_package(identity)
         self.group = Group.create(group_id, kp, self.crypto)
         self.members = {0: identity}
     
@@ -363,14 +363,14 @@ alice_chat = MLSChatGroup(b"alice", b"chat_group")
 bob_kp, bob_kem_sk, bob_init_sk, bob_sig_sk = create_key_package(b"bob")
 commit, welcomes = alice_chat.add_member(bob_kp, b"bob")
 
-bob_chat = Group.join_from_welcome(welcomes[0], bob_init_sk, alice_chat.crypto)
+bob_group = Group.join_from_welcome(welcomes[0], bob_init_sk, alice_chat.crypto)
 
 # Alice sends message
 msg = alice_chat.send_message("Hello, Bob!")
 
-# Bob receives
-sender, text = bob_chat.receive_message(msg)
-print(f"{sender.decode()}: {text}")
+# Bob receives (Group.unprotect returns sender_leaf_index, plaintext)
+sender, plaintext = bob_group.unprotect(msg)
+print(f"From sender {sender}: {plaintext.decode()}")
 ```
 
 ## Further Reading
