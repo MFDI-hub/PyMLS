@@ -15,7 +15,7 @@ from ..codec.tls import (
     read_uint64,
 )
 
-from ..crypto.ciphersuites import KEM, KDF, AEAD, find_by_triple, get_ciphersuite_by_id
+from ..crypto.ciphersuites import KEM, KDF, AEAD, CipherSuiteId, find_by_triple, get_ciphersuite_by_id
 from ..mls.exceptions import RFC9420Error
 
 
@@ -520,8 +520,8 @@ class ReInitProposal(Proposal):
     """
 
     new_group_id: bytes
-    version: int = 0x0001  # mls10
-    cipher_suite: int = 0x0001  # default; updated by caller
+    version: int = MLSVersion.MLS10
+    cipher_suite: int = CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
     extensions: bytes = b""  # serialized extension list
 
     @property
@@ -547,8 +547,8 @@ class ReInitProposal(Proposal):
             ext, _ = deserialize_bytes(rest[4:]) if len(rest) > 4 else (b"", b"")
         else:
             # Legacy / minimal encoding (old code only sent group_id)
-            version = 0x0001
-            cs_id = 0x0001
+            version = MLSVersion.MLS10
+            cs_id = CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
             ext = b""
         return cls(gid, version, cs_id, ext)
 
@@ -958,8 +958,8 @@ class GroupContext:
     tree_hash: bytes
     confirmed_transcript_hash: bytes
     extensions: bytes = b""  # RFC 9420 §12.1: serialized extensions list
-    version: int = 0x0001  # ProtocolVersion mls10
-    cipher_suite_id: int = 0x0001  # default to MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+    version: int = MLSVersion.MLS10
+    cipher_suite_id: int = CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
 
     def serialize(self) -> bytes:
         """Encode per RFC 9420 §8.1."""

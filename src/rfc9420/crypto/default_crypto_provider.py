@@ -1,15 +1,13 @@
-"""Concrete CryptoProvider using the 'cryptography' and 'rfc9180-py' packages.
+"""Concrete CryptoProvider using the 'cryptography' and 'rfc9180' packages.
 
 This module provides DefaultCryptoProvider, which implements the CryptoProvider
-interface using the cryptography library for hashing, AEAD, signatures, and
-rfc9180-py (imported as ``rfc9180``) for HPKE. All RFC 9420 §16.3 AE1-secure
-ciphersuites are supported.
+interface using the cryptography library for hashing and signatures, and
+rfc9180 for HPKE, KDF, and AEAD. All RFC 9420 §16.3 AE1-secure ciphersuites
+are supported.
 """
+
 from cryptography.hazmat.primitives import hashes, hmac, serialization
-from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
-from cryptography.hazmat.primitives.asymmetric import (
-    ec,
-)
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -18,47 +16,49 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
     Ed448PrivateKey,
     Ed448PublicKey,
 )
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, InvalidTag
 
-# HPKE via rfc9180-py (imported as "rfc9180")
 from rfc9180 import HPKE
-from rfc9180.constants import KEM_PARAMS
-from .hpke_backend import (
-    hpke_seal as _hpke_seal_backend, 
-    hpke_open as _hpke_open_backend,
-    map_hpke_enums
-)
+from rfc9180.constants import AEAD_PARAMS, KEM_PARAMS
+from rfc9180.exceptions import OpenError as HPKEOpenError
+from rfc9180.primitives.aead import AEADBase
+from rfc9180.primitives.kdf import KDFBase
 
+from .hpke_backend import (
+    hpke_open as _hpke_open_backend,
+    hpke_seal as _hpke_seal_backend,
+    map_hpke_enums,
+)
 from .crypto_provider import CryptoProvider
-from .ciphersuites import KDF as KDFEnum, AEAD
-from ..codec.tls import write_uint16 as _write_uint16
 from .ciphersuites import (
+    CipherSuiteId,
+    KDF as KDFEnum,
     MlsCiphersuite,
     SignatureScheme,
     get_ciphersuite_by_id,
 )
+from ..codec.tls import write_uint16 as _write_uint16
 from ..mls.exceptions import (
-    UnsupportedCipherSuiteError,
     InvalidSignatureError,
     RFC9420Error,
+    UnsupportedCipherSuiteError,
 )
 
 
 class DefaultCryptoProvider(CryptoProvider):
-    """Concrete CryptoProvider implementation using cryptography and rfc9180-py.
+    """Concrete CryptoProvider implementation using cryptography and rfc9180.
 
     Supports all RFC 9420 §16.3 AE1-secure ciphersuites. Requires the
-    cryptography and rfc9180-py packages.
+    cryptography and rfc9180 packages.
 
     Parameters:
-        suite_id: MLS ciphersuite ID (default 0x0001). Must be AE1-secure.
+        suite_id: MLS ciphersuite ID (default CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519). Must be AE1-secure.
 
     Raises:
         UnsupportedCipherSuiteError: If suite_id is unknown or not AE1-secure.
     """
 
-    def __init__(self, suite_id: int = 0x0001):
+    def __init__(self, suite_id: int = CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519):
         cs = get_ciphersuite_by_id(suite_id)
         if not cs:
             raise UnsupportedCipherSuiteError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
@@ -68,7 +68,7 @@ class DefaultCryptoProvider(CryptoProvider):
 
     @property
     def supported_ciphersuites(self):
-        return [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007]
+        return [c.value for c in CipherSuiteId]
 
     @property
     def active_ciphersuite(self) -> MlsCiphersuite:
@@ -95,12 +95,13 @@ class DefaultCryptoProvider(CryptoProvider):
             return hashes.SHA512()
         return hashes.SHA384()
 
-    def _aead_impl(self):
-        if self._suite.aead == AEAD.AES_128_GCM or self._suite.aead == AEAD.AES_256_GCM:
-            return AESGCM
-        if self._suite.aead == AEAD.CHACHA20_POLY1305:
-            return ChaCha20Poly1305
-        raise UnsupportedCipherSuiteError("Unsupported AEAD")
+    def _aead_impl(self) -> AEADBase:
+        """Return rfc9180 AEAD primitive for the active ciphersuite."""
+        return AEADBase(self._suite.aead)
+
+    def _get_kdf(self) -> KDFBase:
+        """Return rfc9180 KDF primitive for the active ciphersuite."""
+        return KDFBase(self._suite.kdf)
 
     def _load_ec_private(self, data: bytes, curve: ec.EllipticCurve):
         """Load an EC private key from DER or PEM bytes (used for Signing)."""
@@ -129,9 +130,7 @@ class DefaultCryptoProvider(CryptoProvider):
 
     def _get_hpke_instance(self) -> HPKE:
         """Helper to create an rfc9180-py HPKE instance for the active suite."""
-        kem_id, kdf_id, aead_id = map_hpke_enums(
-            self._suite.kem, self._suite.kdf, self._suite.aead
-        )
+        kem_id, kdf_id, aead_id = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
         return HPKE(kem_id, kdf_id, aead_id)
 
     def kdf_extract(self, salt: bytes, ikm: bytes) -> bytes:
@@ -139,19 +138,13 @@ class DefaultCryptoProvider(CryptoProvider):
 
         If salt is empty, uses a zero-filled key of Hash.length bytes.
         Output length equals the hash digest size (Hash.length).
+        Uses rfc9180 KDF primitive.
         """
-        effective_salt = salt if salt else bytes(self._hash_algo().digest_size)
-        h = hmac.HMAC(effective_salt, self._hash_algo())
-        h.update(ikm)
-        return h.finalize()
+        return self._get_kdf().extract(salt, ikm)
 
     def kdf_expand(self, prk: bytes, info: bytes, length: int) -> bytes:
-        """HKDF-Expand(prk, info, length) per RFC 5869 §2.3."""
-        return HKDFExpand(
-            algorithm=self._hash_algo(),
-            length=length,
-            info=info,
-        ).derive(prk)
+        """HKDF-Expand(prk, info, length) per RFC 5869 §2.3. Uses rfc9180 KDF."""
+        return self._get_kdf().expand(prk, info, length)
 
     def hash(self, data: bytes) -> bytes:
         h = hashes.Hash(self._hash_algo())
@@ -159,12 +152,12 @@ class DefaultCryptoProvider(CryptoProvider):
         return h.finalize()
 
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
-        aead = self._aead_impl()
-        return aead(key).encrypt(nonce, plaintext, aad)
+        """AEAD seal using rfc9180 AEAD primitive."""
+        return self._aead_impl().seal(key, nonce, aad, plaintext)
 
     def aead_decrypt(self, key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> bytes:
-        aead = self._aead_impl()
-        return aead(key).decrypt(nonce, ciphertext, aad)
+        """AEAD open using rfc9180 AEAD primitive."""
+        return self._aead_impl().open(key, nonce, aad, ciphertext)
 
     def hmac_sign(self, key: bytes, data: bytes) -> bytes:
         h = hmac.HMAC(key, self._hash_algo())
@@ -182,7 +175,9 @@ class DefaultCryptoProvider(CryptoProvider):
             sk = Ed25519PrivateKey.from_private_bytes(private_key)
             return sk.sign(data)
         if scheme == SignatureScheme.ED448:
-            sk_448 = Ed448PrivateKey.from_private_bytes(private_key) # FIX 2 (mypy assignment error)
+            sk_448 = Ed448PrivateKey.from_private_bytes(
+                private_key
+            )  # FIX 2 (mypy assignment error)
             return sk_448.sign(data)
         if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
             sk = self._load_ec_private(private_key, ec.SECP256R1())
@@ -203,7 +198,9 @@ class DefaultCryptoProvider(CryptoProvider):
                 pk.verify(signature, data)
                 return
             if scheme == SignatureScheme.ED448:
-                pk_448 = Ed448PublicKey.from_public_bytes(public_key) # FIX 3 (mypy assignment error)
+                pk_448 = Ed448PublicKey.from_public_bytes(
+                    public_key
+                )  # FIX 3 (mypy assignment error)
                 pk_448.verify(signature, data)
                 return
             if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
@@ -231,6 +228,7 @@ class DefaultCryptoProvider(CryptoProvider):
         Uses varint (write_opaque_varint) length prefixes per RFC 9420 §2.1.2.
         """
         from ..codec.tls import write_opaque_varint
+
         return write_opaque_varint(label or b"") + write_opaque_varint(content or b"")
 
     def sign_with_label(self, private_key: bytes, label: bytes, content: bytes) -> bytes:
@@ -238,7 +236,9 @@ class DefaultCryptoProvider(CryptoProvider):
         data = self._encode_sign_content(full, content)
         return self.sign(private_key, data)
 
-    def verify_with_label(self, public_key: bytes, label: bytes, content: bytes, signature: bytes) -> None:
+    def verify_with_label(
+        self, public_key: bytes, label: bytes, content: bytes, signature: bytes
+    ) -> None:
         full = b"MLS 1.0 " + (label or b"")
         data = self._encode_sign_content(full, content)
         self.verify(public_key, data, signature)
@@ -272,7 +272,9 @@ class DefaultCryptoProvider(CryptoProvider):
             )
         raise UnsupportedCipherSuiteError("Unsupported signature scheme")
 
-    def hpke_seal(self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes) -> tuple[bytes, bytes]:
+    def hpke_seal(
+        self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes
+    ) -> tuple[bytes, bytes]:
         return _hpke_seal_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -283,7 +285,9 @@ class DefaultCryptoProvider(CryptoProvider):
             plaintext=ptxt,
         )
 
-    def hpke_open(self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes) -> bytes:
+    def hpke_open(
+        self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes
+    ) -> bytes:
         return _hpke_open_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -295,8 +299,16 @@ class DefaultCryptoProvider(CryptoProvider):
             ciphertext=ctxt,
         )
 
-    def hpke_export_secret(self, private_key: bytes, kem_output: bytes, info: bytes, export_label: bytes, export_length: int) -> bytes:
+    def hpke_export_secret(
+        self,
+        private_key: bytes,
+        kem_output: bytes,
+        info: bytes,
+        export_label: bytes,
+        export_length: int,
+    ) -> bytes:
         from .hpke_backend import hpke_export_secret as _hpke_export_backend
+
         return _hpke_export_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -309,10 +321,17 @@ class DefaultCryptoProvider(CryptoProvider):
         )
 
     def hpke_seal_and_export(
-        self, public_key: bytes, info: bytes, aad: bytes, ptxt: bytes, export_label: bytes, export_length: int
+        self,
+        public_key: bytes,
+        info: bytes,
+        aad: bytes,
+        ptxt: bytes,
+        export_label: bytes,
+        export_length: int,
     ) -> tuple[bytes, bytes, bytes]:
         """HPKE seal and export from sender context (RFC 9420 §8.3 external joiner init_secret)."""
         from .hpke_backend import hpke_seal_and_export as _hpke_seal_export_backend
+
         return _hpke_seal_export_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -338,30 +357,40 @@ class DefaultCryptoProvider(CryptoProvider):
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
     def kem_pk_size(self) -> int:
-        """Return the public key size for the active KEM using rfc9180-py params."""
+        """Return the public key size for the active KEM using rfc9180 params."""
         kem_id, _, _ = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
         params = KEM_PARAMS.get(kem_id)
-        if params and 'Npk' in params:
-            return params['Npk']
+        if params and "Npk" in params:
+            return params["Npk"]
         raise UnsupportedCipherSuiteError("Unknown KEM parameters")
 
     def aead_key_size(self) -> int:
-        if self._suite.aead == AEAD.AES_128_GCM:
-            return 16
-        if self._suite.aead in (AEAD.AES_256_GCM, AEAD.CHACHA20_POLY1305):
-            return 32
+        """Return AEAD key size using rfc9180 AEAD_PARAMS."""
+        params = AEAD_PARAMS.get(self._suite.aead)
+        if params and "Nk" in params:
+            return params["Nk"]
         raise UnsupportedCipherSuiteError("Unsupported AEAD")
 
     def aead_nonce_size(self) -> int:
+        """Return AEAD nonce size using rfc9180 AEAD_PARAMS."""
+        params = AEAD_PARAMS.get(self._suite.aead)
+        if params and "Nn" in params:
+            return params["Nn"]
         return 12
 
     def kdf_hash_len(self) -> int:
-        return self._hash_algo().digest_size
+        """Return hash output length using rfc9180 KDF (Nh)."""
+        return self._get_kdf().Nh
 
     def expand_with_label(self, secret: bytes, label: bytes, context: bytes, length: int) -> bytes:
         full_label = b"MLS 1.0 " + (label or b"")
         from ..codec.tls import write_opaque_varint
-        info = _write_uint16(length) + write_opaque_varint(full_label) + write_opaque_varint(context or b"")
+
+        info = (
+            _write_uint16(length)
+            + write_opaque_varint(full_label)
+            + write_opaque_varint(context or b"")
+        )
         return self.kdf_expand(secret, info, length)
 
     def derive_secret(self, secret: bytes, label: bytes) -> bytes:

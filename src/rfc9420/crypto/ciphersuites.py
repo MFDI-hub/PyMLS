@@ -1,9 +1,8 @@
 """MLS ciphersuite registry and helpers (RFC 9420 §16.3).
 
 This module provides the ciphersuite registry for MLS, including definitions
-for all RFC 9420 §16.3 ciphersuites. It includes enums for KEM, KDF, AEAD,
-and signature schemes, as well as lookup functions for ciphersuites by ID
-or name.
+for all RFC 9420 §16.3 ciphersuites. KEM, KDF, and AEAD identifiers are
+provided by rfc9180 (RFC 9180 HPKE) and re-exported here for MLS use.
 """
 from __future__ import annotations
 
@@ -11,37 +10,13 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import Dict, Iterable, List, Optional, Tuple
 
+# RFC 9420 §16.3 uses the same IANA values as RFC 9180 for KEM, KDF, AEAD.
+# Re-export from rfc9180 as the single source of truth.
+from rfc9180.constants import AEADID, KDFID, KEMID
 
-class KEM(IntEnum):
-    """Key Encapsulation Mechanisms used by MLS ciphersuites (RFC 9420 §16.3).
-
-    Enumeration of KEM algorithms supported by MLS ciphersuites.
-    """
-    DHKEM_P256_HKDF_SHA256 = 0x0010
-    DHKEM_P384_HKDF_SHA384 = 0x0011
-    DHKEM_P521_HKDF_SHA512 = 0x0012
-    DHKEM_X25519_HKDF_SHA256 = 0x0020
-    DHKEM_X448_HKDF_SHA512 = 0x0021
-
-
-class KDF(IntEnum):
-    """Key Derivation Functions used by MLS ciphersuites (RFC 9420 §16.3).
-
-    Enumeration of KDF algorithms (all use HKDF with various hash functions).
-    """
-    HKDF_SHA256 = 0x0001
-    HKDF_SHA384 = 0x0002
-    HKDF_SHA512 = 0x0003
-
-
-class AEAD(IntEnum):
-    """AEAD algorithms used by MLS ciphersuites (RFC 9420 §16.3).
-
-    Enumeration of authenticated encryption algorithms supported by MLS.
-    """
-    AES_128_GCM = 0x0001
-    AES_256_GCM = 0x0002
-    CHACHA20_POLY1305 = 0x0003
+KEM = KEMID
+KDF = KDFID
+AEAD = AEADID
 
 
 class SignatureScheme(Enum):
@@ -55,6 +30,18 @@ class SignatureScheme(Enum):
     ECDSA_SECP256R1_SHA256 = "ECDSA_SECP256R1_SHA256"
     ECDSA_SECP384R1_SHA384 = "ECDSA_SECP384R1_SHA384"
     ECDSA_SECP521R1_SHA512 = "ECDSA_SECP521R1_SHA512"
+
+
+class CipherSuiteId(IntEnum):
+    """RFC 9420 §16.3 MLS ciphersuite identifiers (IANA registry)."""
+
+    MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 = 0x0001
+    MLS_128_DHKEMP256_AES128GCM_SHA256_P256 = 0x0002
+    MLS_128_DHKEMX25519_CHACHAPOLY_SHA256_Ed25519 = 0x0003
+    MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448 = 0x0004
+    MLS_256_DHKEMP521_AES256GCM_SHA512_P521 = 0x0005
+    MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448 = 0x0006
+    MLS_256_DHKEMP384_AES256GCM_SHA384_P384 = 0x0007
 
 
 @dataclass(frozen=True)
@@ -103,56 +90,56 @@ class MlsCiphersuite:
 # RFC 9420 §16.3 ciphersuite registry
 # Note: IDs and names follow the RFC. This list is intentionally explicit.
 _REGISTRY_BY_ID: Dict[int, MlsCiphersuite] = {
-    0x0001: MlsCiphersuite(
-        suite_id=0x0001,
+    int(CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519),
         name="MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
         kem=KEM.DHKEM_X25519_HKDF_SHA256,
         kdf=KDF.HKDF_SHA256,
         aead=AEAD.AES_128_GCM,
         signature=SignatureScheme.ED25519,
     ),
-    0x0002: MlsCiphersuite(
-        suite_id=0x0002,
+    int(CipherSuiteId.MLS_128_DHKEMP256_AES128GCM_SHA256_P256): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_128_DHKEMP256_AES128GCM_SHA256_P256),
         name="MLS_128_DHKEMP256_AES128GCM_SHA256_P256",
         kem=KEM.DHKEM_P256_HKDF_SHA256,
         kdf=KDF.HKDF_SHA256,
         aead=AEAD.AES_128_GCM,
         signature=SignatureScheme.ECDSA_SECP256R1_SHA256,
     ),
-    0x0003: MlsCiphersuite(
-        suite_id=0x0003,
+    int(CipherSuiteId.MLS_128_DHKEMX25519_CHACHAPOLY_SHA256_Ed25519): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_128_DHKEMX25519_CHACHAPOLY_SHA256_Ed25519),
         name="MLS_128_DHKEMX25519_CHACHAPOLY_SHA256_Ed25519",
         kem=KEM.DHKEM_X25519_HKDF_SHA256,
         kdf=KDF.HKDF_SHA256,
         aead=AEAD.CHACHA20_POLY1305,
         signature=SignatureScheme.ED25519,
     ),
-    0x0004: MlsCiphersuite(
-        suite_id=0x0004,
+    int(CipherSuiteId.MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448),
         name="MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448",
         kem=KEM.DHKEM_X448_HKDF_SHA512,
         kdf=KDF.HKDF_SHA512,
         aead=AEAD.AES_256_GCM,
         signature=SignatureScheme.ED448,
     ),
-    0x0005: MlsCiphersuite(
-        suite_id=0x0005,
+    int(CipherSuiteId.MLS_256_DHKEMP521_AES256GCM_SHA512_P521): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_256_DHKEMP521_AES256GCM_SHA512_P521),
         name="MLS_256_DHKEMP521_AES256GCM_SHA512_P521",
         kem=KEM.DHKEM_P521_HKDF_SHA512,
         kdf=KDF.HKDF_SHA512,
         aead=AEAD.AES_256_GCM,
         signature=SignatureScheme.ECDSA_SECP521R1_SHA512,
     ),
-    0x0006: MlsCiphersuite(
-        suite_id=0x0006,
+    int(CipherSuiteId.MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448),
         name="MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448",
         kem=KEM.DHKEM_X448_HKDF_SHA512,
         kdf=KDF.HKDF_SHA512,
         aead=AEAD.CHACHA20_POLY1305,
         signature=SignatureScheme.ED448,
     ),
-    0x0007: MlsCiphersuite(
-        suite_id=0x0007,
+    int(CipherSuiteId.MLS_256_DHKEMP384_AES256GCM_SHA384_P384): MlsCiphersuite(
+        suite_id=int(CipherSuiteId.MLS_256_DHKEMP384_AES256GCM_SHA384_P384),
         name="MLS_256_DHKEMP384_AES256GCM_SHA384_P384",
         kem=KEM.DHKEM_P384_HKDF_SHA384,
         kdf=KDF.HKDF_SHA384,

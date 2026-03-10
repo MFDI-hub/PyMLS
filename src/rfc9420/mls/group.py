@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, Iterable
 
 from ..protocol.mls_group import MLSGroup as _ProtocolMLSGroup
 from ..protocol.ratchet_tree_backend import DEFAULT_TREE_BACKEND
@@ -362,7 +362,7 @@ class Group:
         """Number of members (leaves) in the group."""
         return self._inner.get_member_count()
 
-    def iter_members(self):
+    def iter_members(self) -> Iterable[tuple[int, bytes]]:
         """Iterate over (leaf_index, identity) for each member. Identity is credential.identity or b''."""
         return iter(self._inner.get_member_identities())
 

@@ -289,11 +289,12 @@ def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, 
 
 if __name__ == "__main__":
     import argparse
+    from ..crypto.ciphersuites import CipherSuiteId
     from ..crypto.default_crypto_provider import DefaultCryptoProvider
 
     parser = argparse.ArgumentParser(description="Run MLS RFC 9420 test vectors")
     parser.add_argument("dir", help="Directory with JSON test vectors")
-    parser.add_argument("--suite", type=lambda x: int(x, 0), default=0x0001, help="MLS ciphersuite id (e.g., 0x0001)")
+    parser.add_argument("--suite", type=lambda x: int(x, 0), default=CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519, help="MLS ciphersuite id (e.g., 0x0001)")
     args = parser.parse_args()
 
     crypto = DefaultCryptoProvider(args.suite)

@@ -13,7 +13,7 @@ from typing import Optional, TYPE_CHECKING, Union
 if TYPE_CHECKING:
     from .data_structures import Sender, PreSharedKeyID, Welcome, GroupInfo
     from .key_packages import KeyPackage
-from .data_structures import PreSharedKeyID
+from .data_structures import MLSVersion, PreSharedKeyID
 import os
 
 from ..mls.exceptions import InvalidSignatureError
@@ -283,7 +283,7 @@ class AuthenticatedContentTBS:
         This structure IS signed, and IS used for membership tag computation.
         It includes ProtocolVersion, WireFormat, FramedContent, and optional GroupContext.
         """
-        out = write_uint16(0x0001)  # ProtocolVersion = mls10
+        out = write_uint16(MLSVersion.MLS10)
         out += write_uint16(self.wire_format)
         out += self.framed_content.serialize()
         # For member senders, include GroupContext
@@ -298,7 +298,7 @@ class AuthenticatedContentTBS:
         ProtocolVersion || WireFormat || FramedContent
         Wait, NO GroupContext!
         """
-        out = write_uint16(0x0001)  # ProtocolVersion = mls10
+        out = write_uint16(MLSVersion.MLS10)
         out += write_uint16(self.wire_format)
         out += self.framed_content.serialize()
         return out

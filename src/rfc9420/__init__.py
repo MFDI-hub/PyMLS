@@ -23,7 +23,8 @@ Example:
 from .mls.group import Group, get_commit_sender_leaf_index
 from .crypto.default_crypto_provider import DefaultCryptoProvider
 from .protocol.mls_group import MLSGroup
-from .protocol.data_structures import CipherSuite, Sender, SenderType
+from .protocol.data_structures import CipherSuite, MLSVersion, Sender, SenderType
+from .crypto.ciphersuites import CipherSuiteId
 from .api import MLSGroupSession, MLSAppPolicy, MLSOrchestrator, CommitIngestResult
 from .protocol.ratchet_tree_backend import (
     BACKEND_ARRAY,
@@ -52,6 +53,8 @@ __all__ = [
     "MLSOrchestrator",
     "CommitIngestResult",
     "CipherSuite",
+    "CipherSuiteId",
+    "MLSVersion",
     "Sender",
     "SenderType",
     "BACKEND_ARRAY",
@@ -67,4 +70,4 @@ __all__ = [
     "SameEpochCommitError",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.8.0"

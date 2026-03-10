@@ -44,6 +44,7 @@ from .data_structures import (
     ResumptionPSKUsage,
     SenderType,
 )
+from ..crypto.ciphersuites import CipherSuiteId
 from .key_packages import KeyPackage, LeafNode, LeafNodeSource
 from .messages import (
     MLSPlaintext,
@@ -1023,7 +1024,7 @@ class MLSGroup:
         """Alias for external_commit when acting on behalf of a joiner."""
         return self.external_commit(key_package, signing_key, kem_public_key)
 
-    def reinit_group(self, signing_key: bytes):
+    def reinit_group(self, signing_key: bytes) -> tuple[MLSPlaintext, list[Welcome]]:
         """Initiate re-initialization with a fresh random group_id and create a commit."""
         import os as _os
 
@@ -1286,9 +1287,9 @@ class MLSGroup:
         cs_id = (
             self._crypto_provider.active_ciphersuite.suite_id
             if self._crypto_provider and hasattr(self._crypto_provider, "active_ciphersuite")
-            else 0x0001
+            else CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
         )
-        proposal = ReInitProposal(new_group_id, version=0x0001, cipher_suite=cs_id)
+        proposal = ReInitProposal(new_group_id, version=MLSVersion.MLS10, cipher_suite=cs_id)
         proposal_bytes = proposal.serialize()
         pt = sign_authenticated_content(
             group_id=self._group_id,
@@ -1409,9 +1410,9 @@ class MLSGroup:
         cs_id = (
             self._crypto_provider.active_ciphersuite.suite_id
             if self._crypto_provider and hasattr(self._crypto_provider, "active_ciphersuite")
-            else 0x0001
+            else CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
         )
-        proposal = ReInitProposal(new_group_id, version=0x0001, cipher_suite=cs_id)
+        proposal = ReInitProposal(new_group_id, version=MLSVersion.MLS10, cipher_suite=cs_id)
         pt = sign_authenticated_content(
             group_id=self._group_id,
             epoch=self._group_context.epoch,
@@ -2974,10 +2975,10 @@ class MLSGroup:
         cs_id = (
             self._crypto_provider.active_ciphersuite.suite_id
             if self._crypto_provider and hasattr(self._crypto_provider, "active_ciphersuite")
-            else 0x0001
+            else CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
         )
         self._pending_proposals.append(
-            ReInitProposal(new_group_id, version=0x0001, cipher_suite=cs_id)
+            ReInitProposal(new_group_id, version=MLSVersion.MLS10, cipher_suite=cs_id)
         )
         return self.create_commit(signing_key)
 

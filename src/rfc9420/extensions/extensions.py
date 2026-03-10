@@ -12,6 +12,7 @@ from ..codec.tls import (
     read_uint16,
     read_opaque_varint,
 )
+from ..protocol.data_structures import CredentialType, MLSVersion
 
 
 class ExtensionType(IntEnum):
@@ -253,9 +254,9 @@ def build_capabilities_data(
     } Capabilities;
     """
     from ..codec.tls import write_uint16
-    versions = versions or [0x0001]  # MLS10 by default
+    versions = versions or [MLSVersion.MLS10]
     proposals = proposals or []
-    credentials = credentials or [1]  # Basic credential by default
+    credentials = credentials or [CredentialType.BASIC]
 
     cs_vals = [int(v) for v in ciphersuite_ids]
     ext_vals = [int(v) for v in supported_exts]
