@@ -106,3 +106,43 @@ def make_group(
     member = make_member(b"member-a", crypto)
     group = Group.create(group_id, member.key_package, crypto)
     return group, member, crypto
+
+
+def make_update_leaf_node(
+    member: MemberMaterial,
+    group_id: bytes,
+    leaf_index: int,
+    crypto: DefaultCryptoProvider,
+) -> LeafNode:
+    """Build a LeafNode with source UPDATE for use in an Update proposal.
+
+    Uses the same keys/credential/capabilities as member.key_package.leaf_node
+    but signed for UPDATE with group_id and leaf_index (RFC 9420 §7.2).
+    """
+    leaf = member.key_package.leaf_node
+    unsigned = LeafNode(
+        encryption_key=leaf.encryption_key,
+        signature_key=leaf.signature_key,
+        credential=leaf.credential,
+        capabilities=leaf.capabilities,
+        leaf_node_source=LeafNodeSource.UPDATE,
+        lifetime_not_before=0,
+        lifetime_not_after=0,
+        parent_hash=b"",
+        extensions=leaf.extensions,
+        signature=b"",
+    )
+    tbs = unsigned.tbs_serialize(group_id=group_id, leaf_index=leaf_index)
+    sig = crypto.sign_with_label(member.signing_private_key, b"LeafNodeTBS", tbs)
+    return LeafNode(
+        encryption_key=unsigned.encryption_key,
+        signature_key=unsigned.signature_key,
+        credential=unsigned.credential,
+        capabilities=unsigned.capabilities,
+        leaf_node_source=LeafNodeSource.UPDATE,
+        lifetime_not_before=0,
+        lifetime_not_after=0,
+        parent_hash=b"",
+        extensions=unsigned.extensions,
+        signature=sig,
+    )

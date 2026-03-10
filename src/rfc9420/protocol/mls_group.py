@@ -88,6 +88,7 @@ from .validations import (
 )
 from ..crypto.crypto_provider import CryptoProvider
 from ..mls.exceptions import (
+    CannotDecryptOwnMessageError,
     RFC9420Error,
     CommitValidationError,
     InvalidSignatureError,
@@ -2698,6 +2699,46 @@ class MLSGroup:
         self._commit_pending = False
 
     # --- Advanced flows (MVP implementations) ---
+    def export_group_info(self, signing_key: bytes) -> bytes:
+        """Export current group state as serialized GroupInfo for external join (RFC 9420 §12.4.3.2).
+
+        Callers (e.g. a Delivery Service) can publish this so external parties can join
+        via MLSGroup.from_group_info(..., crypto).external_commit(...).
+
+        Returns:
+            Serialized GroupInfo bytes (group_context, extensions with ratchet_tree and
+            external_pub, confirmation_tag, signer_leaf_index, signature).
+        """
+        if self._key_schedule is None or self._group_context is None:
+            raise RFC9420Error("group not initialized")
+        tree_hash = self._ratchet_tree.calculate_tree_hash()
+        cs_id = self._crypto_provider.active_ciphersuite.suite_id
+        gc = GroupContext(
+            self._group_id,
+            self._group_context.epoch,
+            tree_hash,
+            self._confirmed_transcript_hash,
+            self._group_context.extensions,
+            version=getattr(self._group_context, "version", MLSVersion.MLS10),
+            cipher_suite_id=cs_id,
+        )
+        confirm_tag = self._crypto_provider.hmac_sign(
+            self._key_schedule.confirmation_key, self._confirmed_transcript_hash
+        )
+        rt_bytes = self._ratchet_tree.serialize_full_tree_for_welcome()
+        exts: list[Extension] = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]
+        if self._external_public_key:
+            exts.append(Extension(ExtensionType.EXTERNAL_PUB, self._external_public_key))
+        ext_bytes = serialize_extensions(exts)
+        group_info_tbs = GroupInfo(gc, Signature(b""), ext_bytes, confirm_tag, self._own_leaf_index)
+        gi_sig = self._crypto_provider.sign_with_label(
+            signing_key, b"GroupInfoTBS", group_info_tbs.tbs_serialize()
+        )
+        group_info = GroupInfo(
+            gc, Signature(gi_sig), ext_bytes, confirm_tag, self._own_leaf_index
+        )
+        return group_info.serialize()
+
     def process_external_commit(self, message: MLSPlaintext) -> None:
         """Process a commit authenticated by the group's external signing key.
 
@@ -2756,7 +2797,13 @@ class MLSGroup:
         # RFC ?12.4.3.2: enforce ExternalInit for true external/new-member commit senders.
         sender_type = message.auth_content.tbs.framed_content.sender.sender_type
         committer_index = message.auth_content.tbs.framed_content.sender.sender
-        if committer_index < 0 or committer_index >= max(1, self._ratchet_tree.n_leaves):
+        n_leaves = max(1, self._ratchet_tree.n_leaves)
+        if committer_index < 0:
+            raise CommitValidationError("external commit sender index out of range")
+        if sender_type in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_COMMIT):
+            if committer_index > n_leaves:
+                raise CommitValidationError("external commit sender index out of range")
+        elif committer_index >= n_leaves:
             raise CommitValidationError("external commit sender index out of range")
         ext_init_count = sum(1 for p in resolved if isinstance(p, ExternalInitProposal))
         if (
@@ -3097,6 +3144,10 @@ class MLSGroup:
             secret_tree=self._secret_tree,
             crypto=self._crypto_provider,
         )
+        if sender == self.get_own_leaf_index():
+            raise CannotDecryptOwnMessageError(
+                "cannot decrypt own application message (OpenMLS parity)"
+            )
         if auth.signature:
             from .data_structures import Sender, SenderType
 

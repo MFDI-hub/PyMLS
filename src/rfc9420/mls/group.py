@@ -111,6 +111,7 @@ class Group:
         max_generation_gap: int = 1000,
         aead_limit_bytes: Optional[int] = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
+        key_package: Optional[KeyPackage] = None,
     ) -> "Group":
         """Join an existing group using a Welcome message.
 
@@ -121,6 +122,9 @@ class Group:
             welcome: Welcome message containing encrypted group secrets.
             hpke_private_key: HPKE private key for decrypting EncryptedGroupSecrets.
             crypto: CryptoProvider instance for cryptographic operations.
+            key_package: Optional KeyPackage of the joiner; if provided, used to
+                identify the joiner's leaf index so the group can create proposals
+                and sign application messages correctly.
 
         Returns:
             A new Group instance initialized from the Welcome.
@@ -138,6 +142,7 @@ class Group:
                     max_generation_gap=max_generation_gap,
                     aead_limit_bytes=aead_limit_bytes,
                     tree_backend=tree_backend,
+                    key_package=key_package,
                 )
             )
         except (CommitValidationError, InvalidSignatureError) as e:
@@ -236,11 +241,14 @@ class Group:
 
         Returns:
             Tuple of (commit MLSPlaintext, list of Welcome messages for new members).
+            The creator's state is advanced (epoch, tree, etc.) before returning.
 
         Raises:
             RFC9420Error: If group is not initialized or commit creation fails.
         """
-        return self._inner.create_commit(signing_key, return_per_joiner_welcomes)
+        pending = self._inner.create_commit(signing_key, return_per_joiner_welcomes)
+        self._inner.apply_own_commit(pending)
+        return pending.commit_message, pending.welcomes
 
     def apply_commit(
         self,

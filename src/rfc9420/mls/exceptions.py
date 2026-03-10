@@ -56,3 +56,7 @@ class CredentialValidationError(RFC9420Error):
     """Raised for credential/chain validation failures unrelated to revocation."""
 
 
+class CannotDecryptOwnMessageError(RFC9420Error):
+    """Raised when a member attempts to decrypt their own application message (OpenMLS parity)."""
+
+

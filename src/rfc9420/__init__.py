@@ -33,6 +33,7 @@ from .protocol.ratchet_tree_backend import (
     DEFAULT_TREE_BACKEND,
 )
 from .mls.exceptions import (
+    CannotDecryptOwnMessageError,
     RFC9420Error,
     CommitValidationError,
     InvalidWelcomeError,
@@ -61,6 +62,7 @@ __all__ = [
     "BACKEND_PERFECT",
     "BACKEND_LINKED",
     "DEFAULT_TREE_BACKEND",
+    "CannotDecryptOwnMessageError",
     "RFC9420Error",
     "CommitValidationError",
     "InvalidWelcomeError",
