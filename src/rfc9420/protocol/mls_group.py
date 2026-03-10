@@ -2711,19 +2711,22 @@ class MLSGroup:
         """
         if self._key_schedule is None or self._group_context is None:
             raise RFC9420Error("group not initialized")
+        if self._confirmed_transcript_hash is None:
+            raise RFC9420Error("confirmed transcript hash not set")
+        cth: bytes = self._confirmed_transcript_hash
         tree_hash = self._ratchet_tree.calculate_tree_hash()
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         gc = GroupContext(
             self._group_id,
             self._group_context.epoch,
             tree_hash,
-            self._confirmed_transcript_hash,
+            cth,
             self._group_context.extensions,
             version=getattr(self._group_context, "version", MLSVersion.MLS10),
             cipher_suite_id=cs_id,
         )
         confirm_tag = self._crypto_provider.hmac_sign(
-            self._key_schedule.confirmation_key, self._confirmed_transcript_hash
+            self._key_schedule.confirmation_key, cth
         )
         rt_bytes = self._ratchet_tree.serialize_full_tree_for_welcome()
         exts: list[Extension] = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]

@@ -197,13 +197,14 @@ class SecretTree:
                 secure_wipe(bytearray(leaf_secret))
             except Exception:
                 pass
-            key, nonce = b"", b""
+            key, nonce = bytearray(), bytearray()
             for g in range(generation + 1):
-                key, nonce, secret = self._ratchet_step(secret, g)
+                k, n, secret = self._ratchet_step(secret, g)
+                key, nonce = bytearray(k), bytearray(n)
             key_out, nonce_out = bytes(key), bytes(nonce)
             try:
-                secure_wipe(bytearray(key))
-                secure_wipe(bytearray(nonce))
+                secure_wipe(key)
+                secure_wipe(nonce)
                 secure_wipe(bytearray(secret))
             except Exception:
                 pass
@@ -216,8 +217,9 @@ class SecretTree:
             temp_secret = st.app_recv_secret
             assert temp_secret is not None
             for g in range(st.app_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(bytes(temp_secret), g)
+                k, n, next_temp = self._ratchet_step(bytes(temp_secret), g)
                 st.app_skipped[g] = (bytearray(k), bytearray(n))
+                temp_secret = bytearray(next_temp)
                 # Evict oldest if exceeding window
                 while len(st.app_skipped) > self._window_size:
                     _evicted_g, (evicted_k, evicted_n) = st.app_skipped.popitem(last=False)
@@ -226,23 +228,23 @@ class SecretTree:
                         secure_wipe(evicted_n)
                     except Exception:
                         pass
-            st.app_recv_secret = bytearray(temp_secret)
+            st.app_recv_secret = temp_secret
             st.app_recv_generation = generation
 
         # Derive key/nonce for the requested generation and advance cursor (§9.2: zeroize old secret)
         assert st.app_recv_secret is not None
         old_secret = st.app_recv_secret
-        key, nonce, next_secret = self._ratchet_step(bytes(old_secret), generation)
+        k, n, next_secret = self._ratchet_step(bytes(old_secret), generation)
         try:
             secure_wipe(old_secret)
         except Exception:
             pass
         st.app_recv_secret = bytearray(next_secret)
         st.app_recv_generation = generation + 1
-        key_out, nonce_out = bytes(key), bytes(nonce)
+        key_out, nonce_out = bytes(k), bytes(n)
         try:
-            secure_wipe(bytearray(key))
-            secure_wipe(bytearray(nonce))
+            secure_wipe(bytearray(k))
+            secure_wipe(bytearray(n))
         except Exception:
             pass
         return key_out, nonce_out, generation
@@ -261,17 +263,17 @@ class SecretTree:
             st.hs_generation = 0
 
         gen = st.hs_generation
-        key, nonce, next_secret = self._ratchet_step(bytes(st.hs_secret), gen)
+        k, n, next_secret = self._ratchet_step(bytes(st.hs_secret), gen)
         try:
             secure_wipe(st.hs_secret)
         except Exception:
             pass
         st.hs_secret = bytearray(next_secret)
         st.hs_generation += 1
-        key_out, nonce_out = bytes(key), bytes(nonce)
+        key_out, nonce_out = bytes(k), bytes(n)
         try:
-            secure_wipe(bytearray(key))
-            secure_wipe(bytearray(nonce))
+            secure_wipe(bytearray(k))
+            secure_wipe(bytearray(n))
         except Exception:
             pass
         return key_out, nonce_out, gen
@@ -310,13 +312,14 @@ class SecretTree:
                 secure_wipe(bytearray(leaf_secret))
             except Exception:
                 pass
-            key, nonce = b"", b""
+            key, nonce = bytearray(), bytearray()
             for g in range(generation + 1):
-                key, nonce, secret = self._ratchet_step(secret, g)
+                k, n, secret = self._ratchet_step(secret, g)
+                key, nonce = bytearray(k), bytearray(n)
             key_out, nonce_out = bytes(key), bytes(nonce)
             try:
-                secure_wipe(bytearray(key))
-                secure_wipe(bytearray(nonce))
+                secure_wipe(key)
+                secure_wipe(nonce)
                 secure_wipe(bytearray(secret))
             except Exception:
                 pass
@@ -326,8 +329,9 @@ class SecretTree:
             temp_secret = st.hs_recv_secret
             assert temp_secret is not None
             for g in range(st.hs_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(bytes(temp_secret), g)
+                k, n, next_temp = self._ratchet_step(bytes(temp_secret), g)
                 st.hs_skipped[g] = (bytearray(k), bytearray(n))
+                temp_secret = bytearray(next_temp)
                 while len(st.hs_skipped) > self._window_size:
                     _evicted_g, (evicted_k, evicted_n) = st.hs_skipped.popitem(last=False)
                     try:
@@ -335,22 +339,22 @@ class SecretTree:
                         secure_wipe(evicted_n)
                     except Exception:
                         pass
-            st.hs_recv_secret = bytearray(temp_secret)
+            st.hs_recv_secret = temp_secret
             st.hs_recv_generation = generation
 
         assert st.hs_recv_secret is not None
         old_secret = st.hs_recv_secret
-        key, nonce, next_secret = self._ratchet_step(bytes(old_secret), generation)
+        k, n, next_secret = self._ratchet_step(bytes(old_secret), generation)
         try:
             secure_wipe(old_secret)
         except Exception:
             pass
         st.hs_recv_secret = bytearray(next_secret)
         st.hs_recv_generation = generation + 1
-        key_out, nonce_out = bytes(key), bytes(nonce)
+        key_out, nonce_out = bytes(k), bytes(n)
         try:
-            secure_wipe(bytearray(key))
-            secure_wipe(bytearray(nonce))
+            secure_wipe(bytearray(k))
+            secure_wipe(bytearray(n))
         except Exception:
             pass
         return key_out, nonce_out, generation

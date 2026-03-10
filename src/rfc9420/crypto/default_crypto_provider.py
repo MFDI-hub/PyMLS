@@ -16,11 +16,12 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
     Ed448PrivateKey,
     Ed448PublicKey,
 )
-from cryptography.exceptions import InvalidSignature, InvalidTag
+from cryptography.exceptions import InvalidSignature
 
 from rfc9180 import HPKE
 from rfc9180.constants import AEAD_PARAMS, KEM_PARAMS
-from rfc9180.exceptions import OpenError as HPKEOpenError
+
+# from rfc9180.exceptions import OpenError as HPKEOpenError
 from rfc9180.primitives.aead import AEADBase
 from rfc9180.primitives.kdf import KDFBase
 

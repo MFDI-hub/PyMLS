@@ -110,7 +110,7 @@ class PSKLabel:
 def derive_psk_secret(
     crypto: "CryptoProvider",
     psk_ids: list[PreSharedKeyID],
-    psk_values: Optional[list[bytes]] = None,
+    psk_values: Optional[list[Optional[bytes]]] = None,
 ) -> bytes:
     """Derive the PSK secret per RFC 9420 §8.4.
 
@@ -131,13 +131,11 @@ def derive_psk_secret(
 
     for i in range(n):
         # Get or derive the PSK value (psk_[i] in the RFC)
-        if (
-            psk_values is not None
-            and i < len(psk_values)
-            and psk_values[i] is not None
-            and len(psk_values[i]) > 0
-        ):
-            psk_val = psk_values[i]
+        psk_i: Optional[bytes] = (
+            psk_values[i] if (psk_values is not None and i < len(psk_values)) else None
+        )
+        if psk_i is not None and len(psk_i) > 0:
+            psk_val: bytes = psk_i
         else:
             # MVP fallback: derive a synthetic PSK from the ID serialization
             # This is NOT secure for production without real PSK storage
