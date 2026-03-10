@@ -244,8 +244,12 @@ class SignContent:
     """Domain-separated signing structure (RFC 9420 §5.1.2).
 
     Serialized as: opaque label<V> || opaque content<V>
-    Uses TLS-style variable-length encoding (4-byte prefix for opaque<V>).
-    The label should already include the "MLS 1.0 " prefix when constructed.
+    Uses varint length prefixes per RFC 9420 §2.1.2.
+
+    When using the crypto provider's sign_with_label/verify_with_label, pass
+    only the label suffix (e.g. b"FramedContentTBS"); the provider prepends
+    "MLS 1.0 " internally. If constructing SignContent manually, label must
+    be the full string including "MLS 1.0 " + Label.
     """
 
     label: bytes
@@ -362,9 +366,7 @@ class UpdateProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "UpdateProposal":
-        """Construct from raw LeafNode bytes. Accepts raw content or full encoding (2-byte type + content)."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.UPDATE:
-            data = data[2:]
+        """Construct from raw LeafNode bytes (type prefix already stripped by Proposal.deserialize)."""
         return cls(data)
 
 
@@ -385,9 +387,7 @@ class RemoveProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "RemoveProposal":
-        """Parse removed leaf index from uint32. Accepts raw content or full encoding (2-byte type + content)."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.REMOVE:
-            data = data[2:]
+        """Parse removed leaf index from uint32 (type prefix already stripped by Proposal.deserialize)."""
         if len(data) < 4:
             raise RFC9420Error("RemoveProposal too short for uint32 removed")
         (removed,) = struct.unpack("!I", data[:4])
@@ -499,10 +499,8 @@ class PreSharedKeyProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "PreSharedKeyProposal":
-        """Parse PreSharedKeyID. Accepts raw content or full encoding (2-byte type + content)."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.PRE_SHARED_KEY:
-            data = data[2:]
-        psk, _ = PreSharedKeyID.deserialize(data)  # returns (obj, remaining)
+        """Parse PreSharedKeyID (type prefix already stripped by Proposal.deserialize)."""
+        psk, _ = PreSharedKeyID.deserialize(data)
         return cls(psk)
 
 
@@ -538,9 +536,7 @@ class ReInitProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "ReInitProposal":
-        """Parse ReInit from len-delimited bytes. Accepts raw content or full encoding."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.REINIT:
-            data = data[2:]
+        """Parse ReInit from len-delimited bytes (type prefix already stripped by Proposal.deserialize)."""
         gid, rest = deserialize_bytes(data)
         if len(rest) >= 4:
             version, cs_id = struct.unpack("!HH", rest[:4])
@@ -576,9 +572,7 @@ class ExternalInitProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "ExternalInitProposal":
-        """Parse kem_output from len-delimited bytes. Accepts raw content or full encoding (2-byte type + content)."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.EXTERNAL_INIT:
-            data = data[2:]
+        """Parse kem_output from len-delimited bytes (type prefix already stripped by Proposal.deserialize)."""
         output, _ = deserialize_bytes(data)
         return cls(output)
 
@@ -600,9 +594,7 @@ class GroupContextExtensionsProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupContextExtensionsProposal":
-        """Parse extensions from len-delimited bytes. Accepts raw content or full encoding (2-byte type + content)."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.GROUP_CONTEXT_EXTENSIONS:
-            data = data[2:]
+        """Parse extensions from len-delimited bytes (type prefix already stripped by Proposal.deserialize)."""
         ext, _ = deserialize_bytes(data)
         return cls(ext)
 
@@ -624,9 +616,7 @@ class AppAckProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "AppAckProposal":
-        """Parse authenticated_data from len-delimited bytes. Accepts raw content or full encoding (2-byte type + content)."""
-        if len(data) >= 2 and struct.unpack("!H", data[:2])[0] == ProposalType.APP_ACK:
-            data = data[2:]
+        """Parse authenticated_data from len-delimited bytes (type prefix already stripped by Proposal.deserialize)."""
         authenticated_data, _ = deserialize_bytes(data)
         return cls(authenticated_data)
 
@@ -901,13 +891,13 @@ class Welcome:
     encrypted_group_info: bytes
 
     def serialize(self) -> bytes:
-        """Encode version (uint16), cipher suite (uint16), secrets, and encrypted GroupInfo."""
+        """Encode version (uint16), cipher suite (uint16), secrets<V>, and encrypted GroupInfo (RFC 9420 §12.4.3.1)."""
         data = struct.pack("!H", int(self.version))  # uint16 ProtocolVersion
         data += self.cipher_suite.serialize()  # uint16 suite_id
 
-        data += struct.pack("!H", len(self.secrets))
-        for secret in self.secrets:
-            data += serialize_bytes(secret.serialize())
+        # EncryptedGroupSecrets secrets<V>: varint-length vector of opaque-encoded entries
+        secrets_payload = b"".join(serialize_bytes(secret.serialize()) for secret in self.secrets)
+        data += write_varint(len(secrets_payload)) + secrets_payload
 
         data += serialize_bytes(self.encrypted_group_info)
         return data
@@ -921,11 +911,16 @@ class Welcome:
         cipher_suite = CipherSuite.deserialize(data[2:4])
         rest = data[4:]
 
-        (num_secrets,) = struct.unpack("!H", rest[:2])
-        rest = rest[2:]
+        # secrets<V>: varint length then that many bytes of EncryptedGroupSecrets entries (each opaque<V>)
+        secrets_len, off = read_varint(rest, 0)
+        rest = rest[off:]
+        if len(rest) < secrets_len:
+            raise RFC9420Error("Welcome secrets vector shorter than declared length")
+        secrets_data = rest[:secrets_len]
+        rest = rest[secrets_len:]
         secrets: list[EncryptedGroupSecrets] = []
-        for _ in range(num_secrets):
-            sbytes, rest = deserialize_bytes(rest)
+        while secrets_data:
+            sbytes, secrets_data = deserialize_bytes(secrets_data)
             secrets.append(EncryptedGroupSecrets.deserialize(sbytes))
 
         encrypted_group_info, _ = deserialize_bytes(rest)
@@ -1012,24 +1007,27 @@ class GroupInfo:
         return out
 
     def serialize(self) -> bytes:
-        """Encode len-delimited fields for forward compatibility."""
-        # Serialize as length-delimited fields for forward compatibility
-        out = serialize_bytes(self.group_context.serialize())
-        out += serialize_bytes(self.signature.serialize())
+        """Encode per RFC 9420 §12.4.3.1 wire format:
+        GroupContext || extensions<V> || confirmation_tag<V> || uint32 signer || signature<V>
+        """
+        out = self.group_context.serialize()
         out += serialize_bytes(self.extensions)
         out += serialize_bytes(self.confirmation_tag)
         out += struct.pack("!I", self.signer_leaf_index)
+        out += serialize_bytes(self.signature.serialize())
         return out
 
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupInfo":
-        """Parse GroupInfo from bytes produced by serialize()."""
-        gc_bytes, rest = deserialize_bytes(data)
-        sig_bytes, rest = deserialize_bytes(rest)
+        """Parse GroupInfo per RFC 9420 §12.4.3.1 wire format."""
+        group_context = GroupContext.deserialize(data)
+        gc_len = len(group_context.serialize())
+        rest = data[gc_len:]
         ext_bytes, rest = deserialize_bytes(rest) if rest else (b"", b"")
         tag, rest = deserialize_bytes(rest) if rest else (b"", b"")
         signer = struct.unpack("!I", rest[:4])[0] if rest and len(rest) >= 4 else 0
-        group_context = GroupContext.deserialize(gc_bytes)
+        rest = rest[4:]
+        sig_bytes, rest = deserialize_bytes(rest) if rest else (b"", b"")
         signature = Signature.deserialize(sig_bytes)
         return cls(group_context, signature, ext_bytes, tag, signer)
 
@@ -1117,9 +1115,3 @@ class GroupSecrets:
                     psks.append(psk_id_obj)
 
         return cls(js, None, path_secret, psks)
-
-
-# Helper for vector serialization
-def serialize_vector(data: bytes) -> bytes:
-    """Standard MLS opaque<V>: 4-byte big-endian length prefix."""
-    return struct.pack("!I", len(data)) + data

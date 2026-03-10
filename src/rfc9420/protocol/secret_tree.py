@@ -9,7 +9,7 @@ sending via next_* helpers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 from collections import OrderedDict
 
 from ..crypto.crypto_provider import CryptoProvider
@@ -19,18 +19,21 @@ from . import tree_math
 
 @dataclass
 class _LeafState:
-    """Mutable per-leaf state for tracking send generations and ratchet secrets."""
+    """Mutable per-leaf state for tracking send generations and ratchet secrets.
+
+    Secrets are stored as bytearray so they can be zeroized in place (RFC 9420 §9.2).
+    """
     app_generation: int = 0
     hs_generation: int = 0
-    app_secret: Optional[bytes] = None
-    hs_secret: Optional[bytes] = None
+    app_secret: Optional[bytearray] = None
+    hs_secret: Optional[bytearray] = None
     # Receive-side state (windowed skipped-keys cache)
     app_recv_generation: int = 0
-    app_recv_secret: Optional[bytes] = None
-    app_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = field(default_factory=OrderedDict)
+    app_recv_secret: Optional[bytearray] = None
+    app_skipped: "OrderedDict[int, Tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
     hs_recv_generation: int = 0
-    hs_recv_secret: Optional[bytes] = None
-    hs_skipped: "OrderedDict[int, Tuple[bytes, bytes]]" = field(default_factory=OrderedDict)
+    hs_recv_secret: Optional[bytearray] = None
+    hs_skipped: "OrderedDict[int, Tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
 
 
 class SecretTree:
@@ -59,7 +62,7 @@ class SecretTree:
         max_generation_gap: int = 1000,
         aead_limit_bytes: Optional[int] = None,
     ):
-        self._root_secret = encryption_secret
+        self._root_secret = bytearray(encryption_secret)
         self._crypto = crypto
         self._n_leaves = max(1, int(n_leaves))
         self._window_size = max(0, int(window_size))
@@ -73,18 +76,19 @@ class SecretTree:
             self._leaves[leaf] = _LeafState()
         return self._leaves[leaf]
 
-    def _derive_leaf_secret(self, root_secret: bytes, leaf: int) -> bytes:
+    def _derive_leaf_secret(self, root_secret: Union[bytes, bytearray], leaf: int) -> bytes:
         """
         Walk the array-based tree from root to the target leaf (RFC 9420 Appendix C),
         deriving left/right child secrets from the parent at each step using
-        labeled KDF expansion per §9 (tree derivation).
+        labeled KDF expansion per §9 (tree derivation). Unused branch secrets
+        are zeroized per §9.2.
         """
         n = self._n_leaves
         if leaf < 0 or leaf >= n:
             raise ValueError("leaf index out of range for current tree")
         node = tree_math.root(n)
         target = leaf * 2  # leaves are at even indices
-        secret = root_secret
+        secret = bytes(root_secret)
         hash_len = self._crypto.kdf_hash_len()
         while node != target:
             # Derive children from parent
@@ -94,9 +98,17 @@ class SecretTree:
             left_node = tree_math.left(node)
             right_node = tree_math.right(node, n)
             if target < node:
+                try:
+                    secure_wipe(bytearray(right_secret))
+                except Exception:
+                    pass
                 secret = left_secret
                 node = left_node
             else:
+                try:
+                    secure_wipe(bytearray(left_secret))
+                except Exception:
+                    pass
                 secret = right_secret
                 node = right_node
         return secret
@@ -123,7 +135,7 @@ class SecretTree:
         # Initialize branch ratchet secret lazily from the leaf secret
         if st.app_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            st.app_secret = self._crypto.derive_secret(leaf_secret, b"application")
+            st.app_secret = bytearray(self._crypto.derive_secret(leaf_secret, b"application"))
             try:
                 secure_wipe(bytearray(leaf_secret))
             except Exception:
@@ -132,12 +144,12 @@ class SecretTree:
 
         gen = st.app_generation
         # Derive step and advance (delete current secret per §9.2)
-        key, nonce, next_secret = self._ratchet_step(st.app_secret, gen)
+        key, nonce, next_secret = self._ratchet_step(bytes(st.app_secret), gen)
         try:
-            secure_wipe(bytearray(st.app_secret))
+            secure_wipe(st.app_secret)
         except Exception:
             pass
-        st.app_secret = next_secret
+        st.app_secret = bytearray(next_secret)
         st.app_generation += 1
         # Return copies and zeroize originals per §9.2
         key_out, nonce_out = bytes(key), bytes(nonce)
@@ -150,11 +162,13 @@ class SecretTree:
 
     def application_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
         """Return (key, nonce, generation) for a specific application generation (receive path). RFC 9420 §9.2: zeroize after use."""
+        if generation < 0:
+            raise ValueError("generation must be non-negative")
         st = self._get_leaf_state(leaf)
         # Initialize receive-side branch if needed
         if st.app_recv_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            st.app_recv_secret = self._crypto.derive_secret(leaf_secret, b"application")
+            st.app_recv_secret = bytearray(self._crypto.derive_secret(leaf_secret, b"application"))
             try:
                 secure_wipe(bytearray(leaf_secret))
             except Exception:
@@ -171,8 +185,8 @@ class SecretTree:
                 key, nonce = st.app_skipped.pop(generation)
                 key_out, nonce_out = bytes(key), bytes(nonce)
                 try:
-                    secure_wipe(bytearray(key))
-                    secure_wipe(bytearray(nonce))
+                    secure_wipe(key)
+                    secure_wipe(nonce)
                 except Exception:
                     pass
                 return key_out, nonce_out, generation
@@ -202,23 +216,28 @@ class SecretTree:
             temp_secret = st.app_recv_secret
             assert temp_secret is not None
             for g in range(st.app_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(temp_secret, g)
-                st.app_skipped[g] = (k, n)
+                k, n, temp_secret = self._ratchet_step(bytes(temp_secret), g)
+                st.app_skipped[g] = (bytearray(k), bytearray(n))
                 # Evict oldest if exceeding window
                 while len(st.app_skipped) > self._window_size:
-                    st.app_skipped.popitem(last=False)
-            st.app_recv_secret = temp_secret
+                    _evicted_g, (evicted_k, evicted_n) = st.app_skipped.popitem(last=False)
+                    try:
+                        secure_wipe(evicted_k)
+                        secure_wipe(evicted_n)
+                    except Exception:
+                        pass
+            st.app_recv_secret = bytearray(temp_secret)
             st.app_recv_generation = generation
 
         # Derive key/nonce for the requested generation and advance cursor (§9.2: zeroize old secret)
         assert st.app_recv_secret is not None
         old_secret = st.app_recv_secret
-        key, nonce, next_secret = self._ratchet_step(old_secret, generation)
+        key, nonce, next_secret = self._ratchet_step(bytes(old_secret), generation)
         try:
-            secure_wipe(bytearray(old_secret))
+            secure_wipe(old_secret)
         except Exception:
             pass
-        st.app_recv_secret = next_secret
+        st.app_recv_secret = bytearray(next_secret)
         st.app_recv_generation = generation + 1
         key_out, nonce_out = bytes(key), bytes(nonce)
         try:
@@ -234,7 +253,7 @@ class SecretTree:
         st = self._get_leaf_state(leaf)
         if st.hs_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            st.hs_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
+            st.hs_secret = bytearray(self._crypto.derive_secret(leaf_secret, b"handshake"))
             try:
                 secure_wipe(bytearray(leaf_secret))
             except Exception:
@@ -242,12 +261,12 @@ class SecretTree:
             st.hs_generation = 0
 
         gen = st.hs_generation
-        key, nonce, next_secret = self._ratchet_step(st.hs_secret, gen)
+        key, nonce, next_secret = self._ratchet_step(bytes(st.hs_secret), gen)
         try:
-            secure_wipe(bytearray(st.hs_secret))
+            secure_wipe(st.hs_secret)
         except Exception:
             pass
-        st.hs_secret = next_secret
+        st.hs_secret = bytearray(next_secret)
         st.hs_generation += 1
         key_out, nonce_out = bytes(key), bytes(nonce)
         try:
@@ -259,11 +278,13 @@ class SecretTree:
 
     def handshake_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
         """Return (key, nonce, generation) for a specific handshake generation (receive path). RFC 9420 §9.2: zeroize after use."""
+        if generation < 0:
+            raise ValueError("generation must be non-negative")
         st = self._get_leaf_state(leaf)
         # Initialize receive-side branch if needed
         if st.hs_recv_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            st.hs_recv_secret = self._crypto.derive_secret(leaf_secret, b"handshake")
+            st.hs_recv_secret = bytearray(self._crypto.derive_secret(leaf_secret, b"handshake"))
             try:
                 secure_wipe(bytearray(leaf_secret))
             except Exception:
@@ -277,8 +298,8 @@ class SecretTree:
                 key, nonce = st.hs_skipped.pop(generation)
                 key_out, nonce_out = bytes(key), bytes(nonce)
                 try:
-                    secure_wipe(bytearray(key))
-                    secure_wipe(bytearray(nonce))
+                    secure_wipe(key)
+                    secure_wipe(nonce)
                 except Exception:
                     pass
                 return key_out, nonce_out, generation
@@ -305,21 +326,26 @@ class SecretTree:
             temp_secret = st.hs_recv_secret
             assert temp_secret is not None
             for g in range(st.hs_recv_generation, generation):
-                k, n, temp_secret = self._ratchet_step(temp_secret, g)
-                st.hs_skipped[g] = (k, n)
+                k, n, temp_secret = self._ratchet_step(bytes(temp_secret), g)
+                st.hs_skipped[g] = (bytearray(k), bytearray(n))
                 while len(st.hs_skipped) > self._window_size:
-                    st.hs_skipped.popitem(last=False)
-            st.hs_recv_secret = temp_secret
+                    _evicted_g, (evicted_k, evicted_n) = st.hs_skipped.popitem(last=False)
+                    try:
+                        secure_wipe(evicted_k)
+                        secure_wipe(evicted_n)
+                    except Exception:
+                        pass
+            st.hs_recv_secret = bytearray(temp_secret)
             st.hs_recv_generation = generation
 
         assert st.hs_recv_secret is not None
         old_secret = st.hs_recv_secret
-        key, nonce, next_secret = self._ratchet_step(old_secret, generation)
+        key, nonce, next_secret = self._ratchet_step(bytes(old_secret), generation)
         try:
-            secure_wipe(bytearray(old_secret))
+            secure_wipe(old_secret)
         except Exception:
             pass
-        st.hs_recv_secret = next_secret
+        st.hs_recv_secret = bytearray(next_secret)
         st.hs_recv_generation = generation + 1
         key_out, nonce_out = bytes(key), bytes(nonce)
         try:
@@ -352,35 +378,36 @@ class SecretTree:
         try:
             from ..crypto.utils import secure_wipe
             val = getattr(self, "_root_secret", None)
-            if isinstance(val, (bytes, bytearray)) and val:
-                ba = bytearray(val)
-                secure_wipe(ba)
+            if isinstance(val, bytearray) and val:
+                secure_wipe(val)
+            elif isinstance(val, bytes) and val:
+                secure_wipe(bytearray(val))
             # Wipe per-leaf secrets and cached keys
             for st in self._leaves.values():
                 for name in ("app_secret", "hs_secret", "app_recv_secret", "hs_recv_secret"):
                     sval = getattr(st, name, None)
-                    if isinstance(sval, (bytes, bytearray)) and sval:
+                    if isinstance(sval, bytearray) and sval:
                         try:
-                            ba = bytearray(sval)
-                            secure_wipe(ba)
+                            secure_wipe(sval)
                         except Exception:
                             pass
-                # Best-effort wipe cached keys/nonces
+                    elif isinstance(sval, bytes) and sval:
+                        try:
+                            secure_wipe(bytearray(sval))
+                        except Exception:
+                            pass
+                # Best-effort wipe cached keys/nonces (stored as bytearray)
                 try:
                     for _g, (k, n) in list(st.app_skipped.items()):
-                        if isinstance(k, (bytes, bytearray)):
-                            ba = bytearray(k)
-                            secure_wipe(ba)
-                        if isinstance(n, (bytes, bytearray)):
-                            ba = bytearray(n)
-                            secure_wipe(ba)
+                        if isinstance(k, bytearray):
+                            secure_wipe(k)
+                        if isinstance(n, bytearray):
+                            secure_wipe(n)
                     for _g, (k, n) in list(st.hs_skipped.items()):
-                        if isinstance(k, (bytes, bytearray)):
-                            ba = bytearray(k)
-                            secure_wipe(ba)
-                        if isinstance(n, (bytes, bytearray)):
-                            ba = bytearray(n)
-                            secure_wipe(ba)
+                        if isinstance(k, bytearray):
+                            secure_wipe(k)
+                        if isinstance(n, bytearray):
+                            secure_wipe(n)
                 except Exception:
                     pass
         except Exception:

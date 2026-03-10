@@ -15,8 +15,6 @@ def generate_key_schedule_vector() -> Dict[str, Any]:
     ks = KeySchedule(b"init", b"commit", gc, None, crypto)
     return {
         "epoch_secret": ks.epoch_secret.hex(),
-        "handshake_secret": ks.handshake_secret.hex(),
-        "application_secret": ks.application_secret.hex(),
         "exporter_secret": ks.exporter_secret.hex(),
         "confirmation_key": ks.confirmation_key.hex(),
         "membership_key": ks.membership_key.hex(),

@@ -419,6 +419,8 @@ def validate_tree_leaf_key_uniqueness(ratchet_tree: Any) -> None:
                     f"duplicate encryption_key detected at leaves {seen_enc[enc]} and {idx}"
                 )
             seen_enc[enc] = idx
+        if sig == enc:
+            raise CommitValidationError("RFC 9420 §16.7: signature_key and encryption_key MUST be distinct from one another.")
 
 
 def validate_credential_identity_uniqueness(ratchet_tree: Any) -> None:

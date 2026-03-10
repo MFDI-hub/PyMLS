@@ -41,13 +41,13 @@ class KeySchedule:
         # Step 2: joiner_secret (pre-PSK) — sent in Welcome; receiver blends PSK in from_joiner_secret
         joiner_secret_pre = self._crypto_provider.expand_with_label(pre_joiner, b"joiner", gc_bytes, hash_len)
         self._joiner_secret = joiner_secret_pre
-        # Step 3: PSK blending only for epoch_secret (RFC 9420 §8.4); do not overwrite joiner_secret
-        if psk_secret:
-            blended = self._crypto_provider.kdf_extract(joiner_secret_pre, psk_secret)
-        else:
-            blended = joiner_secret_pre
+        # Step 3: PSK blending (RFC 9420 §8, Figure 22): KDF.Extract always runs; use 0 when no PSK
+        psk_or_zero = psk_secret if psk_secret else bytes(hash_len)
+        blended = self._crypto_provider.kdf_extract(joiner_secret_pre, psk_or_zero)
         # epoch_secret := ExpandWithLabel(blended, "epoch", GroupContext, Hash.length)
         self._epoch_secret = self._crypto_provider.expand_with_label(blended, b"epoch", gc_bytes, hash_len)
+        # welcome_secret = DeriveSecret(blended, "welcome") per RFC 9420 §8, Figure 22
+        self._welcome_secret = self._crypto_provider.derive_secret(blended, b"welcome")
 
         # Derive key schedule branches using labeled derivations (RFC 9420 §8)
         self._encryption_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"encryption")
@@ -55,6 +55,11 @@ class KeySchedule:
         self._external_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"external")
         self._sender_data_secret = self._crypto_provider.derive_secret(self._epoch_secret, b"sender data")
         self._init_secret_derived = self._crypto_provider.derive_secret(self._epoch_secret, b"init")
+        # Cache epoch-derived secrets (Table 4) to avoid recomputing on every access
+        self._confirmation_key = self._crypto_provider.derive_secret(self._epoch_secret, b"confirm")
+        self._membership_key = self._crypto_provider.derive_secret(self._epoch_secret, b"membership")
+        self._resumption_psk = self._crypto_provider.derive_secret(self._epoch_secret, b"resumption")
+        self._epoch_authenticator = self._crypto_provider.derive_secret(self._epoch_secret, b"authentication")
 
         # RFC 9420 §9.2: zero input and intermediate secrets after use
         from ..crypto.utils import secure_wipe
@@ -93,12 +98,18 @@ class KeySchedule:
         ks._wiped = False
         ks._joiner_secret = b""
         ks._epoch_secret = epoch_secret
+        ks._welcome_secret = b""  # not available when constructed from epoch_secret only
         # Derive key schedule branches using labeled derivations (RFC 9420 §8)
         ks._encryption_secret = crypto_provider.derive_secret(epoch_secret, b"encryption")
         ks._exporter_secret = crypto_provider.derive_secret(epoch_secret, b"exporter")
         ks._external_secret = crypto_provider.derive_secret(epoch_secret, b"external")
         ks._sender_data_secret = crypto_provider.derive_secret(epoch_secret, b"sender data")
         ks._init_secret_derived = crypto_provider.derive_secret(epoch_secret, b"init")
+        # Cache epoch-derived secrets (Table 4)
+        ks._confirmation_key = crypto_provider.derive_secret(epoch_secret, b"confirm")
+        ks._membership_key = crypto_provider.derive_secret(epoch_secret, b"membership")
+        ks._resumption_psk = crypto_provider.derive_secret(epoch_secret, b"resumption")
+        ks._epoch_authenticator = crypto_provider.derive_secret(epoch_secret, b"authentication")
         return ks
 
     @classmethod
@@ -124,15 +135,15 @@ class KeySchedule:
         """
         hash_len = crypto_provider.kdf_hash_len()
         gc_bytes = group_context.serialize()
-        # PSK blending: Extract(salt=joiner_secret, ikm=psk_secret) per RFC 9420 §8
-        if psk_secret:
-            blended = crypto_provider.kdf_extract(joiner_secret, psk_secret)
-        else:
-            blended = joiner_secret
+        # PSK blending (RFC 9420 §8, Figure 22): KDF.Extract always runs; use 0 when no PSK
+        psk_or_zero = psk_secret if psk_secret else bytes(hash_len)
+        blended = crypto_provider.kdf_extract(joiner_secret, psk_or_zero)
         # epoch_secret = ExpandWithLabel(blended, "epoch", GroupContext, Nh)
         epoch_secret = crypto_provider.expand_with_label(blended, b"epoch", gc_bytes, hash_len)
-        # Now construct from the derived epoch_secret
-        return cls.from_epoch_secret(epoch_secret, group_context, crypto_provider)
+        # Build full KeySchedule with welcome_secret from blended (RFC 9420 §8, Figure 22)
+        ks = cls.from_epoch_secret(epoch_secret, group_context, crypto_provider)
+        ks._welcome_secret = crypto_provider.derive_secret(blended, b"welcome")
+        return ks
 
     @property
     def sender_data_secret(self) -> bytes:
@@ -210,17 +221,17 @@ class KeySchedule:
     @property
     def confirmation_key(self) -> bytes:
         """Key used to compute confirmation MACs over transcripts."""
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"confirm")
+        return self._confirmation_key
 
     @property
     def membership_key(self) -> bytes:
         """MAC key used for membership tags in handshake messages."""
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"membership")
+        return self._membership_key
 
     @property
     def resumption_psk(self) -> bytes:
         """Derive resumption PSK for future epochs."""
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"resumption")
+        return self._resumption_psk
 
     @property
     def init_secret(self) -> bytes:
@@ -233,25 +244,7 @@ class KeySchedule:
     @property
     def epoch_authenticator(self) -> bytes:
         """Epoch authenticator secret (RFC §8)."""
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"authentication")
-
-    @property
-    def handshake_secret(self) -> bytes:
-        """Deprecated: non-standard derivation kept for backward compatibility.
-
-        RFC 9420 does not derive a separate handshake_secret from epoch_secret.
-        The SecretTree handles handshake/application split from encryption_secret.
-        """
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"handshake")
-
-    @property
-    def application_secret(self) -> bytes:
-        """Deprecated: non-standard derivation kept for backward compatibility.
-
-        RFC 9420 does not derive a separate application_secret from epoch_secret.
-        The SecretTree handles handshake/application split from encryption_secret.
-        """
-        return self._crypto_provider.derive_secret(self._epoch_secret, b"application")
+        return self._epoch_authenticator
 
     @property
     def external_secret(self) -> bytes:
@@ -268,6 +261,11 @@ class KeySchedule:
         """The joiner secret used for Welcome message derivation."""
         return self._joiner_secret
 
+    @property
+    def welcome_secret(self) -> bytes:
+        """DeriveSecret(blended, \"welcome\") per RFC 9420 §8, Figure 22. Empty when from_epoch_secret."""
+        return getattr(self, "_welcome_secret", b"")
+
     def wipe(self) -> None:
         """
         Best-effort zeroization of sensitive secrets.
@@ -282,6 +280,11 @@ class KeySchedule:
             "_external_secret",
             "_sender_data_secret",
             "_init_secret_derived",
+            "_confirmation_key",
+            "_membership_key",
+            "_resumption_psk",
+            "_epoch_authenticator",
+            "_welcome_secret",
         ]:
             val = getattr(self, name, None)
             if isinstance(val, (bytes, bytearray)) and val:

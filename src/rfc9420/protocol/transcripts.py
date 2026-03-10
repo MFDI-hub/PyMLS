@@ -51,6 +51,10 @@ class TranscriptState:
     - interim_transcript_hash:
         Hash(confirmed_i || InterimTranscriptHashInput_i)
       where InterimTranscriptHashInput = confirmation_tag
+
+    Between update_with_handshake() and finalize_confirmed(), the newly computed
+    confirmed hash is held in _pending_confirmed; _interim is only updated in
+    finalize_confirmed() to the new interim hash.
     """
 
     def __init__(
@@ -62,6 +66,7 @@ class TranscriptState:
         self._crypto = crypto
         self._interim = interim
         self._confirmed = confirmed
+        self._pending_confirmed: Optional[bytes] = None  # new confirmed hash until finalize_confirmed()
 
     @property
     def interim(self) -> Optional[bytes]:
@@ -81,6 +86,8 @@ class TranscriptState:
                  ConfirmedTranscriptHashInput[i])
 
         where ConfirmedTranscriptHashInput = wire_format || FramedContent || signature
+
+        The new confirmed hash is stored in _pending_confirmed until finalize_confirmed().
         """
         # Build ConfirmedTranscriptHashInput from the plaintext (RFC 9420 §8.2: use actual wire format).
         framed_content_bytes = plaintext.auth_content.tbs.framed_content.serialize()
@@ -92,14 +99,19 @@ class TranscriptState:
             signature,
         )
         prev = self._interim or b""
-        self._interim = self._crypto.hash(prev + input_bytes)
-        return self._interim
+        self._pending_confirmed = self._crypto.hash(prev + input_bytes)
+        return self._pending_confirmed
 
     def compute_confirmation_tag(self, confirmation_key: bytes) -> bytes:
-        """Compute confirmation tag as HMAC over the current interim transcript hash."""
-        if self._interim is None:
-            raise RFC9420Error("interim transcript hash is not set")
-        return self._crypto.hmac_sign(confirmation_key, self._interim)
+        """Compute confirmation tag as HMAC over the current transcript hash used for confirmation.
+
+        Uses the pending confirmed hash (after update_with_handshake) or the current
+        interim hash (e.g. after bootstrap).
+        """
+        data = self._pending_confirmed if self._pending_confirmed is not None else self._interim
+        if data is None:
+            raise RFC9420Error("transcript hash is not set for confirmation tag")
+        return self._crypto.hmac_sign(confirmation_key, data)
 
     def finalize_confirmed(self, confirmation_tag: bytes) -> bytes:
         """Update interim transcript hash per RFC §8.2.
@@ -108,14 +120,16 @@ class TranscriptState:
             Hash(confirmed_transcript_hash[i] ||
                  InterimTranscriptHashInput[i])
 
-        where InterimTranscriptHashInput = confirmation_tag (length-prefixed)
+        where InterimTranscriptHashInput = confirmation_tag (length-prefixed).
+
+        Commits the pending confirmed hash (from update_with_handshake) to _confirmed,
+        then derives and stores the new interim hash.
         """
-        if self._interim is None:
-            raise RFC9420Error("interim transcript hash is not set")
-        # The confirmed hash was set during update_with_handshake (stored as interim).
-        # Per RFC: confirmed = the hash we just computed; interim = Hash(confirmed || InterimInput)
-        confirmed = self._interim
+        if self._pending_confirmed is None:
+            raise RFC9420Error("no pending confirmed hash; call update_with_handshake first")
+        confirmed = self._pending_confirmed
         self._confirmed = confirmed
+        self._pending_confirmed = None
 
         input_bytes = serialize_interim_transcript_hash_input(confirmation_tag)
         self._interim = self._crypto.hash(confirmed + input_bytes)

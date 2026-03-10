@@ -434,7 +434,7 @@ class KeyPackage:
         # out += struct.pack("!I", len(ln_bytes))
         out += ln_bytes
         out += serialize_bytes(exts_bytes)
-        out += self.signature.serialize()
+        out += serialize_bytes(self.signature.serialize())  # opaque signature<V> per RFC 9420
         return out
 
     def tbs_serialize(self) -> bytes:
@@ -502,7 +502,9 @@ class KeyPackage:
 
         if not rest:
             raise ValueError("truncated KeyPackage: missing signature")
-        sig_bytes = rest
+        sig_bytes, rest = deserialize_bytes(rest)  # opaque signature<V>
+        if rest:
+            raise ValueError("trailing bytes after KeyPackage signature")
         signature = Signature.deserialize(sig_bytes)
         return cls(
             version=version,

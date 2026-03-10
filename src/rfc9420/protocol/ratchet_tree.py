@@ -658,25 +658,38 @@ class RatchetTree:
         # RFC ?7.4: path_secret[0] = random; use current, THEN derive next (use-then-derive)
         current_path_secret = os.urandom(self._crypto_provider.kdf_hash_len())
 
-        # For each node on the direct path, use current secret for this node, then advance
         path_secret_by_node: dict[int, bytes] = {}
 
         for node_index in full_direct_path:
-            # Use current_path_secret for this node BEFORE advancing
             if node_index in filtered_set:
                 path_secret_by_node[node_index] = current_path_secret
                 node_secret = self._crypto_provider.derive_secret(current_path_secret, b"node")
                 priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
                 self._nodes[node_index].private_key = priv_key
                 self._nodes[node_index].public_key = pub_key
-                self._nodes[node_index].unmerged_leaves = []  # cleared by committer
+                self._nodes[node_index].unmerged_leaves = []
+                # RFC 9420 ?7.4: advance path_secret only along filtered direct path
+                current_path_secret = self._crypto_provider.derive_secret(current_path_secret, b"path")
             else:
                 self._nodes[node_index].private_key = None
                 self._nodes[node_index].public_key = None
                 self._nodes[node_index].unmerged_leaves = []
                 self._nodes[node_index].leaf_node = None
-            # Advance to next path_secret for the next node
-            current_path_secret = self._crypto_provider.derive_secret(current_path_secret, b"path")
+
+        # RFC 9420 ?12.4.2: provisional GroupContext tree_hash MUST reflect the
+        # tree AFTER the sender's direct path update. Recompute it now.
+        from .data_structures import GroupContext as _GC
+        try:
+            gc_obj = _GC.deserialize(group_context_bytes)
+            corrected_tree_hash = self.calculate_tree_hash()
+            corrected_gc = _GC(
+                gc_obj.group_id, gc_obj.epoch, corrected_tree_hash,
+                gc_obj.confirmed_transcript_hash, gc_obj.extensions,
+                cipher_suite_id=gc_obj.cipher_suite_id,
+            )
+            group_context_bytes = corrected_gc.serialize()
+        except Exception:
+            pass
 
         update_path_nodes: list[UpdatePathNode] = []
 
@@ -741,15 +754,19 @@ class RatchetTree:
         )
 
         update_path = UpdatePath(leaf_for_path.serialize(), update_path_nodes)
-        # RFC ?7.4: commit_secret = path_secret[root], i.e. the path_secret for the
-        # root node, NOT the one advanced past the root after the loop ends.
-        root_node_index = full_direct_path[-1]
-        commit_secret = path_secret_by_node.get(root_node_index, current_path_secret)
-        # RFC 9420 ?12.4.3: Return path_secret_by_node so Welcome can include path_secret for each joiner's LCA.
+        # RFC 9420 ?7.4: commit_secret = path_secret[n+1] = DeriveSecret(path_secret[n], "path")
+        # where n is the last node of the filtered direct path. After the loop,
+        # current_path_secret has already been advanced one step past the last
+        # filtered node, so it IS the commit_secret.
+        commit_secret = current_path_secret
         return update_path, commit_secret, path_secret_by_node
 
     def merge_update_path(
-        self, update_path: UpdatePath, committer_index: int, group_context_bytes: bytes
+        self,
+        update_path: UpdatePath,
+        committer_index: int,
+        group_context_bytes: bytes,
+        excluded_leaf_pubkeys: Optional[Set[bytes]] = None,
     ) -> bytes:
         """Merge an UpdatePath from a received commit and return the commit secret.
 
@@ -758,6 +775,10 @@ class RatchetTree:
         - Decrypt exactly one path_secret corresponding to a copath node on our
           direct path; then derive subsequent path/node secrets upward
         - Update keys along the direct path and recompute hashes
+
+        excluded_leaf_pubkeys: HPKE public keys of new members added in the same
+            Commit (RFC 9420 ?7.5). They MUST be excluded from the copath
+            resolution when comparing length and when decrypting.
         """
         # Update leaf node
         provided_leaf = LeafNode.deserialize(update_path.leaf_node)
@@ -791,86 +812,61 @@ class RatchetTree:
         # Iterate over both the filtered path and the UpdatePath nodes
         # They should align.
         if len(update_path.nodes) != len(filtered_path):
-            # This might happen if our view of filtered path differs?
-            # Or if the sender's filtered path excluded something correctly that we included, or vice versa.
-            # RFC says "The UpdatePath... contains a list of UpdatePathNode... corresponding to the filtered direct path".
-            # If we disagree on filtered path, we might misinterpret.
-            # However, we can try to find a match.
             pass
 
+        # Phase 1: Update ALL public keys from UpdatePath before computing tree_hash.
+        # RFC 9420 ?12.4.2: merge first, THEN construct provisional GroupContext
+        # with the correct tree_hash, THEN decrypt path secrets.
         for i, node_index in enumerate(filtered_path):
             if i >= len(update_path.nodes):
                 break
-
             up_node = update_path.nodes[i]
-
-            # Update the node's public key; clear unmerged_leaves (RFC ?7.5)
             nd = self.get_node(node_index)
             nd.public_key = up_node.encryption_key
             nd.unmerged_leaves = []
 
-            if current_path_secret is not None:
-                # We already have the secret, just updating keys
-                continue
+        # Recompute tree_hash after merging public keys, then rebuild GC bytes
+        from .data_structures import GroupContext as _GC
+        try:
+            gc_obj = _GC.deserialize(group_context_bytes)
+            corrected_tree_hash = self.calculate_tree_hash()
+            corrected_gc = _GC(
+                gc_obj.group_id, gc_obj.epoch, corrected_tree_hash,
+                gc_obj.confirmed_transcript_hash, gc_obj.extensions,
+                cipher_suite_id=gc_obj.cipher_suite_id,
+            )
+            group_context_bytes = corrected_gc.serialize()
+        except Exception:
+            pass
 
-            # Try to decrypt
-            # Skip root (no encrypted secrets)
+        # Phase 2: Attempt HPKE decryption using the corrected group_context_bytes
+        for i, node_index in enumerate(filtered_path):
+            if i >= len(update_path.nodes):
+                break
+
+            if current_path_secret is not None:
+                break
+
+            up_node = update_path.nodes[i]
+
             if node_index == tree_math.root(self.n_leaves):
                 continue
 
-            # Check if we can decrypt
-            # We need to be in the resolution of the copath node.
-            # Do we have a private key in the resolution of the copath node?
-            # Wait, we just need to try decrypting the blobs.
-            # There is a list of blobs. One of them might be for us.
-
-            # We are the receiver. We have our own leaf key, and potentially other node keys.
-            # We should try to decrypt with any private key we have that is in the resolution of the copath node?
-            # Actually, the sender encrypted to the resolution.
-            # We just need to check if any of our private keys can decrypt any of the cyphertexts.
-
-            # Which private keys do we possess?
-            # We possess keys for nodes on our direct path.
-            # The copath node is a sibling of a node on the committer's direct path.
-            # If we are in the subtree of the copath node, we have keys.
-
-            # Optimization:
-            # 1. Identify valid private keys we hold.
-            # 2. Try to decrypt.
-
-            # In this simple implementation, we can iterate our known private keys?
-            # Or simpler:
-            # The sender encrypted to specific public keys.
-            # Those public keys belong to nodes in the tree.
-            # If we hold the private key for a node, we can try.
-
-            # But the ciphertext doesn't say "this is for node X". It's just a list.
-            # We have to try all our keys against all ciphertexts? That's O(M*N).
-            # RFC says "The position in the list... corresponds to the position in the resolution".
-            # So we need to compute the resolution of the copath node (same as sender did).
-            # Then we check if we hold the private key for the node at index J in the resolution.
-            # If so, we attempt to decrypt the J-th ciphertext.
-
             copath_node_index = tree_math.sibling(node_index, self.n_leaves)
             resolution = self.resolve(copath_node_index)
-            # RFC 9420 ?7.6: Reject when encrypted_path_secret count does not match resolution count.
-            if len(up_node.encrypted_path_secrets) != len(resolution):
+            # RFC 9420 ?7.5: exclude new members added in the same Commit from resolution
+            excluded = excluded_leaf_pubkeys or set()
+            resolution_filtered = [n for n in resolution if n.public_key not in excluded]
+            if len(up_node.encrypted_path_secrets) != len(resolution_filtered):
                 raise CommitValidationError(
                     "UpdatePath node encrypted_path_secret count does not match copath resolution length (RFC 9420 ?7.6)"
                 )
 
-            for j, res_node in enumerate(resolution):
-                # Do we have the private key for `res_node`?
-                # `res_node` is a RatchetTreeNode object from `self.get_node`.
+            for j, res_node in enumerate(resolution_filtered):
                 if res_node.private_key:
-                    # Try decrypting the j-th secret
                     blob = up_node.encrypted_path_secrets[j]
                     try:
                         from .data_structures import deserialize_bytes
-                        # blob is HPKECiphertext (kem_output || ciphertext), but serialized as bytes?
-                        # In UpdatePathNode.deserialize we stored raw bytes.
-                        # HPKECiphertext = opaque kem<V>; opaque ct<V>;
-                        # We need to parse it.
 
                         kem_out, rest_ct = deserialize_bytes(blob)
                         ct, _ = deserialize_bytes(rest_ct)
@@ -890,52 +886,41 @@ class RatchetTree:
                     except Exception:
                         continue
 
-            if current_path_secret is not None:
-                # Found it!
-                pass  # Continue loop to update remaining public keys
-
         if current_path_secret is None:
             # RFC 9420 ?7.6: decryption failure MUST cause the commit to be rejected
             raise CommitValidationError(
                 "merge_update_path: could not decrypt any path secret from UpdatePath"
             )
 
-        # From the decrypted node onward, derive subsequent path/node secrets upward
-        # We need to find where `decrypted_index` is in the full direct path.
-        full_direct_path = tree_math.direct_path(committer_index * 2, self.n_leaves)
+        # RFC 9420 ?7.4: derive path/node secrets along the *filtered* direct path
+        # only, starting from the decrypted node upward.
+        if decrypted_index not in filtered_path:
+            raise CommitValidationError(
+                "decrypted node not in committer's filtered direct path"
+            )
+        decrypted_filtered_idx = filtered_path.index(decrypted_index)
 
-        start_idx = (
-            full_direct_path.index(decrypted_index) if decrypted_index in full_direct_path else 0
-        )
-
-        for node_index in full_direct_path[start_idx:]:
-            # For the first node, use current_path_secret as decrypted; otherwise, step the ratchet
-            if node_index != decrypted_index:
+        for fi in range(decrypted_filtered_idx, len(filtered_path)):
+            node_index = filtered_path[fi]
+            if fi > decrypted_filtered_idx:
                 current_path_secret = self._crypto_provider.derive_secret(
                     current_path_secret, b"path"
                 )
 
-            # Derive keys for this node
             node_secret = self._crypto_provider.derive_secret(current_path_secret, b"node")
             priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
 
-            # RFC ?7.4: MUST verify that the derived key matches the key in UpdatePath.
-            # The UpdatePath node for this index (if it's in filtered_path)
-            if node_index in filtered_path:
-                up_idx = filtered_path.index(node_index)
-                if up_idx < len(update_path.nodes):
-                    expected_pk = update_path.nodes[up_idx].encryption_key
-                    if expected_pk and pub_key != expected_pk:
-                        raise CommitValidationError(
-                            f"Derived public key at node {node_index} does not match UpdatePath"
-                        )
+            if fi < len(update_path.nodes):
+                expected_pk = update_path.nodes[fi].encryption_key
+                if expected_pk and pub_key != expected_pk:
+                    raise CommitValidationError(
+                        f"Derived public key at node {node_index} does not match UpdatePath"
+                    )
 
-            # Update the node ? we have the private key for decrypted/derived nodes.
             self.get_node(node_index).private_key = priv_key
             self.get_node(node_index).public_key = pub_key
 
         self._recalculate_hashes_from(committer_index * 2)
-        # RFC 9420 ?7.5: Compute and store parent_hash on each node of the sender's filtered direct path.
         for path_node_index in filtered_path:
             try:
                 parent_idx = tree_math.parent(path_node_index, self.n_leaves)
@@ -944,37 +929,47 @@ class RatchetTree:
                 self.get_node(parent_idx).parent_hash = ph if ph else None
             except Exception:
                 continue
-        # Re-verify parent hash after applying path secrets to ensure consistency
         try:
             if provided_leaf.parent_hash:
                 expected_after = self._compute_parent_hash_for_leaf(committer_index)
                 if expected_after != provided_leaf.parent_hash:
-                    # Warn or fail? RFC says MUST verify.
                     raise CommitValidationError("parent_hash mismatch after applying update path")
         except Exception:
-            # If hash computation fails or mismatch
             raise CommitValidationError("parent_hash validation failed")
 
-        # Commit secret is the final path_secret at the root of the direct path
-        commit_secret = current_path_secret
+        commit_secret = self._crypto_provider.derive_secret(current_path_secret, b"path")
         return commit_secret
 
-    def apply_joiner_path_secret(self, leaf_index: int, path_secret_at_leaf: bytes) -> None:
+    def apply_joiner_path_secret(
+        self, joiner_leaf_index: int, path_secret_at_lca: bytes,
+        committer_leaf_index: int = -1,
+    ) -> None:
         """Apply path_secret from GroupSecrets when joining via Welcome (RFC 9420 ?12.4.3.1).
 
-        Derives path secrets from the joiner's leaf up to the root and stores the
-        resulting private keys in the tree. Call after loading the tree from the
-        ratchet_tree extension and before deriving epoch secrets.
+        The path_secret is for the LCA of committer and joiner on the committer's
+        filtered direct path. Derives path/node secrets upward along the committer's
+        filtered direct path from the LCA to the root.
         """
-        full_direct_path = tree_math.direct_path(leaf_index * 2, self.n_leaves)
-        current = path_secret_at_leaf
-        for node_index in full_direct_path:
+        if committer_leaf_index < 0:
+            committer_leaf_index = joiner_leaf_index
+
+        committer_filtered = self.filtered_direct_path(committer_leaf_index * 2)
+        lca_node = tree_math.lca(
+            committer_leaf_index * 2, joiner_leaf_index * 2, self.n_leaves
+        )
+
+        if lca_node in committer_filtered:
+            lca_idx = committer_filtered.index(lca_node)
+        else:
+            lca_idx = 0
+
+        current = path_secret_at_lca
+        for node_index in committer_filtered[lca_idx:]:
             node_secret = self._crypto_provider.derive_secret(current, b"node")
             priv_key, pub_key = self._crypto_provider.derive_key_pair(node_secret)
             self.get_node(node_index).private_key = priv_key
-            self.get_node(node_index).public_key = pub_key
             current = self._crypto_provider.derive_secret(current, b"path")
-        self._recalculate_hashes_from(leaf_index * 2)
+        self._recalculate_hashes_from(joiner_leaf_index * 2)
 
     # --- Welcome ratchet_tree extension helpers ---
     def serialize_tree_for_welcome(self) -> bytes:

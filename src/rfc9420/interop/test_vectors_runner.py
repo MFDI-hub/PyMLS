@@ -40,7 +40,7 @@ def _run_key_schedule_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> Non
         crypto_provider=crypto,
     )
     # Optional assertions if expected secrets are provided
-    for field in ["epoch_secret", "handshake_secret", "application_secret", "exporter_secret", "external_secret"]:
+    for field in ["epoch_secret", "exporter_secret", "external_secret"]:
         if field in vec.get("expected", {}):
             exp = h(vec["expected"][field])
             got = getattr(ks, field)

@@ -1,4 +1,12 @@
-"""Credential encodings (basic and X.509) and signature scheme mapping."""
+"""Credential encodings (basic and X.509) and signature scheme mapping.
+
+NOTE: The RFC 9420 §5.3 wire format for credentials is protocol.data_structures.Credential
+(uint16 credential_type, opaque identity<V> or Certificate certificates<V> with varint
+lengths). This module provides BasicCredential and X509Credential with an internal
+encoding (uint8 type, opaque16, signature_scheme) for application use. Do not serialize
+these directly as MLS KeyPackage/LeafNode credentials; use data_structures.Credential
+for protocol serialization.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

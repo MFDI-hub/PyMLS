@@ -52,16 +52,20 @@ def left(x: int) -> int:
     return x ^ (0x01 << (k - 1))
 
 
-def right(x: int, _n: int) -> int:
+def right(x: int, n: int) -> int:
     """Right child index of internal node x.
 
-    The second parameter is kept for signature compatibility with tree layouts
-    that depend on leaf count; it is not used for array-based indexing.
+    For non-power-of-2 leaf counts, the result is clamped to stay within
+    the tree (repeated left steps) so that the index is < node_width(n).
     """
     k = level(x)
     if k == 0:
         raise RFC9420Error("leaf node has no children")
-    return x ^ (0x03 << (k - 1))
+    r = x ^ (0x03 << (k - 1))
+    w = node_width(n)
+    while r >= w:
+        r = left(r)
+    return r
 
 
 def parent(x: int, n: int) -> int:

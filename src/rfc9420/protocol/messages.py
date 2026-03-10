@@ -4,6 +4,7 @@ Handshake: AuthenticatedContent, MLSPlaintext (proposals, commits).
 Application: MLSCiphertext with sender data encryption.
 Includes content types, wire format discriminators, and PSK/PSKLabel handling.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from typing import Optional, TYPE_CHECKING, Union
 if TYPE_CHECKING:
     from .data_structures import Sender, PreSharedKeyID, Welcome, GroupInfo
     from .key_packages import KeyPackage
-from .data_structures import MLSVersion, PreSharedKeyID
+from .data_structures import MLSVersion, PreSharedKeyID, SenderType
 import os
 
 from ..mls.exceptions import InvalidSignatureError
@@ -44,6 +45,7 @@ def _require_length(data: bytes, length: int) -> None:
 
 class ContentType(IntEnum):
     """Content type for framed MLS messages (MVP subset)."""
+
     APPLICATION = 1
     PROPOSAL = 2
     COMMIT = 3
@@ -51,35 +53,31 @@ class ContentType(IntEnum):
 
 class ProtocolVersion(IntEnum):
     """Top-level protocol version enum for MLS messages (RFC §6)."""
+
     MLS10 = 1
 
 
 class WireFormat(IntEnum):
     """Wire format discriminator for top-level messages (RFC §6 / §17.2 Table 5)."""
-    PUBLIC_MESSAGE = 1   # mls_public_message
+
+    PUBLIC_MESSAGE = 1  # mls_public_message
     PRIVATE_MESSAGE = 2  # mls_private_message
-    WELCOME = 3          # mls_welcome
-    GROUP_INFO = 4       # mls_group_info
-    KEY_PACKAGE = 5      # mls_key_package
+    WELCOME = 3  # mls_welcome
+    GROUP_INFO = 4  # mls_group_info
+    KEY_PACKAGE = 5  # mls_key_package
 
-
-class SenderType(IntEnum):
-    """Sender type enumeration (RFC §6)."""
-    MEMBER = 1
-    EXTERNAL = 2
-    NEW_MEMBER_PROPOSAL = 3
-    NEW_MEMBER_COMMIT = 4
 
 @dataclass(frozen=True)
 class PSKPreimage:
     """
     Simplified PSK preimage: list of PSK identifiers encoded as opaque<V>.
     """
+
     psk_ids: list[PreSharedKeyID]
 
     def serialize(self) -> bytes:
         """Encode as psk_ids<V> (Vector of PreSharedKeyID).
-        
+
         RFC: struct { PreSharedKeyID psk_ids<V>; } PSKPreimage.
         """
         # Serialize items first
@@ -99,17 +97,14 @@ class PSKLabel:
         uint16 count;
     } PSKLabel;
     """
+
     psk_id: PreSharedKeyID
     index: int
     count: int
 
     def serialize(self) -> bytes:
         """Encode as PreSharedKeyID(id) || uint16(index) || uint16(count)."""
-        return (
-            self.psk_id.serialize()
-            + write_uint16(self.index)
-            + write_uint16(self.count)
-        )
+        return self.psk_id.serialize() + write_uint16(self.index) + write_uint16(self.count)
 
 
 def derive_psk_secret(
@@ -129,14 +124,19 @@ def derive_psk_secret(
         return bytes(crypto.kdf_hash_len())
 
     hash_len = crypto.kdf_hash_len()
-    zero_ikm = bytes(hash_len)
+    zero_salt = bytes(hash_len)
 
     # psk_secret[0] = 0
     psk_secret = bytes(hash_len)
 
     for i in range(n):
         # Get or derive the PSK value (psk_[i] in the RFC)
-        if psk_values is not None and i < len(psk_values) and psk_values[i] is not None and len(psk_values[i]) > 0:
+        if (
+            psk_values is not None
+            and i < len(psk_values)
+            and psk_values[i] is not None
+            and len(psk_values[i]) > 0
+        ):
             psk_val = psk_values[i]
         else:
             # MVP fallback: derive a synthetic PSK from the ID serialization
@@ -144,7 +144,7 @@ def derive_psk_secret(
             psk_val = crypto.kdf_extract(b"psk", psk_ids[i].serialize())
 
         # psk_extracted_[i] = KDF.Extract(0, psk_[i]) per RFC 9420 §8.4
-        psk_extracted = crypto.kdf_extract(zero_ikm, psk_val)
+        psk_extracted = crypto.kdf_extract(zero_salt, psk_val)
 
         # PSKLabel for this iteration
         label = PSKLabel(psk_id=psk_ids[i], index=i, count=n)
@@ -155,15 +155,18 @@ def derive_psk_secret(
         )
 
         # psk_secret_[i+1] = KDF.Extract(psk_input_[i], psk_secret_[i])
+        # RFC 9420 §8.4: salt=psk_input, IKM=psk_secret
         psk_secret = crypto.kdf_extract(psk_input, psk_secret)
 
     return psk_secret
+
 
 def encode_psk_binder(binder: bytes) -> bytes:
     """
     Encode a PSK binder into authenticated_data. Magic prefix + opaque<V>.
     """
     return b"PSKB" + write_opaque_varint(binder)
+
 
 def decode_psk_binder(authenticated_data: bytes) -> Optional[bytes]:
     """
@@ -196,9 +199,10 @@ class FramedContent:
         };
     } FramedContent;
     """
+
     group_id: bytes
     epoch: int
-    sender: 'Sender'
+    sender: "Sender"
     authenticated_data: bytes
     content_type: ContentType
     content: bytes  # RFC: ApplicationData | Proposal | Commit
@@ -206,6 +210,7 @@ class FramedContent:
     def serialize(self) -> bytes:
         """Encode FramedContent per RFC 9420 §6."""
         from .data_structures import Sender as _Sender
+
         out = write_opaque_varint(self.group_id)
         out += write_uint64(self.epoch)
         if isinstance(self.sender, _Sender):
@@ -214,7 +219,7 @@ class FramedContent:
             out += _Sender(self.sender).serialize()
         out += write_opaque_varint(self.authenticated_data)
         out += write_uint8(int(self.content_type))
-        
+
         # Content serialization based on type
         if self.content_type == ContentType.APPLICATION:
             # application_data<V>
@@ -228,6 +233,7 @@ class FramedContent:
     def deserialize(cls, data: bytes) -> "FramedContent":
         """Parse FramedContent from bytes."""
         from .data_structures import Sender as _Sender
+
         off = 0
         group_id, off = read_opaque_varint(data, off)
         epoch, off = read_uint64(data, off)
@@ -237,6 +243,7 @@ class FramedContent:
         ct_val, off = read_uint8(data, off)
         ct = ContentType(ct_val)
         from .data_structures import Commit as _Commit, Proposal as _Proposal
+
         obj: Union[_Commit, _Proposal]
         if ct == ContentType.APPLICATION:
             body, off = read_opaque_varint(data, off)
@@ -265,21 +272,21 @@ class FramedContent:
             # Assuming consumes remainder:
             body = data[off:]
             off = len(data)
-            
+
         return cls(group_id, epoch, sender, ad, ct, body)
 
 
 @dataclass(frozen=True)
 class AuthenticatedContentTBS:
     """To-Be-Signed structure per RFC 9420 §6.1."""
-    
+
     wire_format: int  # WireFormat enum value
     framed_content: FramedContent
     group_context: Optional[bytes] = None  # serialized GroupContext (for member senders)
 
     def serialize(self) -> bytes:
         """Encode AuthenticatedContentTBS per RFC 9420 §6.1.
-        
+
         This structure IS signed, and IS used for membership tag computation.
         It includes ProtocolVersion, WireFormat, FramedContent, and optional GroupContext.
         """
@@ -292,22 +299,18 @@ class AuthenticatedContentTBS:
         return out
 
     def serialize_wire(self) -> bytes:
-        """Encode the wire format prefix of AuthenticatedContent.
-        
-        This corresponds to the start of AuthenticatedContent on the wire:
-        ProtocolVersion || WireFormat || FramedContent
-        Wait, NO GroupContext!
+        """Encode PublicMessage body on the wire: just FramedContent.
+
+        ProtocolVersion and WireFormat belong to the outer MLSMessage envelope
+        (RFC 9420 §6), not to the PublicMessage body itself.
         """
-        out = write_uint16(MLSVersion.MLS10)
-        out += write_uint16(self.wire_format)
-        out += self.framed_content.serialize()
-        return out
+        return self.framed_content.serialize()
 
 
 @dataclass(frozen=True)
 class FramedContentAuthData:
     """Structure for authentication data per RFC 9420 §5.2.
-    
+
     struct {
         opaque signature<V>;
         select (FramedContent.content_type) {
@@ -317,9 +320,10 @@ class FramedContentAuthData:
         };
     } FramedContentAuthData;
     """
+
     signature: bytes
     confirmation_tag: Optional[bytes] = None  # Present only if content_type == COMMIT
-    
+
     def serialize(self) -> bytes:
         out = write_opaque_varint(self.signature)
         if self.confirmation_tag is not None:
@@ -327,7 +331,9 @@ class FramedContentAuthData:
         return out
 
     @classmethod
-    def deserialize(cls, data: bytes, content_type: ContentType) -> tuple["FramedContentAuthData", int]:
+    def deserialize(
+        cls, data: bytes, content_type: ContentType
+    ) -> tuple["FramedContentAuthData", int]:
         off = 0
         sig, off = read_opaque_varint(data, off)
         ctag = None
@@ -350,7 +356,7 @@ class AuthenticatedContent:
             ...
         };
     } PublicMessage;
-    
+
     RFC §5.2 AuthenticatedContent:
     struct {
         ProtocolVersion version = mls10;
@@ -359,6 +365,7 @@ class AuthenticatedContent:
         FramedContentAuthData auth;
     } AuthenticatedContent;
     """
+
     tbs: AuthenticatedContentTBS
     auth: FramedContentAuthData
     membership_tag: Optional[bytes] = None  # Part of PublicMessage, not AuthenticatedContent
@@ -367,24 +374,17 @@ class AuthenticatedContent:
     @property
     def signature(self) -> bytes:
         return self.auth.signature
-        
+
     @property
     def confirmation_tag(self) -> Optional[bytes]:
         return self.auth.confirmation_tag
 
     def serialize(self) -> bytes:
         """Encode as PublicMessage structure: Content || MembershipTag (optional)."""
-        # 1. Serialize AuthenticatedContent (wire format)
-        # Note: TBS includes GroupContext, but wire format does NOT.
         out = self.tbs.serialize_wire()
-        
-        # 2. Serialize FramedContentAuthData
         out += self.auth.serialize()
-
-        # 3. Membership Tag (PublicMessage field)
         if self.membership_tag is not None:
             out += write_opaque_varint(self.membership_tag)
-        
         return out
 
     def serialize_tbm(self) -> bytes:
@@ -392,42 +392,38 @@ class AuthenticatedContent:
         return self.tbs.serialize() + self.auth.serialize()
 
     @classmethod
-    def deserialize(cls, data: bytes) -> "AuthenticatedContent":
-        """Parse AuthenticatedContent from bytes."""
+    def deserialize(
+        cls, data: bytes, wire_format: int = WireFormat.PUBLIC_MESSAGE
+    ) -> "AuthenticatedContent":
+        """Parse AuthenticatedContent (PublicMessage body) from bytes.
+
+        wire_format is supplied by the caller (from the MLSMessage envelope)
+        since PublicMessage body does not contain ProtocolVersion/WireFormat.
+        """
         off = 0
-        # Read ProtocolVersion header (uint16)
-        _version, off = read_uint16(data, off)
-        # Read wire_format header
-        wf, off = read_uint16(data, off)
-        
-        # FramedContent parsing (same logic as before)
+
         fc = FramedContent.deserialize(data[off:])
-        # Determine consumed bytes by re-serializing (MVP hack)
         fc_ser = fc.serialize()
         off += len(fc_ser)
-        
-        # Parse AuthData
+
         auth, consumed = FramedContentAuthData.deserialize(data[off:], fc.content_type)
         off += consumed
-        
+
         mtag = None
-        # Check if bytes remain for membership tag
         if off < len(data):
             mtag, off = read_opaque_varint(data, off)
-            
-        tbs = AuthenticatedContentTBS(wire_format=wf, framed_content=fc)
-        # Note: tbs.group_context is None here because it's not on the wire.
-        # It must be supplied from context for verification if needed, 
-        # but AuthenticatedContent object doesn't strictly need it to round-trip wire bytes.
-        
+
+        tbs = AuthenticatedContentTBS(wire_format=wire_format, framed_content=fc)
+
         return cls(tbs, auth, mtag)
 
 
 @dataclass(frozen=True)
 class MLSPlaintext:
     """Top-level handshake plaintext container."""
+
     auth_content: AuthenticatedContent
-    
+
     def serialize(self) -> bytes:
         return self.auth_content.serialize()
 
@@ -445,6 +441,7 @@ class SenderData:
         opaque reuse_guard[4];
     } SenderData;
     """
+
     sender: int
     generation: int
     reuse_guard: bytes
@@ -483,6 +480,7 @@ class MLSCiphertext:
         opaque ciphertext<V>;
     } MLSCiphertext;
     """
+
     group_id: bytes
     epoch: int
     content_type: ContentType
@@ -519,7 +517,7 @@ def encrypt_sender_data(
     ciphertext_sample: Optional[bytes] = None,
 ) -> bytes:
     """Encrypt SenderData using sender data key/nonce derived from KeySchedule.
-    
+
     aad MUST be SenderDataAAD(group_id, epoch, content_type) per RFC 9420.
     """
     if ciphertext_sample is not None:
@@ -566,26 +564,32 @@ def encode_encrypted_sender_data(
     over SenderData (which already contains the reuse_guard field). The
     reuse_guard is NOT prepended on the wire as a raw prefix.
     """
-    return encrypt_sender_data(sd, key_schedule, crypto, aad=sender_data_aad, ciphertext_sample=ciphertext_sample)
+    return encrypt_sender_data(
+        sd, key_schedule, crypto, aad=sender_data_aad, ciphertext_sample=ciphertext_sample
+    )
 
 
 def decode_encrypted_sender_data(
-    data: bytes, 
-    key_schedule: KeySchedule, 
-    crypto: CryptoProvider, 
+    data: bytes,
+    key_schedule: KeySchedule,
+    crypto: CryptoProvider,
     ciphertext_sample: Optional[bytes] = None,
-    sender_data_aad: bytes = b""
+    sender_data_aad: bytes = b"",
 ) -> SenderData:
     """Decrypt SenderData from the encrypted_sender_data<V> wire field.
 
     Per RFC 9420 §6.3.2, data is purely the AEAD ciphertext. The sender_data_nonce
     is derived from the ciphertext sample only (no reuse_guard XOR).
     """
-    return decrypt_sender_data(data, b"", key_schedule, crypto, aad=sender_data_aad, ciphertext_sample=ciphertext_sample)
+    return decrypt_sender_data(
+        data, b"", key_schedule, crypto, aad=sender_data_aad, ciphertext_sample=ciphertext_sample
+    )
 
 
 # AAD and padding helpers
-def compute_ciphertext_aad(group_id: bytes, epoch: int, content_type: ContentType, authenticated_data: bytes) -> bytes:
+def compute_ciphertext_aad(
+    group_id: bytes, epoch: int, content_type: ContentType, authenticated_data: bytes
+) -> bytes:
     """
     RFC-style AAD for MLSCiphertext content encryption.
     """
@@ -636,6 +640,7 @@ def strip_content_padding(data: bytes, verify_all_zeros: bool = True) -> bytes:
                 raise ValueError("non-zero padding byte in PrivateMessageContent")
     return data[:end]
 
+
 def sign_authenticated_content(
     group_id: bytes,
     epoch: int,
@@ -663,11 +668,12 @@ def sign_authenticated_content(
     - sender_type: SenderType (default: MEMBER). Use NEW_MEMBER_PROPOSAL for proposals
       from a new member not yet in the tree (e.g. Add for self).
     """
-    from .data_structures import Sender as _Sender, SenderType as _DST
-    st = _DST(sender_type.value) if sender_type is not None else _DST.MEMBER
+    from .data_structures import Sender as _Sender
+
+    st = SenderType(sender_type.value) if sender_type is not None else SenderType.MEMBER
     sender = _Sender(sender_leaf_index, st)
     # RFC 9420 §6.1: GroupContext is included in TBS for member and new_member_commit only.
-    if st in (_DST.EXTERNAL, _DST.NEW_MEMBER_PROPOSAL):
+    if st in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_PROPOSAL):
         group_context = None
     framed = FramedContent(
         group_id=group_id,
@@ -689,7 +695,9 @@ def sign_authenticated_content(
     return MLSPlaintext(auth)
 
 
-def attach_membership_tag(plaintext: MLSPlaintext, membership_key: bytes, crypto: CryptoProvider) -> MLSPlaintext:
+def attach_membership_tag(
+    plaintext: MLSPlaintext, membership_key: bytes, crypto: CryptoProvider
+) -> MLSPlaintext:
     """
     Compute membership tag over AuthenticatedContentTBM (TBS || AuthData).
 
@@ -704,12 +712,12 @@ def attach_membership_tag(plaintext: MLSPlaintext, membership_key: bytes, crypto
     # RFC 9420 §6.2: Tag is MAC over AuthenticatedContentTBM
     tbm = plaintext.auth_content.serialize_tbm()
     tag = crypto.hmac_sign(membership_key, tbm)
-    
-    return MLSPlaintext(AuthenticatedContent(
-        tbs=plaintext.auth_content.tbs, 
-        auth=plaintext.auth_content.auth, 
-        membership_tag=tag
-    ))
+
+    return MLSPlaintext(
+        AuthenticatedContent(
+            tbs=plaintext.auth_content.tbs, auth=plaintext.auth_content.auth, membership_tag=tag
+        )
+    )
 
 
 def verify_plaintext(
@@ -747,13 +755,18 @@ def verify_plaintext(
         )
     tbs_ser = tbs.serialize()
     # Domain-separated signature verification
-    crypto.verify_with_label(sender_signature_key, b"FramedContentTBS", tbs_ser, plaintext.auth_content.auth.signature)
+    crypto.verify_with_label(
+        sender_signature_key, b"FramedContentTBS", tbs_ser, plaintext.auth_content.auth.signature
+    )
     if membership_key is not None:
         # Check membership tag over AuthenticatedContentTBM (TBS || AuthData)
         # TBM uses the *full* TBS (including GroupContext)
         tbm = tbs_ser + plaintext.auth_content.auth.serialize()
         tag = crypto.hmac_sign(membership_key, tbm)
-        if plaintext.auth_content.membership_tag is None or plaintext.auth_content.membership_tag != tag:
+        if (
+            plaintext.auth_content.membership_tag is None
+            or plaintext.auth_content.membership_tag != tag
+        ):
             raise InvalidSignatureError("invalid membership tag")
 
 
@@ -798,21 +811,23 @@ def protect_content_handshake(
         pmc = add_zero_padding(pmc, pad_to)
 
     aad = compute_ciphertext_aad(group_id, epoch, content_type, authenticated_data)
-    
+
     # Random reuse guard and final content nonce (nonce XOR reuse_guard)
     reuse_guard = os.urandom(4)
-    rg_padded = reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    rg_padded = reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
     content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
-    
+
     # Encrypt content first to get ciphertext sample
     ct = crypto.aead_encrypt(key, content_nonce, pmc, aad)
     sample_len = crypto.kdf_hash_len()
     ciphertext_sample = ct[:sample_len]
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
-    
+
     sd_aad = compute_sender_data_aad(group_id, epoch, content_type)
-    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample, sender_data_aad=sd_aad)
-    
+    enc_sd = encode_encrypted_sender_data(
+        sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample, sender_data_aad=sd_aad
+    )
+
     return MLSCiphertext(
         group_id=group_id,
         epoch=epoch,
@@ -835,18 +850,20 @@ def sign_application_framed_content(
 ) -> bytes:
     """Compute signature over FramedContentTBS for an application PrivateMessage (RFC 9420 §6.1).
 
-    content_prefixed MUST be the length-prefixed application data (write_opaque_varint(app_data))
-    as it appears in PrivateMessageContent.
+    content_prefixed is accepted for API compatibility but the raw application data
+    is extracted: FramedContent.serialize() adds the <V> length prefix per RFC 9420 §6.
     """
-    from .data_structures import Sender, SenderType
+    from .data_structures import Sender
+
     sender = Sender(sender_leaf_index, SenderType.MEMBER)
+    raw_app_data, _ = read_opaque_varint(content_prefixed, 0)
     framed = FramedContent(
         group_id=group_id,
         epoch=epoch,
         sender=sender,
         authenticated_data=authenticated_data,
         content_type=ContentType.APPLICATION,
-        content=content_prefixed,
+        content=raw_app_data,
     )
     tbs = AuthenticatedContentTBS(
         wire_format=WireFormat.PRIVATE_MESSAGE,
@@ -886,22 +903,24 @@ def protect_content_application(
 
     if pad_to > 0:
         pmc = add_zero_padding(pmc, pad_to)
-    
+
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
-    
+
     # Random reuse guard and final content nonce (nonce XOR reuse_guard)
     reuse_guard = os.urandom(4)
-    rg_padded = reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    rg_padded = reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
     content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
     # Encrypt to obtain ciphertext sample
     ct = crypto.aead_encrypt(key, content_nonce, pmc, aad)
     sample_len = crypto.kdf_hash_len()
     ciphertext_sample = ct[:sample_len]
     sd = SenderData(sender=sender_leaf_index, generation=generation, reuse_guard=reuse_guard)
-    
+
     sd_aad = compute_sender_data_aad(group_id, epoch, ContentType.APPLICATION)
-    enc_sd = encode_encrypted_sender_data(sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample, sender_data_aad=sd_aad)
-    
+    enc_sd = encode_encrypted_sender_data(
+        sd, key_schedule, crypto, ciphertext_sample=ciphertext_sample, sender_data_aad=sd_aad
+    )
+
     return MLSCiphertext(
         group_id=group_id,
         epoch=epoch,
@@ -926,10 +945,18 @@ def unprotect_content_handshake(
     sample_len = crypto.kdf_hash_len()
     ciphertext_sample = m.ciphertext[:sample_len]
     sd_aad = compute_sender_data_aad(m.group_id, m.epoch, m.content_type)
-    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto, ciphertext_sample=ciphertext_sample, sender_data_aad=sd_aad)
+    sd = decode_encrypted_sender_data(
+        m.encrypted_sender_data,
+        key_schedule,
+        crypto,
+        ciphertext_sample=ciphertext_sample,
+        sender_data_aad=sd_aad,
+    )
 
     # RFC §6.3.2: sender leaf MUST be non-blank in the ratchet tree.
-    rt = getattr(secret_tree, '_ratchet_tree', None) or (secret_tree if hasattr(secret_tree, 'get_node') else None)
+    rt = getattr(secret_tree, "_ratchet_tree", None) or (
+        secret_tree if hasattr(secret_tree, "get_node") else None
+    )
     if rt is not None:
         try:
             _ln = rt.get_node(sd.sender * 2)
@@ -939,13 +966,14 @@ def unprotect_content_handshake(
             pass  # ratchet_tree not available; skip check
 
     key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
-    rg_padded = sd.reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    rg_padded = sd.reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
     content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
     ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
-    
+
     # Parse PrivateMessageContent: content || auth || padding
     # RFC §6.3.1: parse content, then auth, THEN verify remaining bytes are zero padding.
     from .data_structures import Commit as _Commit, Proposal as _Proposal
+
     off = 0
     body = b""
     obj: Union[_Commit, _Proposal]
@@ -987,10 +1015,18 @@ def unprotect_content_application(
     sample_len = crypto.kdf_hash_len()
     ciphertext_sample = m.ciphertext[:sample_len]
     sd_aad = compute_sender_data_aad(m.group_id, m.epoch, m.content_type)
-    sd = decode_encrypted_sender_data(m.encrypted_sender_data, key_schedule, crypto, ciphertext_sample=ciphertext_sample, sender_data_aad=sd_aad)
+    sd = decode_encrypted_sender_data(
+        m.encrypted_sender_data,
+        key_schedule,
+        crypto,
+        ciphertext_sample=ciphertext_sample,
+        sender_data_aad=sd_aad,
+    )
 
     # RFC §6.3.2: sender leaf MUST be non-blank in the ratchet tree.
-    rt = getattr(secret_tree, '_ratchet_tree', None) or (secret_tree if hasattr(secret_tree, 'get_node') else None)
+    rt = getattr(secret_tree, "_ratchet_tree", None) or (
+        secret_tree if hasattr(secret_tree, "get_node") else None
+    )
     if rt is not None:
         try:
             _ln = rt.get_node(sd.sender * 2)
@@ -1000,10 +1036,10 @@ def unprotect_content_application(
             pass  # ratchet_tree not available; skip check
 
     key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
-    rg_padded = sd.reuse_guard.rjust(crypto.aead_nonce_size(), b"\x00")
+    rg_padded = sd.reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
     content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
     ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
-    
+
     # Parse PrivateMessageContent: content || auth || padding
     # RFC §6.3.1: parse content, then auth, THEN verify remaining bytes are zero padding.
     off = 0
@@ -1021,6 +1057,7 @@ def unprotect_content_application(
 
     return sd.sender, body, auth
 
+
 @dataclass(frozen=True)
 class MLSMessage:
     """Top-level MLSMessage wrapper per RFC 9420 §6 with typed dispatch.
@@ -1033,6 +1070,7 @@ class MLSMessage:
         case mls_key_package:    KeyPackage;
     };
     """
+
     version: ProtocolVersion
     wire_format: WireFormat
     content: bytes  # Raw bytes; use get_parsed_content() for typed access
@@ -1049,8 +1087,9 @@ class MLSMessage:
         """Parse and return the inner message based on wire_format (RFC 9420 §6 typed dispatch)."""
         from .data_structures import GroupInfo, Welcome
         from .key_packages import KeyPackage
+
         if self.wire_format == WireFormat.PUBLIC_MESSAGE:
-            return AuthenticatedContent.deserialize(self.content)
+            return AuthenticatedContent.deserialize(self.content, wire_format=self.wire_format)
         if self.wire_format == WireFormat.PRIVATE_MESSAGE:
             return MLSCiphertext.deserialize(self.content)
         if self.wire_format == WireFormat.WELCOME:
@@ -1070,26 +1109,36 @@ class MLSMessage:
         return cls(ProtocolVersion(v), WireFormat(wf), content)
 
     @classmethod
-    def from_public_message(cls, msg: "AuthenticatedContent", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+    def from_public_message(
+        cls, msg: "AuthenticatedContent", version: ProtocolVersion = ProtocolVersion.MLS10
+    ) -> "MLSMessage":
         """Build MLSMessage from AuthenticatedContent (PublicMessage)."""
         return cls(version, WireFormat.PUBLIC_MESSAGE, msg.serialize())
 
     @classmethod
-    def from_private_message(cls, msg: "MLSCiphertext", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+    def from_private_message(
+        cls, msg: "MLSCiphertext", version: ProtocolVersion = ProtocolVersion.MLS10
+    ) -> "MLSMessage":
         """Build MLSMessage from MLSCiphertext (PrivateMessage)."""
         return cls(version, WireFormat.PRIVATE_MESSAGE, msg.serialize())
 
     @classmethod
-    def from_welcome(cls, msg: "Welcome", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+    def from_welcome(
+        cls, msg: "Welcome", version: ProtocolVersion = ProtocolVersion.MLS10
+    ) -> "MLSMessage":
         """Build MLSMessage from Welcome."""
         return cls(version, WireFormat.WELCOME, msg.serialize())
 
     @classmethod
-    def from_group_info(cls, msg: "GroupInfo", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+    def from_group_info(
+        cls, msg: "GroupInfo", version: ProtocolVersion = ProtocolVersion.MLS10
+    ) -> "MLSMessage":
         """Build MLSMessage from GroupInfo."""
         return cls(version, WireFormat.GROUP_INFO, msg.serialize())
 
     @classmethod
-    def from_key_package(cls, msg: "KeyPackage", version: ProtocolVersion = ProtocolVersion.MLS10) -> "MLSMessage":
+    def from_key_package(
+        cls, msg: "KeyPackage", version: ProtocolVersion = ProtocolVersion.MLS10
+    ) -> "MLSMessage":
         """Build MLSMessage from KeyPackage."""
         return cls(version, WireFormat.KEY_PACKAGE, msg.serialize())
