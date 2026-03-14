@@ -15,7 +15,14 @@ from ..codec.tls import (
     read_uint64,
 )
 
-from ..crypto.ciphersuites import KEM, KDF, AEAD, CipherSuiteId, find_by_triple, get_ciphersuite_by_id
+from ..crypto.ciphersuites import (
+    KEM,
+    KDF,
+    AEAD,
+    CipherSuiteId,
+    find_by_triple,
+    get_ciphersuite_by_id,
+)
 from ..mls.exceptions import RFC9420Error
 
 
@@ -43,10 +50,9 @@ def deserialize_bytes(data: bytes) -> tuple[bytes, bytes]:
     """
     payload, new_offset = read_opaque_varint(data, 0)
     return payload, data[new_offset:]
-    
+
+
 # ... (skip to UpdatePath)
-
-
 
 
 class MLSVersion(IntEnum):
@@ -97,6 +103,7 @@ class SenderType(IntEnum):
 
     enum { member(1), external(2), new_member_proposal(3), new_member_commit(4) } SenderType;
     """
+
     MEMBER = 1
     EXTERNAL = 2
     NEW_MEMBER_PROPOSAL = 3
@@ -134,6 +141,7 @@ class Sender:
 
 class CredentialType(IntEnum):
     """Credential type discriminator (RFC 9420 §5.3)."""
+
     BASIC = 1
     X509 = 2
 
@@ -173,54 +181,67 @@ class Credential:
         return out
 
     @classmethod
-    def deserialize(cls, data: bytes) -> "Credential":
-        """Parse from uint16 credential_type || select(...)."""
+    def deserialize_partial(cls, data: bytes) -> tuple["Credential", int]:
+        """Parse from uint16 credential_type || select(...), returning (Credential, bytes_consumed)."""
         if len(data) < 2:
             # Legacy fallback: no credential_type prefix, treat as basic with opaque32
             identity, rest = deserialize_bytes(data)
             public_key_bytes = b""
+            consumed = len(data) - len(rest)
             if rest:
                 try:
-                    public_key_bytes, _ = deserialize_bytes(rest)
+                    public_key_bytes, new_rest = deserialize_bytes(rest)
+                    consumed = len(data) - len(new_rest)
                 except Exception:
                     pass
-            return cls(identity, public_key_bytes)
+            return cls(identity, public_key_bytes), consumed
+
         (ct_val,) = struct.unpack("!H", data[:2])
         try:
             ct = CredentialType(ct_val)
         except ValueError:
             # RFC 9420 §13.3: Reject unknown credential_type; do not fall back to BASIC.
-            raise RFC9420Error(
-                f"Unknown or unsupported credential_type: {ct_val} (RFC 9420 §13.3)"
-            )
-        
+            raise RFC9420Error(f"Unknown or unsupported credential_type: {ct_val} (RFC 9420 §13.3)")
+
         rest = data[2:]
+        consumed = 2
+
         if ct == CredentialType.BASIC:
             # Basic: opaque identity<V>
-            # Try parsing as varint first
             try:
-                identity, _ = read_opaque_varint(rest)
+                identity, new_offset = read_opaque_varint(data, 2)
+                consumed = new_offset
             except Exception:
                 # Fallback / compatibility: existing code might produce 4-byte len
-                identity, _ = deserialize_bytes(rest)
-            return cls(identity, b"", ct)
+                identity, new_rest = deserialize_bytes(rest)
+                consumed = len(data) - len(new_rest)
+            return cls(identity, b"", ct), consumed
+
         elif ct == CredentialType.X509:
             # X.509: Certificate certificates<V>;
             # First read the vector length
-            total_len, offset = read_varint(rest)
-            cert_data = rest[offset : offset + total_len]
-            # Parse individual certificates
+            total_len, offset = read_varint(data, 2)
+            cert_data = data[offset : offset + total_len]
+            consumed = offset + total_len
+
+            # Parse individual certificates from cert_data
             certs = []
-            while cert_data:
-                cert, off = read_opaque_varint(cert_data)
+            cert_offset = 0
+            while cert_offset < len(cert_data):
+                cert, new_cert_offset = read_opaque_varint(cert_data, cert_offset)
                 certs.append(cert)
-                cert_data = cert_data[off:]
-            return cls(b"", b"", ct, certificates=certs)
-        
-        # RFC 9420 §13.3: No opaque preservation for unknown types; reject.
-        raise RFC9420Error(
-            f"Unsupported credential_type in Credential.deserialize: {ct} (RFC 9420 §13.3)"
-        )
+                cert_offset = new_cert_offset
+
+            return cls(b"", b"", ct, certificates=certs), consumed
+
+        else:
+            raise RFC9420Error(f"Unsupported credential_type: {ct}")
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "Credential":
+        """Parse from uint16 credential_type || select(...)."""
+        obj, _ = cls.deserialize_partial(data)
+        return obj
 
 
 @dataclass(frozen=True)
@@ -339,14 +360,12 @@ class AddProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "AddProposal":
-        """Construct from raw KeyPackage bytes.
+        """Construct from raw KeyPackage bytes."""
+        from .key_packages import KeyPackage
 
-        Note: The caller (Proposal.deserialize) already strips the proposal
-        type prefix before dispatching here. Stripping again is ambiguous and
-        can corrupt valid KeyPackage bytes because KeyPackage starts with
-        ProtocolVersion=0x0001, which collides with ProposalType.ADD.
-        """
-        return cls(data)
+        kp = KeyPackage.deserialize(data)
+        length = len(kp.serialize())
+        return cls(data[:length])
 
 
 @dataclass(frozen=True)
@@ -366,8 +385,12 @@ class UpdateProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "UpdateProposal":
-        """Construct from raw LeafNode bytes (type prefix already stripped by Proposal.deserialize)."""
-        return cls(data)
+        """Construct from raw LeafNode bytes."""
+        from .key_packages import LeafNode
+
+        leaf = LeafNode.deserialize(data)
+        length = len(leaf.serialize())
+        return cls(data[:length])
 
 
 @dataclass(frozen=True)
@@ -396,12 +419,14 @@ class RemoveProposal(Proposal):
 
 class PSKType(IntEnum):
     """PSK Type (RFC 9420 §8.4)."""
+
     EXTERNAL = 1
     RESUMPTION = 2
 
 
 class ResumptionPSKUsage(IntEnum):
     """Resumption PSK Usage (RFC 9420 §8.4)."""
+
     APPLICATION = 1
     REINIT = 2
     BRANCH = 3
@@ -424,6 +449,7 @@ class PreSharedKeyID:
         opaque psk_nonce<V>;
     } PreSharedKeyID;
     """
+
     psktype: PSKType
     psk_id: Optional[bytes] = None  # for external
     usage: Optional[ResumptionPSKUsage] = None  # for resumption
@@ -435,11 +461,11 @@ class PreSharedKeyID:
         out = struct.pack("!B", self.psktype.value)
         if self.psktype == PSKType.EXTERNAL:
             if self.psk_id is None:
-                 raise RFC9420Error("PreSharedKeyID external missing psk_id")
+                raise RFC9420Error("PreSharedKeyID external missing psk_id")
             out += serialize_bytes(self.psk_id)
         elif self.psktype == PSKType.RESUMPTION:
             if self.usage is None or self.psk_group_id is None or self.psk_epoch is None:
-                 raise RFC9420Error("PreSharedKeyID resumption missing fields")
+                raise RFC9420Error("PreSharedKeyID resumption missing fields")
             out += struct.pack("!B", self.usage.value)
             out += serialize_bytes(self.psk_group_id)
             out += write_uint64(self.psk_epoch)
@@ -468,7 +494,7 @@ class PreSharedKeyID:
         elif ptype == PSKType.RESUMPTION:
             if off >= len(data):
                 raise RFC9420Error("PreSharedKeyID resumption too short for usage")
-            (u_val,) = struct.unpack("!B", data[off:off+1])
+            (u_val,) = struct.unpack("!B", data[off : off + 1])
             off += 1
             try:
                 usage = ResumptionPSKUsage(u_val)
@@ -479,7 +505,6 @@ class PreSharedKeyID:
 
         nonce, off = read_opaque_varint(data, off)
         return cls(ptype, psk_id, usage, pgid, pepoch, nonce), data[off:]
-
 
 
 @dataclass(frozen=True)
@@ -502,7 +527,6 @@ class PreSharedKeyProposal(Proposal):
         """Parse PreSharedKeyID (type prefix already stripped by Proposal.deserialize)."""
         psk, _ = PreSharedKeyID.deserialize(data)
         return cls(psk)
-
 
 
 @dataclass(frozen=True)
@@ -552,7 +576,7 @@ class ReInitProposal(Proposal):
 @dataclass(frozen=True)
 class ExternalInitProposal(Proposal):
     """Proposal to publish an external HPKE KEM output for external commits.
-    
+
     RFC 9420 §12.4.3.4:
     struct {
         opaque kem_output<V>;
@@ -637,19 +661,17 @@ class ProposalOrRef:
     reference: Optional[bytes] = None
 
     def serialize(self) -> bytes:
-        """Encode as uint8 typ || opaque16(payload)."""
-        payload = b""
+        """Encode as uint8 typ || payload."""
         if self.typ == ProposalOrRefType.PROPOSAL:
             if self.proposal is None:
                 raise RFC9420Error("missing proposal for ProposalOrRef.PROPOSAL")
-            payload = self.proposal.serialize()
+            return struct.pack("!B", int(self.typ)) + self.proposal.serialize()
         elif self.typ == ProposalOrRefType.REFERENCE:
             if self.reference is None:
                 raise RFC9420Error("missing reference for ProposalOrRef.REFERENCE")
-            payload = self.reference
+            return struct.pack("!B", int(self.typ)) + serialize_bytes(self.reference)
         else:
             raise RFC9420Error("unknown ProposalOrRefType")
-        return struct.pack("!B", int(self.typ)) + serialize_bytes(payload)
 
     @classmethod
     def deserialize(cls, data: bytes) -> "ProposalOrRef":
@@ -658,10 +680,10 @@ class ProposalOrRef:
             raise RFC9420Error("invalid ProposalOrRef encoding")
         (t_val,) = struct.unpack("!B", data[:1])
         typ = ProposalOrRefType(t_val)
-        payload, _ = deserialize_bytes(data[1:])
         if typ == ProposalOrRefType.PROPOSAL:
-            return cls(typ=typ, proposal=Proposal.deserialize(payload))
+            return cls(typ=typ, proposal=Proposal.deserialize(data[1:]))
         if typ == ProposalOrRefType.REFERENCE:
+            payload, _ = deserialize_bytes(data[1:])
             return cls(typ=typ, reference=payload)
         raise RFC9420Error("unknown ProposalOrRefType during deserialize")
 
@@ -669,14 +691,15 @@ class ProposalOrRef:
 @dataclass(frozen=True)
 class UpdatePathNode:
     """Node in an UpdatePath (RFC 9420 §7.6).
-    
+
     struct {
         HPKEPublicKey encryption_key;
         HPKECiphertext encrypted_path_secret<V>;
     } UpdatePathNode;
     """
+
     encryption_key: bytes
-    encrypted_path_secrets: list[bytes] # encrypted_path_secret<V>
+    encrypted_path_secrets: list[bytes]  # encrypted_path_secret<V>
 
     def serialize(self) -> bytes:
         """Encode encryption_key and vector of encrypted path secrets."""
@@ -695,25 +718,25 @@ class UpdatePathNode:
     def deserialize(cls, data: bytes) -> "UpdatePathNode":
         """Parse UpdatePathNode."""
         encryption_key, rest = deserialize_bytes(data)
-        
+
         # Parse vector<V> of encrypted path secrets
         eps_len, offset = read_varint(rest, 0)
         rest = rest[offset:]
         eps_data = rest[:eps_len]
-        
+
         secrets = []
         while eps_data:
             # Parse one HPKECiphertext (kem_output<V> || ciphertext<V>)
             kem_out, sub_off = read_opaque_varint(eps_data)
             ct, sub_off2 = read_opaque_varint(eps_data[sub_off:])
             total_len = sub_off + sub_off2
-            
+
             # Reconstruct the raw bytes for the list
             cipher_blob = eps_data[:total_len]
             secrets.append(cipher_blob)
-            
+
             eps_data = eps_data[total_len:]
-        
+
         return cls(encryption_key, secrets)
 
     @classmethod
@@ -721,19 +744,20 @@ class UpdatePathNode:
         """Helper to deserialize and return consumed length."""
         encryption_key, rest = deserialize_bytes(data)
         key_len = len(data) - len(rest)
-        
+
         # Parse vector<V> of encrypted path secrets
         eps_len, offset = read_varint(rest, 0)
         # Total consumed for vector is offset + eps_len
-        
+
         # Parse the node itself
-        node = cls.deserialize(data[:key_len + offset + eps_len])
+        node = cls.deserialize(data[: key_len + offset + eps_len])
         return node, key_len + offset + eps_len
+
 
 @dataclass(frozen=True)
 class UpdatePath:
     """Commit path structure (RFC 9420 §7.6).
-    
+
     struct {
         LeafNode leaf_node;
         UpdatePathNode nodes<V>;
@@ -748,16 +772,14 @@ class UpdatePath:
         # RFC 9420: LeafNode leaf_node; UpdatePathNode nodes<V>;
         # LeafNode is embedded directly (structure).
         data = self.leaf_node
-        
+
         # nodes<V>
         nodes_data = b""
         for node in self.nodes:
             nodes_data += node.serialize()
-            
+
         data += write_varint(len(nodes_data)) + nodes_data
         return data
-
-
 
     @classmethod
     def deserialize(cls, data: bytes) -> "UpdatePath":
@@ -780,37 +802,36 @@ class UpdatePath:
         # `enc_key, rest = deserialize_bytes(data)` etc.
         # It returns `cls(...)`. It does NOT return `rest`.
         # This is invalid for stream parsing.
-        
+
         # I MUST update `LeafNode.deserialize` to return `(LeafNode, consumed)` OR handle it here.
         # Or I can cheat:
         # If I don't change `LeafNode` deserializer signature (to avoid breaking other calls),
         # I can guess length by re-serializing? That's what `FramedContent` does.
-        
+
         leaf = LeafNode.deserialize(data)
         leaf_len = len(leaf.serialize())
         # Re-check verification? No.
-        
+
         rest = data[leaf_len:]
-        
+
         # Parse nodes<V>
         nodes_len, offset = read_varint(rest, 0)
         rest = rest[offset:]
         nodes_data = rest[:nodes_len]
-        
+
         nodes = []
         while nodes_data:
             node, consumed = UpdatePathNode.deserialize_impl(nodes_data)
             nodes.append(node)
             nodes_data = nodes_data[consumed:]
-            
-        return cls(leaf.serialize(), nodes)
 
+        return cls(leaf.serialize(), nodes)
 
 
 @dataclass(frozen=True)
 class Commit:
     """Commit object carrying proposals and optional UpdatePath (RFC 9420 §12.2).
-    
+
     struct {
         ProposalOrRef proposals<V>;
         optional<UpdatePath> path;
@@ -842,17 +863,17 @@ class Commit:
         """Parse Commit."""
         # Read proposals vector<V>
         if len(data) < 1:
-             # Just proposals vector length?
-             pass # handle via read_varint error or logic
-             
+            # Just proposals vector length?
+            pass  # handle via read_varint error or logic
+
         prop_len, offset = read_varint(data, 0)
         rest = data[offset:]
         if len(rest) < prop_len:
-             raise RFC9420Error("Commit too short for proposals")
-             
+            raise RFC9420Error("Commit too short for proposals")
+
         props_data = rest[:prop_len]
         rest = rest[prop_len:]
-        
+
         proposals: list[ProposalOrRef] = []
         while props_data:
             # Deserialize one ProposalOrRef
@@ -867,23 +888,33 @@ class Commit:
 
         # Path presence
         if not rest:
-             raise RFC9420Error("Commit missing path presence byte")
-             
+            raise RFC9420Error("Commit missing path presence byte")
+
         present = rest[0]
         rest = rest[1:]
         path = None
-        
+
         if present == 1:
             path = UpdatePath.deserialize(rest)
         elif present != 0:
             raise RFC9420Error("Invalid path presence byte")
-            
+
         return cls(path, proposals)
 
 
 @dataclass(frozen=True)
 class Welcome:
-    """Welcome message carrying epoch secrets and encrypted GroupInfo."""
+    """Welcome message (RFC 9420 §12.4.3.1).
+
+    struct {
+        CipherSuite cipher_suite;
+        EncryptedGroupSecrets secrets<V>;
+        opaque encrypted_group_info<V>;
+    } Welcome;
+
+    The version field is NOT part of the Welcome wire format; it is carried
+    by the outer MLSMessage wrapper.  Kept here for internal convenience.
+    """
 
     version: MLSVersion
     cipher_suite: CipherSuite
@@ -891,12 +922,10 @@ class Welcome:
     encrypted_group_info: bytes
 
     def serialize(self) -> bytes:
-        """Encode version (uint16), cipher suite (uint16), secrets<V>, and encrypted GroupInfo (RFC 9420 §12.4.3.1)."""
-        data = struct.pack("!H", int(self.version))  # uint16 ProtocolVersion
-        data += self.cipher_suite.serialize()  # uint16 suite_id
+        """Encode per RFC 9420 §12.4.3.1 (no version — that lives in MLSMessage)."""
+        data = self.cipher_suite.serialize()  # uint16 suite_id
 
-        # EncryptedGroupSecrets secrets<V>: varint-length vector of opaque-encoded entries
-        secrets_payload = b"".join(serialize_bytes(secret.serialize()) for secret in self.secrets)
+        secrets_payload = b"".join(secret.serialize() for secret in self.secrets)
         data += write_varint(len(secrets_payload)) + secrets_payload
 
         data += serialize_bytes(self.encrypted_group_info)
@@ -904,14 +933,10 @@ class Welcome:
 
     @classmethod
     def deserialize(cls, data: bytes) -> "Welcome":
-        """Parse a Welcome from bytes produced by serialize()."""
-        (ver_val,) = struct.unpack("!H", data[:2])
-        version = MLSVersion(ver_val)
+        """Parse a Welcome per RFC 9420 §12.4.3.1 (no version prefix)."""
+        cipher_suite = CipherSuite.deserialize(data[:2])
+        rest = data[2:]
 
-        cipher_suite = CipherSuite.deserialize(data[2:4])
-        rest = data[4:]
-
-        # secrets<V>: varint length then that many bytes of EncryptedGroupSecrets entries (each opaque<V>)
         secrets_len, off = read_varint(rest, 0)
         rest = rest[off:]
         if len(rest) < secrets_len:
@@ -920,12 +945,13 @@ class Welcome:
         rest = rest[secrets_len:]
         secrets: list[EncryptedGroupSecrets] = []
         while secrets_data:
-            sbytes, secrets_data = deserialize_bytes(secrets_data)
-            secrets.append(EncryptedGroupSecrets.deserialize(sbytes))
+            egs, consumed = EncryptedGroupSecrets.deserialize_partial(secrets_data)
+            secrets.append(egs)
+            secrets_data = secrets_data[consumed:]
 
         encrypted_group_info, _ = deserialize_bytes(rest)
 
-        return cls(version, cipher_suite, secrets, encrypted_group_info)
+        return cls(MLSVersion.MLS10, cipher_suite, secrets, encrypted_group_info)
 
     def split_by_joiner(self) -> list["Welcome"]:
         """Return one Welcome per joiner (each with a single EncryptedGroupSecrets).
@@ -981,8 +1007,15 @@ class GroupContext:
         extensions = b""
         if rest:
             extensions, _ = deserialize_bytes(rest)
-        return cls(group_id, epoch, tree_hash, confirmed_transcript_hash,
-                   extensions, version, cipher_suite_id)
+        return cls(
+            group_id,
+            epoch,
+            tree_hash,
+            confirmed_transcript_hash,
+            extensions,
+            version,
+            cipher_suite_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -1034,21 +1067,44 @@ class GroupInfo:
 
 @dataclass(frozen=True)
 class EncryptedGroupSecrets:
-    """HPKE-wrapped epoch secret material for a specific recipient."""
+    """Per-joiner secrets in a Welcome (RFC 9420 §12.4.3.1).
 
+    struct {
+        KeyPackageRef new_member;
+        HPKECiphertext encrypted_group_secrets;
+    } EncryptedGroupSecrets;
+
+    HPKECiphertext = opaque kem_output<V> || opaque ciphertext<V>
+    """
+
+    new_member: bytes  # KeyPackageRef (hash of the joiner's KeyPackage)
     kem_output: bytes
     ciphertext: bytes
 
     def serialize(self) -> bytes:
-        """Encode KEM output and ciphertext as len-delimited fields."""
-        return serialize_bytes(self.kem_output) + serialize_bytes(self.ciphertext)
+        """Encode new_member, kem_output, and ciphertext as len-delimited fields."""
+        return (
+            serialize_bytes(self.new_member)
+            + serialize_bytes(self.kem_output)
+            + serialize_bytes(self.ciphertext)
+        )
 
     @classmethod
     def deserialize(cls, data: bytes) -> "EncryptedGroupSecrets":
-        """Parse KEM output and ciphertext from len-delimited fields."""
-        kem, rest = deserialize_bytes(data)
+        """Parse new_member, kem_output, and ciphertext from len-delimited fields."""
+        new_member, rest = deserialize_bytes(data)
+        kem, rest = deserialize_bytes(rest)
         ct, _ = deserialize_bytes(rest)
-        return cls(kem, ct)
+        return cls(new_member, kem, ct)
+
+    @classmethod
+    def deserialize_partial(cls, data: bytes) -> tuple["EncryptedGroupSecrets", int]:
+        """Parse from the start of data, return (obj, bytes_consumed)."""
+        new_member, rest = deserialize_bytes(data)
+        kem, rest = deserialize_bytes(rest)
+        ct, rest = deserialize_bytes(rest)
+        consumed = len(data) - len(rest)
+        return cls(new_member, kem, ct), consumed
 
 
 @dataclass(frozen=True)
@@ -1058,60 +1114,58 @@ class GroupSecrets:
     struct {
         opaque joiner_secret<V>;
         optional<PathSecret> path_secret;
-        optional<PreSharedKeyID> psks<V>;
+        PreSharedKeyID psks<V>;
     } GroupSecrets;
     """
 
     joiner_secret: bytes
-    psk_secret: Optional[bytes] = None   # kept for legacy but NOT serialized; use psks
+    psk_secret: Optional[bytes] = None  # kept for legacy but NOT serialized; use psks
     path_secret: Optional[bytes] = None  # committer's path_secret for fast-join (RFC §12.4.3.1)
     psks: "Optional[list[PreSharedKeyID]]" = None
 
     def serialize(self) -> bytes:
-        """Encode per RFC 9420 §12.4.3.1."""
+        """Encode GroupSecrets per RFC 9420 §12.4.3.1."""
         out = serialize_bytes(self.joiner_secret)
-        # optional path_secret: 0x01 || opaque<V> if present, else 0x00
+        # optional path_secret: 0x01 || PathSecret(opaque<V>) or 0x00
         if self.path_secret is not None:
             out += b"\x01" + serialize_bytes(self.path_secret)
         else:
             out += b"\x00"
-        # optional psks: 0x01 || vector<PreSharedKeyID> if present, else 0x00
-        if self.psks:
-            psks_data = b"".join(p.serialize() for p in self.psks)
-            out += b"\x01" + serialize_bytes(psks_data)
-        else:
-            out += b"\x00"
+        # psks is a required vector field in RFC wire format (possibly empty)
+        psks_data = b"".join(p.serialize() for p in (self.psks or []))
+        out += serialize_bytes(psks_data)
         return out
 
     @classmethod
     def deserialize(cls, data: bytes) -> "GroupSecrets":
-        """Decode per RFC 9420 §12.4.3.1. Rejects presence octets not in {0, 1} per §2.1.1."""
+        """Decode GroupSecrets per RFC 9420 §12.4.3.1."""
         js, rest = deserialize_bytes(data)
 
         # optional path_secret (RFC 9420 §2.1.1: presence octet must be 0 or 1)
-        path_secret = None
-        if rest:
-            present, rest = rest[0], rest[1:]
-            if present not in (0, 1):
-                raise RFC9420Error(
-                    f"Invalid optional value presence octet for path_secret: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
-                )
-            if present == 1 and rest:
-                path_secret, rest = deserialize_bytes(rest)
+        if not rest:
+            raise RFC9420Error("GroupSecrets missing optional path_secret presence octet")
+        present, rest = rest[0], rest[1:]
+        if present not in (0, 1):
+            raise RFC9420Error(
+                f"Invalid optional value presence octet for path_secret: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
+            )
 
-        # optional psks (RFC 9420 §2.1.1: presence octet must be 0 or 1)
-        psks: "Optional[list[PreSharedKeyID]]" = None
+        path_secret: Optional[bytes] = None
+        if present == 1:
+            if not rest:
+                raise RFC9420Error("GroupSecrets path_secret present but value missing")
+            path_secret, rest = deserialize_bytes(rest)
+
+        # psks is mandatory vector<PreSharedKeyID> (can be empty)
+        if not rest:
+            raise RFC9420Error("GroupSecrets missing psks vector")
+        psks_blob, rest = deserialize_bytes(rest)
+        psks: list[PreSharedKeyID] = []
+        while psks_blob:
+            psk_id_obj, psks_blob = PreSharedKeyID.deserialize(psks_blob)
+            psks.append(psk_id_obj)
+
         if rest:
-            present, rest = rest[0], rest[1:]
-            if present not in (0, 1):
-                raise RFC9420Error(
-                    f"Invalid optional value presence octet for psks: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
-                )
-            if present == 1 and rest:
-                psks_blob, rest = deserialize_bytes(rest)
-                psks = []
-                while psks_blob:
-                    psk_id_obj, psks_blob = PreSharedKeyID.deserialize(psks_blob)
-                    psks.append(psk_id_obj)
+            raise RFC9420Error("GroupSecrets has trailing bytes")
 
         return cls(js, None, path_secret, psks)

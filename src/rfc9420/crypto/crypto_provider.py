@@ -146,7 +146,12 @@ class CryptoProvider(ABC):
     @abstractmethod
     def kem_pk_size(self) -> int:
         """Size in bytes of the KEM public key encoding for stream parsing (if defined)."""
-        pass 
+        pass
+
+    def kem_sk_ikm_min_size(self) -> int:
+        """Minimum size in bytes for IKM passed to derive_key_pair (e.g. Nsk for HPKE).
+        When seed is shorter (e.g. Nh), the provider may expand it before calling HPKE."""
+        return self.kdf_hash_len() 
 
     @abstractmethod
     def aead_key_size(self) -> int:

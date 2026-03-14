@@ -396,6 +396,7 @@ class MLSGroup:
         reinit_proposal: Optional["ReInitProposal"] = None,
         branch_old_version: Optional[int] = None,
         branch_old_cipher_suite: Optional[int] = None,
+        welcome_psk_resolver: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None,
     ) -> "MLSGroup":
         """Join a group using a Welcome message.
 
@@ -420,6 +421,10 @@ class MLSGroup:
                 group; if provided, verified to match Welcome GroupContext (RFC 9420 §11.3).
             branch_old_cipher_suite: When joining via a branch Welcome, optional cipher_suite id
                 of the old group; if provided, verified to match Welcome GroupContext (§11.3).
+            welcome_psk_resolver: Optional callback (PreSharedKeyID) -> psk_value bytes. When
+                GroupSecrets contains PSKs, used to resolve values for derive_psk_secret so that
+                encrypted_group_info can be decrypted. If None, synthetic fallback is used (not
+                suitable for test vectors or production when Welcome includes PSKs).
 
         Returns:
             MLSGroup instance initialized from the Welcome.
@@ -431,6 +436,7 @@ class MLSGroup:
         # Try each secret until one opens
         joiner_secret = None
         group_secrets = None
+        last_decrypt_error = None
         # context for HPKE decapsulation = encrypted_group_info (RFC ?12.4.3.1)
         enc_gi_context = (
             welcome.encrypted_group_info if hasattr(welcome, "encrypted_group_info") else b""
@@ -453,19 +459,26 @@ class MLSGroup:
                 # Keep gs for later PSK check
                 group_secrets = gs
                 break
-            except Exception:
+            except Exception as e:
+                last_decrypt_error = e
                 continue
         if joiner_secret is None:
-            raise CommitValidationError(
-                "Unable to open any EncryptedGroupSecret with provided HPKE private key"
-            )
+            msg = "Unable to open any EncryptedGroupSecret with provided HPKE private key"
+            if last_decrypt_error is not None:
+                raise CommitValidationError(msg) from last_decrypt_error
+            raise CommitValidationError(msg)
 
         # RFC 9420 §8, Figure 22: welcome_secret = DeriveSecret(blended, "welcome"); blended = KDF.Extract(joiner_secret, psk_secret or 0)
         psk_secret = None
         if group_secrets and group_secrets.psks:
             from .messages import derive_psk_secret
 
-            psk_secret = derive_psk_secret(crypto_provider, group_secrets.psks, psk_values=None)
+            psk_values: Optional[list[Optional[bytes]]] = None
+            if welcome_psk_resolver is not None:
+                psk_values = [welcome_psk_resolver(pid) for pid in group_secrets.psks]
+            psk_secret = derive_psk_secret(
+                crypto_provider, group_secrets.psks, psk_values=psk_values
+            )
         hash_len = crypto_provider.kdf_hash_len()
         psk_or_zero = psk_secret if psk_secret else bytes(hash_len)
         blended = crypto_provider.kdf_extract(joiner_secret, psk_or_zero)
@@ -594,11 +607,11 @@ class MLSGroup:
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
-                for e in exts:
-                    if e.ext_type == ExtensionType.EXTERNAL_PUB:
-                        ext_external_pub = e.data
-                    elif e.ext_type == ExtensionType.RATCHET_TREE:
-                        ext_tree_bytes = e.data
+                for ext in exts:
+                    if ext.ext_type == ExtensionType.EXTERNAL_PUB:
+                        ext_external_pub = ext.data
+                    elif ext.ext_type == ExtensionType.RATCHET_TREE:
+                        ext_tree_bytes = ext.data
             except Exception:
                 # If extension parsing fails, continue and attempt join optimistically
                 pass
@@ -652,17 +665,17 @@ class MLSGroup:
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
-                for e in exts:
-                    if e.ext_type == ExtensionType.RATCHET_TREE:
+                for ext in exts:
+                    if ext.ext_type == ExtensionType.RATCHET_TREE:
                         # Prefer full-tree loader; fall back to legacy leaves-only
                         try:
-                            group._ratchet_tree.load_full_tree_from_welcome_bytes(e.data)
+                            group._ratchet_tree.load_full_tree_from_welcome_bytes(ext.data)
                         except Exception:
-                            group._ratchet_tree.load_tree_from_welcome_bytes(e.data)
-                    elif e.ext_type == ExtensionType.EXTERNAL_PUB:
-                        group._external_public_key = e.data
-                    elif e.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
-                        req_exts, req_props, req_creds = parse_required_capabilities(e.data)
+                            group._ratchet_tree.load_tree_from_welcome_bytes(ext.data)
+                    elif ext.ext_type == ExtensionType.EXTERNAL_PUB:
+                        group._external_public_key = ext.data
+                    elif ext.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
+                        req_exts, req_props, req_creds = parse_required_capabilities(ext.data)
             except Exception:
                 # If extension parsing fails, proceed without tree
                 pass
@@ -2262,11 +2275,13 @@ class MLSGroup:
                     self._crypto_provider,
                     recipient_public_key=pk,
                     label=mls_labels.HPKE_WELCOME,
-                    context=enc_group_info,  # RFC ?12.4.3.1: context = encrypted_group_info
+                    context=enc_group_info,  # RFC §12.4.3.1: context = encrypted_group_info
                     aad=b"",
                     plaintext=gs.serialize(),
                 )
-                secrets.append(EncryptedGroupSecrets(enc_kem, enc_ct))
+                from .refs import make_key_package_ref
+                kp_ref = make_key_package_ref(self._crypto_provider, kp.serialize())
+                secrets.append(EncryptedGroupSecrets(kp_ref, enc_kem, enc_ct))
             welcome = Welcome(
                 MLSVersion.MLS10,
                 CipherSuite(

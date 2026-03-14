@@ -1,9 +1,10 @@
 """Encoding helpers and simple constructors for MLS extensions (MVP set)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import os
 
 from ..codec.tls import (
@@ -22,6 +23,7 @@ class ExtensionType(IntEnum):
     Values 0x000A–0x000D follow common interop conventions.
     Values 0xFF00+ are private-use / implementation-specific.
     """
+
     # RFC 9420 Table 9 (IANA-registered)
     APPLICATION_ID = 0x0001
     RATCHET_TREE = 0x0002
@@ -30,19 +32,31 @@ class ExtensionType(IntEnum):
     EXTERNAL_SENDERS = 0x0005
     # Standard LeafNode extensions (interop conventions)
     # Note: These use private-use values (0xFFxx) as they are not standardized in RFC 9420 IANA registry.
-    CAPABILITIES = 0xFF02   # Private-use: no IANA-assigned value for LeafNode capabilities
-    LIFETIME = 0xFF03       # Private-use: no IANA-assigned value for LeafNode lifetime
-    KEY_ID = 0xFF04         # Private-use: no IANA-assigned value for external key ID
-    PARENT_HASH = 0xFF05    # Private-use: no IANA-assigned value for parent hash
+    CAPABILITIES = 0xFF02  # Private-use: no IANA-assigned value for LeafNode capabilities
+    LIFETIME = 0xFF03  # Private-use: no IANA-assigned value for LeafNode lifetime
+    KEY_ID = 0xFF04  # Private-use: no IANA-assigned value for external key ID
+    PARENT_HASH = 0xFF05  # Private-use: no IANA-assigned value for parent hash
     # Implementation-specific (private-use range)
     SUPPORTED_VERSIONS = 0xFF00
     EPOCH_AUTHENTICATOR = 0xFF01
 
 
 GREASE_VALUES: tuple[int, ...] = (
-    0x0A0A, 0x1A1A, 0x2A2A, 0x3A3A, 0x4A4A,
-    0x5A5A, 0x6A6A, 0x7A7A, 0x8A8A, 0x9A9A,
-    0xAAAA, 0xBABA, 0xCACA, 0xDADA, 0xEAEA,
+    0x0A0A,
+    0x1A1A,
+    0x2A2A,
+    0x3A3A,
+    0x4A4A,
+    0x5A5A,
+    0x6A6A,
+    0x7A7A,
+    0x8A8A,
+    0x9A9A,
+    0xAAAA,
+    0xBABA,
+    0xCACA,
+    0xDADA,
+    0xEAEA,
 )
 
 
@@ -74,6 +88,7 @@ def random_grease_values(max_count: int = 2) -> list[int]:
 @dataclass(frozen=True)
 class Extension:
     """Generic extension: (type, opaque data)."""
+
     ext_type: int
     data: bytes
 
@@ -89,7 +104,6 @@ class Extension:
         body, off = read_opaque_varint(data, off)
         # We store as int to allow unknown/private types
         return cls(t, body), off
-
 
 
 def serialize_extensions(exts: list[Extension]) -> bytes:
@@ -150,7 +164,6 @@ def validate_extension_uniqueness(exts: list[Extension]) -> None:
         seen.add(ext_type)
 
 
-
 def make_parent_hash_ext(parent_hash: bytes) -> Extension:
     """Build a PARENT_HASH extension from the provided parent hash bytes."""
     return Extension(ExtensionType.PARENT_HASH, parent_hash)
@@ -169,6 +182,7 @@ def make_key_id_ext(key_id: bytes) -> Extension:
 def make_lifetime_ext(not_before: int, not_after: int) -> Extension:
     """Build a LIFETIME extension from not_before/not_after unix timestamps."""
     from ..codec.tls import write_uint64
+
     payload = write_uint64(not_before) + write_uint64(not_after)
     return Extension(ExtensionType.LIFETIME, payload)
 
@@ -176,6 +190,7 @@ def make_lifetime_ext(not_before: int, not_after: int) -> Extension:
 def parse_lifetime_ext(data: bytes) -> tuple[int, int]:
     """Parse LIFETIME extension payload into (not_before, not_after) timestamps."""
     from ..codec.tls import read_uint64
+
     off = 0
     nb, off = read_uint64(data, off)
     na, off = read_uint64(data, off)
@@ -201,6 +216,7 @@ class ExternalSender:
         Credential credential;
     } ExternalSender;
     """
+
     signature_key: bytes
     credential_data: bytes
 
@@ -213,6 +229,7 @@ def parse_external_senders(data: bytes) -> list[ExternalSender]:
     Credential = uint16(type) || opaque<V>(body).
     """
     from ..codec.tls import read_varint as _read_varint
+
     results: list[ExternalSender] = []
     off = 0
     # Detect optional outer vector length prefix
@@ -228,10 +245,12 @@ def parse_external_senders(data: bytes) -> list[ExternalSender]:
         cred_start = off
         _cred_type, off = read_uint16(data, off)
         _cred_body, off = read_opaque_varint(data, off)
-        results.append(ExternalSender(
-            signature_key=sig_key,
-            credential_data=data[cred_start:off],
-        ))
+        results.append(
+            ExternalSender(
+                signature_key=sig_key,
+                credential_data=data[cred_start:off],
+            )
+        )
     return results
 
 
@@ -253,7 +272,6 @@ def build_capabilities_data(
         CredentialType credentials<V>;
     } Capabilities;
     """
-    from ..codec.tls import write_uint16
     versions = versions or [MLSVersion.MLS10]
     proposals = proposals or []
     credentials = credentials or [CredentialType.BASIC]
@@ -274,10 +292,10 @@ def build_capabilities_data(
                 cred_vals.append(g)
 
     def encode_vec(items: list[int]) -> bytes:
-        out = write_uint16(len(items))
-        for v in items:
-            out += write_uint16(int(v))
-        return out
+        from ..codec.tls import write_uint16, write_opaque_varint
+
+        out = b"".join(write_uint16(int(v)) for v in items)
+        return write_opaque_varint(out)
 
     return (
         encode_vec(versions)
@@ -288,21 +306,24 @@ def build_capabilities_data(
     )
 
 
-def parse_capabilities_data(data: bytes) -> dict:
+def parse_capabilities_data(
+    data: bytes, return_consumed: bool = False
+) -> dict[str, Any] | tuple[dict[str, Any], int]:
     """Decode Capabilities payload per RFC 9420 §7.2.
 
     Returns a dict with keys: versions, ciphersuites, extensions, proposals, credentials.
     Falls back to 2-field legacy format if the 5-field parse fails, for backward compatibility.
     """
-    from ..codec.tls import read_uint16
+    from ..codec.tls import read_uint16, read_opaque_varint
 
     def read_vec(d: bytes, off: int) -> tuple[list[int], int]:
-        n, off = read_uint16(d, off)
+        data_block, next_off = read_opaque_varint(d, off)
         items = []
-        for _ in range(n):
-            v, off = read_uint16(d, off)
+        i = 0
+        while i < len(data_block):
+            v, i = read_uint16(data_block, i)
             items.append(v)
-        return items, off
+        return items, next_off
 
     try:
         off = 0
@@ -312,16 +333,20 @@ def parse_capabilities_data(data: bytes) -> dict:
         proposals, off = read_vec(data, off)
         credentials, off = read_vec(data, off)
         # GREASE values are intentionally ignored by receivers.
-        return {
+        res = {
             "versions": versions,
             "ciphersuites": [v for v in ciphersuites if not is_grease_value(v)],
             "extensions": [v for v in extensions if not is_grease_value(v)],
             "proposals": [v for v in proposals if not is_grease_value(v)],
             "credentials": [v for v in credentials if not is_grease_value(v)],
         }
+        if return_consumed:
+            return res, off
+        return res
     except Exception:
         # Legacy 2-field fallback: (ciphersuites, extensions)
         from ..codec.tls import read_uint16
+
         off = 0
         n_cs, off = read_uint16(data, off)
         cs_ids = []
@@ -333,7 +358,16 @@ def parse_capabilities_data(data: bytes) -> dict:
         for _ in range(n_ext):
             t, off = read_uint16(data, off)
             exts.append(t)
-        return {"versions": [], "ciphersuites": cs_ids, "extensions": exts, "proposals": [], "credentials": []}
+        res = {
+            "versions": [],
+            "ciphersuites": cs_ids,
+            "extensions": exts,
+            "proposals": [],
+            "credentials": [],
+        }
+        if return_consumed:
+            return res, off
+        return res
 
 
 def build_required_capabilities(
@@ -351,53 +385,54 @@ def build_required_capabilities(
     } RequiredCapabilities;
     """
     from ..codec.tls import write_uint16
-    
+
     props_required = props_required or []
     creds_required = creds_required or []
 
     out = write_uint16(len(exts_required))
     for e in exts_required:
         out += write_uint16(int(e))
-    
+
     out += write_uint16(len(props_required))
     for p in props_required:
         out += write_uint16(int(p))
-        
+
     out += write_uint16(len(creds_required))
     for c in creds_required:
         out += write_uint16(int(c))
-        
+
     return out
 
 
 def parse_required_capabilities(data: bytes) -> tuple[list[int], list[int], list[int]]:
     """Decode REQUIRED_CAPABILITIES payload.
-    
+
     Returns:
         (extension_types, proposal_types, credential_types)
     """
     from ..codec.tls import read_uint16
+
     off = 0
-    
+
     # Extension types
     num_ext, off = read_uint16(data, off)
     exts: list[int] = []
     for _ in range(num_ext):
         val, off = read_uint16(data, off)
         exts.append(val)
-        
+
     # Proposal types
     num_prop, off = read_uint16(data, off)
     props: list[int] = []
     for _ in range(num_prop):
         val, off = read_uint16(data, off)
         props.append(val)
-        
+
     # Credential types
     num_cred, off = read_uint16(data, off)
     creds: list[int] = []
     for _ in range(num_cred):
         val, off = read_uint16(data, off)
         creds.append(val)
-        
+
     return exts, props, creds

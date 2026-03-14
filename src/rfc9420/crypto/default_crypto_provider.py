@@ -33,6 +33,7 @@ from .hpke_backend import (
 from .crypto_provider import CryptoProvider
 from .ciphersuites import (
     CipherSuiteId,
+    KEM as KEMEnum,
     KDF as KDFEnum,
     MlsCiphersuite,
     SignatureScheme,
@@ -286,9 +287,31 @@ class DefaultCryptoProvider(CryptoProvider):
             plaintext=ptxt,
         )
 
+    def _normalize_hpke_private_key(self, private_key: bytes) -> bytes:
+        """Normalize HPKE private key encoding for NIST KEM suites.
+
+        Some interop vectors serialize NIST scalar keys without leading zero bytes.
+        HPKE deserialization expects fixed-width Nsk bytes, so we left-pad short keys.
+        """
+        if self._suite.kem not in (
+            KEMEnum.DHKEM_P256_HKDF_SHA256,
+            KEMEnum.DHKEM_P384_HKDF_SHA384,
+            KEMEnum.DHKEM_P521_HKDF_SHA512,
+        ):
+            return private_key
+        kem_id, _, _ = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
+        params = KEM_PARAMS.get(kem_id)
+        if not params or "Nsk" not in params:
+            return private_key
+        nsk = int(params["Nsk"])
+        if len(private_key) >= nsk:
+            return private_key
+        return private_key.rjust(nsk, b"\x00")
+
     def hpke_open(
         self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes
     ) -> bytes:
+        private_key = self._normalize_hpke_private_key(private_key)
         return _hpke_open_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -310,6 +333,7 @@ class DefaultCryptoProvider(CryptoProvider):
     ) -> bytes:
         from .hpke_backend import hpke_export_secret as _hpke_export_backend
 
+        private_key = self._normalize_hpke_private_key(private_key)
         return _hpke_export_backend(
             kem=self._suite.kem,
             kdf=self._suite.kdf,
@@ -352,7 +376,12 @@ class DefaultCryptoProvider(CryptoProvider):
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
-        """Derive a deterministic KEM key pair using rfc9180-py."""
+        """Derive a deterministic KEM key pair using rfc9180-py per RFC 9180 §7.1.3.
+        When seed is shorter than Nsk (e.g. MLS path_secret is Nh, P-521 Nsk=66),
+        expand to Nsk with KDF so the HPKE layer accepts it (RFC 9180 IKM SHOULD >= Nsk)."""
+        nsk = self.kem_sk_ikm_min_size()
+        if len(seed) < nsk:
+            seed = self.expand_with_label(seed, b"hpke ikm", b"", nsk)
         hpke = self._get_hpke_instance()
         sk, pk = hpke.derive_key_pair(seed)
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
@@ -364,6 +393,14 @@ class DefaultCryptoProvider(CryptoProvider):
         if params and "Npk" in params:
             return params["Npk"]
         raise UnsupportedCipherSuiteError("Unknown KEM parameters")
+
+    def kem_sk_ikm_min_size(self) -> int:
+        """Return minimum IKM length for HPKE DeriveKeyPair (Nsk). RFC 9180 requires IKM >= Nsk."""
+        kem_id, _, _ = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
+        params = KEM_PARAMS.get(kem_id)
+        if params and "Nsk" in params:
+            return params["Nsk"]
+        return self.kdf_hash_len()
 
     def aead_key_size(self) -> int:
         """Return AEAD key size using rfc9180 AEAD_PARAMS."""

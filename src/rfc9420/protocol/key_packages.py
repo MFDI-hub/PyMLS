@@ -99,16 +99,13 @@ class LeafNode:
 
     def serialize(self) -> bytes:
         """Encode fields per RFC 9420 §7.2."""
-        exts = _prepare_extensions_for_signing(
-            self.extensions,
-            self.capabilities,
-            grease_payload=b"leafnode-grease",
-        )
         data = serialize_bytes(self.encryption_key)
         data += serialize_bytes(self.signature_key)
+        
         cred_bytes = self.credential.serialize() if self.credential is not None else b""
-        data += serialize_bytes(cred_bytes)
-        data += serialize_bytes(self.capabilities)
+        data += cred_bytes
+        data += self.capabilities
+        
         data += struct.pack("!B", int(self.leaf_node_source))
 
         # Source-specific fields
@@ -120,7 +117,7 @@ class LeafNode:
         elif self.leaf_node_source == LeafNodeSource.COMMIT:
             data += serialize_bytes(self.parent_hash)
 
-        data += serialize_bytes(serialize_extensions(exts))
+        data += serialize_bytes(serialize_extensions(self.extensions or []))
         if isinstance(self.signature, Signature):
             data += serialize_bytes(self.signature.value)
         else:
@@ -130,30 +127,14 @@ class LeafNode:
     def tbs_serialize(
         self, group_id: Optional[bytes] = None, leaf_index: Optional[int] = None
     ) -> bytes:
-        """Encode LeafNodeTBS (everything except signature) for signing.
-
-        RFC 9420 §7.2 LeafNodeTBS:
-        struct {
-            LeafNode content; // (minus signature)
-            select (LeafNode.leaf_node_source) {
-                case key_package: struct{};
-                case update:
-                case commit:
-                    opaque group_id<V>;
-                    uint32 leaf_index;
-            };
-        } LeafNodeTBS;
-        """
-        exts = _prepare_extensions_for_signing(
-            self.extensions,
-            self.capabilities,
-            grease_payload=b"leafnode-grease",
-        )
+        """Encode LeafNodeTBS (everything except signature) for signing."""
         data = serialize_bytes(self.encryption_key)
         data += serialize_bytes(self.signature_key)
+        
         cred_bytes = self.credential.serialize() if self.credential is not None else b""
-        data += serialize_bytes(cred_bytes)
-        data += serialize_bytes(self.capabilities)
+        data += cred_bytes
+        data += self.capabilities
+        
         data += struct.pack("!B", int(self.leaf_node_source))
 
         # Source-specific fields (LeafNode content part)
@@ -165,7 +146,7 @@ class LeafNode:
         elif self.leaf_node_source == LeafNodeSource.COMMIT:
             data += serialize_bytes(self.parent_hash)
 
-        data += serialize_bytes(serialize_extensions(exts))
+        data += serialize_bytes(serialize_extensions(self.extensions or []))
 
         # LeafNodeTBS specific additions
         if self.leaf_node_source in (LeafNodeSource.UPDATE, LeafNodeSource.COMMIT):
@@ -173,7 +154,6 @@ class LeafNode:
                 raise ValueError(
                     "group_id and leaf_index required for LeafNodeTBS with source UPDATE or COMMIT"
                 )
-            # opaque group_id<V>; uint32 leaf_index;
             data += serialize_bytes(group_id)
             data += struct.pack("!I", leaf_index)
 
@@ -182,13 +162,21 @@ class LeafNode:
     @classmethod
     def deserialize_partial(cls, data: bytes) -> tuple["LeafNode", int]:
         """Parse a LeafNode from bytes and return (LeafNode, bytes_consumed)."""
-        # Try full RFC parse
         try:
             enc_key, rest = deserialize_bytes(data)
             sig_key, rest = deserialize_bytes(rest)
-            cred_bytes, rest = deserialize_bytes(rest)
-            credential = Credential.deserialize(cred_bytes) if cred_bytes else None
-            caps, rest = deserialize_bytes(rest)
+
+            # Credential is an embedded struct
+            from .data_structures import Credential
+            credential, cred_len = Credential.deserialize_partial(rest)
+            rest = rest[cred_len:]
+            
+            # Capabilities is an embedded struct
+            from ..extensions.extensions import parse_capabilities_data
+            caps_data, caps_len = parse_capabilities_data(rest, return_consumed=True)
+            caps = rest[:caps_len]
+            rest = rest[caps_len:]
+            
             (src_val,) = struct.unpack("!B", rest[:1])
             leaf_source = LeafNodeSource(src_val)
             rest = rest[1:]
@@ -226,7 +214,6 @@ class LeafNode:
             )
             return leaf, consumed
         except Exception:
-            # Parse failed
             raise
 
     @classmethod
@@ -418,14 +405,8 @@ class KeyPackage:
         if self.leaf_node is None:
             raise ValueError("leaf_node must be set for serialization")
 
-        exts = _prepare_extensions_for_signing(
-            self.extensions,
-            b"",
-            grease_payload=b"keypackage-grease",
-        )
-
         ln_bytes = self.leaf_node.serialize()
-        exts_bytes = serialize_extensions(exts)
+        exts_bytes = serialize_extensions(self.extensions or [])
 
         out = struct.pack("!H", int(self.version))  # uint16 ProtocolVersion
         out += self.cipher_suite.serialize()  # uint16 suite_id
@@ -442,14 +423,8 @@ class KeyPackage:
         if self.leaf_node is None:
             raise ValueError("leaf_node must be set for serialization")
 
-        exts = _prepare_extensions_for_signing(
-            self.extensions,
-            b"",
-            grease_payload=b"keypackage-grease",
-        )
-
         ln_bytes = self.leaf_node.serialize()
-        exts_bytes = serialize_extensions(exts)
+        exts_bytes = serialize_extensions(self.extensions or [])
 
         out = struct.pack("!H", int(self.version))
         out += self.cipher_suite.serialize()
