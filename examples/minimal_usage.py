@@ -1,7 +1,7 @@
-from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
-from rfc9420.protocol.mls_group import MLSGroup
-from rfc9420.protocol.key_packages import KeyPackage, LeafNode
-from rfc9420.protocol.data_structures import Credential, Signature
+from rfc9420.backends.crypto.default_hpke import DefaultCryptoProvider
+from rfc9420 import ProtocolMLSGroup as MLSGroup
+from rfc9420.messages.key_packages import KeyPackage, LeafNode
+from rfc9420.messages.data_structures import Credential, Signature
 
 
 def main():

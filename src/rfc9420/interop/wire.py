@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..protocol.messages import MLSPlaintext, MLSCiphertext
+from ..messages.messages import MLSPlaintext, MLSCiphertext
 
 _HANDSHAKE_DECODE_CACHE: dict[bytes, MLSPlaintext] = {}
 

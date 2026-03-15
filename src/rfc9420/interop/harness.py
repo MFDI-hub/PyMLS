@@ -16,8 +16,8 @@ from ..codec.mls import (
     encode_welcome,
     decode_welcome,
 )
-from ..protocol.data_structures import Commit, Proposal, Welcome
-from ..protocol.messages import MLSPlaintext, MLSCiphertext
+from ..messages.data_structures import Commit, Proposal, Welcome
+from ..messages.messages import MLSPlaintext, MLSCiphertext
 from .wire import encode_handshake, decode_handshake, encode_application, decode_application
 
 

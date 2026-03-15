@@ -14,7 +14,7 @@ RFC9420 is a minimal, pragmatic implementation of the Messaging Layer Security p
 - ✅ Group state machine for Add/Update/Remove, commit create/process (RFC-aligned ordering)
 - ✅ Ratchet tree with RFC-style parent-hash validation
 - ✅ Welcome processing with full ratchet_tree extension (internal nodes included)
-- ✅ Ergonomic API: `RFC9420.Group`
+- ✅ Config-driven API: `GroupConfig`, `MLSGroup`, `MLSGroupSession`, `StagedCommit`
 - ✅ RFC 9420 test vector support
 - ✅ External commit and PSK support
 - ✅ X.509 credential verification and revocation helpers
@@ -25,11 +25,18 @@ RFC9420 is a minimal, pragmatic implementation of the Messaging Layer Security p
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from rfc9420 import Group, DefaultCryptoProvider
-from rfc9420.protocol.key_packages import KeyPackage, LeafNode
-from rfc9420.protocol.data_structures import Credential, Signature
+from rfc9420 import (
+    GroupConfig,
+    DefaultCryptoProvider,
+    MemoryStorageProvider,
+    MLSGroupSession,
+)
+from rfc9420.messages.key_packages import KeyPackage, LeafNode
+from rfc9420.messages.data_structures import Credential, Signature
 
-crypto = DefaultCryptoProvider()  # MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+crypto = DefaultCryptoProvider()
+storage = MemoryStorageProvider()
+config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
 
 def make_member(identity: bytes):
     kem_sk = X25519PrivateKey.generate()
@@ -48,20 +55,21 @@ def make_member(identity: bytes):
     kp = KeyPackage(leaf, Signature(sig))
     return kp, kem_sk.private_bytes_raw(), sig_sk.private_bytes_raw()
 
-# Creator (A)
+# Creator (A): config-driven session
 kp_a, kem_sk_a, sig_sk_a = make_member(b"userA")
-group = Group.create(b"group1", kp_a, crypto)
+session_a = MLSGroupSession.create_with_config(config, b"group1", kp_a)
 
 # Joiner (B)
 kp_b, kem_sk_b, sig_sk_b = make_member(b"userB")
-prop = group.add(kp_b, sig_sk_a)
-group.process_proposal(prop, 0)
-commit_pt, welcomes = group.commit(sig_sk_a)
+session_a.add_member(kp_b, sig_sk_a)
+commit_bytes, welcomes = session_a.commit(sig_sk_a)
 
-group_b = Group.join_from_welcome(welcomes[0], kem_sk_b, crypto)
+session_b = MLSGroupSession.join_from_welcome_with_config(
+    config, welcomes[0], kem_sk_b
+)
 
-ct = group.protect(b"hello")
-sender, pt = group_b.unprotect(ct)
+ct = session_a.protect_application(b"hello")
+sender, pt = session_b.unprotect_application(ct)
 print(sender, pt)  # 0, b'hello'
 ```
 
@@ -83,18 +91,18 @@ uv run pytest -q
 
 ### Group Operations
 
-The `Group` class provides a high-level API for MLS group management:
+Use **`GroupConfig`** (crypto + storage + optional identity providers) and **`MLSGroupSession`** for the high-level API:
 
-- **`Group.create(group_id, key_package, crypto)`**: Create a new group with an initial member
-- **`Group.join_from_welcome(welcome, hpke_private_key, crypto)`**: Join an existing group via Welcome message
-- **`group.add(key_package, signing_key)`**: Create an Add proposal
-- **`group.update(leaf_node, signing_key)`**: Create an Update proposal
-- **`group.remove(removed_index, signing_key)`**: Create a Remove proposal
-- **`group.process_proposal(message, sender_leaf_index)`**: Process a received proposal
-- **`group.commit(signing_key)`**: Create a commit with pending proposals
-- **`group.apply_commit(message, sender_leaf_index)`**: Apply a received commit
-- **`group.protect(application_data)`**: Encrypt application data
-- **`group.unprotect(message)`**: Decrypt application ciphertext
+- **`MLSGroupSession.create_with_config(config, group_id, key_package)`**: Create a new group with an initial member
+- **`MLSGroupSession.join_from_welcome_with_config(config, welcome, hpke_private_key)`**: Join via Welcome message
+- **`MLSGroupSession.deserialize_with_config(config, data)`**: Restore a session from serialized state
+- **`session.add_member(key_package, signing_key)`**, **`session.update_self(...)`**, **`session.remove_member(...)`**: Proposals
+- **`session.process_proposal(handshake_bytes, sender_leaf_index)`**: Process a received proposal
+- **`session.commit(signing_key)`**: Create a commit (staged merge + apply)
+- **`session.apply_commit(handshake_bytes, sender_leaf_index)`**: Apply a received commit
+- **`session.protect_application(plaintext)`** / **`session.unprotect_application(ciphertext_bytes)`**: Application data
+
+For staged commits and direct group access, use **`MLSGroup`** and **`StagedCommit`** from `rfc9420`.
 
 ### Ciphersuites
 
@@ -196,7 +204,7 @@ The ratchet tree truncates immediately when the rightmost leaf (and all trailing
 KeyPackage verification checks that the credential public key matches the leaf signature key. X.509 credential containers are supported:
 
 ```python
-from rfc9420.crypto.x509 import X509Credential
+from rfc9420.messages.credentials import X509Credential
 
 # Verify X.509 certificate chain
 cred = X509Credential.deserialize(cert_der)
@@ -214,8 +222,8 @@ group._inner.set_trust_roots([trust_root1_der, trust_root2_der])
 Revocation checks are pluggable. Batteries-included helpers are available:
 
 ```python
-from rfc9420.crypto.x509_revocation import check_ocsp_end_entity, check_crl
-from rfc9420.crypto.x509_policy import X509Policy, RevocationConfig
+from rfc9420.backends.identity.x509_revocation import check_ocsp_end_entity, check_crl
+from rfc9420.backends.identity.x509_policy import X509Policy, RevocationConfig
 
 policy = X509Policy(
     revocation=RevocationConfig(

@@ -3,15 +3,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from .data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal, ReInitProposal
-from .key_packages import KeyPackage
+from ..messages.data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal, ReInitProposal
+from ..messages.key_packages import KeyPackage
 from ..extensions.extensions import parse_capabilities_data
 from ..crypto.crypto_provider import CryptoProvider
-
-
-class CommitValidationError(Exception):
-    """Raised when a commit or its related data fails validation checks."""
-    pass
+from ..mls.exceptions import CommitValidationError
 
 
 def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
@@ -19,6 +15,16 @@ def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
 
     Be lenient: if bytes are not a full KeyPackage, fall back to treating the
     input as the identity blob directly.
+
+    Parameters
+    ----------
+    kp_bytes : bytes
+        Serialized KeyPackage or raw identity bytes.
+
+    Returns
+    -------
+    str
+        User ID string (UTF-8 decoded or hex).
     """
     try:
         kp = KeyPackage.deserialize(kp_bytes)
@@ -42,7 +48,18 @@ def _extract_user_id_from_key_package_bytes(kp_bytes: bytes) -> str:
 
 
 def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:
-    """Ensure there is at most one Add proposal per user identity in a commit batch."""
+    """Ensure there is at most one Add proposal per user identity in a commit batch.
+
+    Parameters
+    ----------
+    proposals : Iterable[Proposal]
+        Proposals in the commit batch.
+
+    Raises
+    ------
+    CommitValidationError
+        If duplicate Add for same user_id.
+    """
     seen: Set[str] = set()
     for p in proposals:
         if isinstance(p, AddProposal):
@@ -53,10 +70,22 @@ def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:
 
 
 def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int) -> None:
-    """
-    Baseline client-side proposal checks:
-    - Enforce uniqueness of Add by user ID.
-    - Ensure Remove indices are within current tree size.
+    """Baseline client-side proposal checks.
+
+    Enforce uniqueness of Add by user ID and ensure Remove indices are within
+    current tree size.
+
+    Parameters
+    ----------
+    proposals : Iterable[Proposal]
+        Proposals to validate.
+    n_leaves : int
+        Current number of leaves in the tree.
+
+    Raises
+    ------
+    CommitValidationError
+        If validation fails.
     """
     validate_unique_adds_by_user_id(proposals)
     for p in proposals:
@@ -95,26 +124,40 @@ def validate_proposals_server_rules(
     committer may not include their own Update, Add for existing member only if
     paired with Remove, and external commit strict typing.
 
-    Parameters:
-        proposals: Proposals in the commit.
-        committer_index: Leaf index of the committer.
-        n_leaves: Current number of leaves in the tree.
-        ratchet_tree: Optional ratchet tree for parent-hash and existing-member checks.
-        kdf_hash_len: Optional KDF hash length for ref hashes.
-        allow_reinit_psk: Whether ReInit with PSK is allowed.
-        allow_branch_psk: Whether branch PSKs are allowed.
-        current_version: Optional protocol version for ReInit checks.
-        allow_external_init: If True, allow ExternalInit (external commit per §12.4.3.2)
-            and enforce external-commit-only proposal set.
-        update_leaf_indices: Optional list of (UpdateProposal, leaf_index) so we can
-            enforce "no multiple Update/Remove for same leaf".
-        add_for_existing_ok: Optional set of leaf indices that are being removed in this
-            commit; Add for a key package matching that leaf is allowed.
+    Parameters
+    ----------
+    proposals : Iterable[Proposal]
+        Proposals in the commit.
+    committer_index : int
+        Leaf index of the committer.
+    n_leaves : int
+        Current number of leaves in the tree.
+    ratchet_tree : Optional[Any], optional
+        Optional ratchet tree for parent-hash and existing-member checks (default None).
+    kdf_hash_len : Optional[int], optional
+        Optional KDF hash length for ref hashes (default None).
+    allow_reinit_psk : bool, optional
+        Whether ReInit with PSK is allowed (default False).
+    allow_branch_psk : bool, optional
+        Whether branch PSKs are allowed (default False).
+    current_version : Optional[int], optional
+        Optional protocol version for ReInit checks (default None).
+    allow_external_init : bool, optional
+        If True, allow ExternalInit (external commit per §12.4.3.2) and enforce
+        external-commit-only proposal set (default False).
+    update_leaf_indices : Optional[List[tuple[Proposal, int]]], optional
+        Optional list of (UpdateProposal, leaf_index) to enforce no multiple
+        Update/Remove for same leaf (default None).
+    add_for_existing_ok : Optional[Set[int]], optional
+        Optional set of leaf indices being removed in this commit; Add for a key
+        package matching that leaf is allowed (default None).
 
-    Raises:
-        CommitValidationError: If any server-side rule is violated.
+    Raises
+    ------
+    CommitValidationError
+        If any server-side rule is violated.
     """
-    from .data_structures import PreSharedKeyProposal, AddProposal
+    from ..messages.data_structures import PreSharedKeyProposal, AddProposal
     plist = list(proposals)
     validate_proposals_client_rules(plist, n_leaves)
     # No Remove of committer
@@ -205,7 +248,7 @@ def validate_proposals_server_rules(
             if kdf_hash_len is not None and len(p.psk.psk_nonce) != int(kdf_hash_len):
                 raise CommitValidationError("psk_nonce length must equal KDF.Nh")
             try:
-                from .data_structures import PSKType, ResumptionPSKUsage
+                from ..messages.data_structures import PSKType, ResumptionPSKUsage
 
                 if p.psk.psktype == PSKType.RESUMPTION:
                     if p.psk.usage == ResumptionPSKUsage.REINIT and not allow_reinit_psk:
@@ -240,7 +283,22 @@ def validate_proposals_server_rules(
 
 
 def validate_update_path_key_uniqueness(ratchet_tree: Any, path_public_keys: list[bytes], committer_index: int) -> None:
-    """Ensure UpdatePath encryption keys are unique across the tree."""
+    """Ensure UpdatePath encryption keys are unique across the tree.
+
+    Parameters
+    ----------
+    ratchet_tree : Any
+        Ratchet tree with existing nodes.
+    path_public_keys : list[bytes]
+        Public keys from the UpdatePath.
+    committer_index : int
+        Leaf index of the committer.
+
+    Raises
+    ------
+    CommitValidationError
+        If an UpdatePath key duplicates an existing key.
+    """
     existing: set[bytes] = set()
     for leaf in range(getattr(ratchet_tree, "n_leaves", 0)):
         node = ratchet_tree.get_node(leaf * 2)
@@ -266,7 +324,22 @@ def validate_update_path_key_uniqueness(ratchet_tree: Any, path_public_keys: lis
 def validate_proposal_types_supported(
     proposals: Iterable[Proposal], member_capabilities: List[Dict[str, List[int]]], required_proposals: Optional[List[int]] = None
 ) -> None:
-    """Ensure all members support proposal types present in a commit."""
+    """Ensure all members support proposal types present in a commit.
+
+    Parameters
+    ----------
+    proposals : Iterable[Proposal]
+        Proposals in the commit.
+    member_capabilities : List[Dict[str, List[int]]]
+        Per-member capabilities (e.g. proposals list).
+    required_proposals : Optional[List[int]], optional
+        Proposal types that are required and not checked (default None).
+
+    Raises
+    ------
+    CommitValidationError
+        If a member does not support a proposal type used.
+    """
     used = [int(p.proposal_type.value) for p in proposals]
     req = set(required_proposals or [])
     for idx, caps in enumerate(member_capabilities):
@@ -283,7 +356,20 @@ def validate_proposal_types_supported(
 
 
 def validate_credential_types_supported(ratchet_tree: Any, member_capabilities: list[dict[str, list[int]]]) -> None:
-    """Ensure credential types used in tree are supported by all members."""
+    """Ensure credential types used in tree are supported by all members.
+
+    Parameters
+    ----------
+    ratchet_tree : Any
+        Ratchet tree with leaf credentials.
+    member_capabilities : list[dict[str, list[int]]]
+        Per-member capabilities (e.g. credentials list).
+
+    Raises
+    ------
+    CommitValidationError
+        If a member does not support a credential type used.
+    """
     used_types: set[int] = set()
     for leaf in range(getattr(ratchet_tree, "n_leaves", 0)):
         node = ratchet_tree.get_node(leaf * 2)
@@ -307,7 +393,18 @@ def validate_credential_types_supported(ratchet_tree: Any, member_capabilities: 
 
 
 def validate_commit_basic(commit: Commit) -> None:
-    """Basic structural checks for a Commit object with union proposals list."""
+    """Basic structural checks for a Commit object with union proposals list.
+
+    Parameters
+    ----------
+    commit : Commit
+        Commit to validate.
+
+    Raises
+    ------
+    CommitValidationError
+        If proposals list or references are invalid.
+    """
     # Path-less commits are allowed by RFC 9420 in several cases.
     # Ensure proposals vector is well-formed.
     if not isinstance(commit.proposals, list):
@@ -321,10 +418,20 @@ def validate_commit_basic(commit: Commit) -> None:
 
 
 def commit_path_required(proposals: Iterable[Proposal]) -> bool:
-    """
-    Determine if a Commit MUST carry a non-empty path (RFC §12.4).
+    """Determine if a Commit MUST carry a non-empty path (RFC §12.4).
+
     Path required if proposals vector is empty or contains any of:
-      - Update, Remove, ExternalInit, GroupContextExtensions.
+    Update, Remove, ExternalInit, GroupContextExtensions.
+
+    Parameters
+    ----------
+    proposals : Iterable[Proposal]
+        Proposals in the commit.
+
+    Returns
+    -------
+    bool
+        True if path is required.
     """
     plist = list(proposals)
     if len(plist) == 0:

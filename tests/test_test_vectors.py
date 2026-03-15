@@ -102,7 +102,7 @@ def _collect_vector_ids():
 )
 def test_vector_spec(fname, vec_index):
     """Run spec-format verification for one test vector."""
-    from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+    from rfc9420.backends.crypto.default_hpke import DefaultCryptoProvider
     from rfc9420.crypto.ciphersuites import CipherSuiteId, get_ciphersuite_by_id
 
     runner_map = _filename_to_runner()

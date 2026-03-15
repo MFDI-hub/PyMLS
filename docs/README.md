@@ -1,63 +1,46 @@
 # RFC9420 Documentation
 
-Welcome to the RFC9420 documentation! This directory contains comprehensive documentation for the RFC9420 library.
+This folder documents the current provider-based API in `src/rfc9420`.
 
-## Documentation Structure
+## Start Here
 
-### Getting Started
-- **[Getting Started Guide](getting-started.md)** - Start here! Installation, basic concepts, and your first MLS group.
+- [Getting Started](getting-started.md): install, configure providers, create/join a group.
+- [Examples](examples.md): practical end-to-end snippets.
+- [API Reference](api-reference.md): public classes, methods, and backends.
+- [Advanced Features](advanced-features.md): external commit, PSK, re-init, policy, X.509.
+- [Architecture](architecture.md): how `session`, `group`, `protocol`, `providers`, and `backends` fit together.
 
-### API Documentation
-- **[API Reference](api-reference.md)** - Complete API reference: `Group`, `MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`, `get_commit_sender_leaf_index`, `SenderType`, `KeyRatchet`, exceptions, and data structures.
+## What Changed In This Refactor
 
-### Advanced Topics
-- **[Advanced Features](advanced-features.md)** - External commits, PSKs, re-initialization, X.509 credentials, and more.
+The package now centers on:
 
-### Examples
-- **[Examples](examples.md)** - Practical code examples for common use cases.
+- `GroupConfig` (`rfc9420.providers.config`) to compose crypto/storage/identity/rand.
+- `MLSGroup` (`rfc9420.group.mls_group`) with staged commits:
+  1. `create_commit(...) -> StagedCommit`
+  2. `await staged.merge(storage_provider)`
+  3. `group.apply_staged_commit(staged)`
+- `MLSGroupSession` (`rfc9420.api.session`) as a sync, byte-oriented wrapper around the staged flow.
+- `PublicGroup` (`rfc9420.group.public_group`) for passive validation (no secrets).
 
-### Architecture
-- **[Architecture](architecture.md)** - Internal architecture, component design, and implementation details.
+## Recommended Reading Order
 
-### Development
-- Run the same checks locally: `uv run ruff check .`, `uv run mypy src`, `uv run pytest -q` (see [Getting Started](getting-started.md#development-setup)).
+1. [Getting Started](getting-started.md)
+2. [Examples](examples.md)
+3. [API Reference](api-reference.md)
+4. [Advanced Features](advanced-features.md)
+5. [Architecture](architecture.md)
 
-## Quick Links
+## Dev Commands
 
-- **Installation**: See [Getting Started](getting-started.md#installation)
-- **Basic Usage**: See [Getting Started](getting-started.md#your-first-mls-group)
-- **API Reference**: See [API Reference](api-reference.md)
-- **Advanced Features**: See [Advanced Features](advanced-features.md)
+```bash
+uv sync --dev
+uv run ruff check .
+uv run mypy src
+uv run pytest -q
+```
 
-## Reading Order
+## References
 
-1. **New to RFC9420?** Start with [Getting Started](getting-started.md)
-2. **Need examples?** Check [Examples](examples.md)
-3. **Looking for specific methods?** See [API Reference](api-reference.md)
-4. **Want advanced features?** Read [Advanced Features](advanced-features.md)
-5. **Understanding internals?** Explore [Architecture](architecture.md)
-
-## Contributing
-
-Found an error or want to improve the documentation? Contributions are welcome!
-
-1. Check existing issues
-2. Create a new issue or pull request
-3. Follow the existing documentation style
-
-## External Resources
-
-- **RFC 9420**: [Messaging Layer Security](https://www.rfc-editor.org/rfc/rfc9420.html)
-- **RFC 9180**: [HPKE: Hybrid Public Key Encryption](https://www.rfc-editor.org/rfc/rfc9180.html)
-- **GitHub Repository**: [PyMLS on GitHub](https://github.com/MFDI-hub/PyMLS)
-
-## Support
-
-- **Issues**: Report bugs or request features on GitHub
-- **Questions**: Open a discussion on GitHub
-- **Security**: Report security issues privately
-
----
-
-**Note**: This documentation is for RFC9420 (PyMLS) version 0.6.0. Requires Python 3.9+. For version-specific information, see the [project README on GitHub](https://github.com/MFDI-hub/PyMLS/blob/main/README.md).
+- [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html)
+- [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html)
 

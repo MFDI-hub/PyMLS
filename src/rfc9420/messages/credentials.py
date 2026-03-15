@@ -1,6 +1,6 @@
 """Credential encodings (basic and X.509) and signature scheme mapping.
 
-NOTE: The RFC 9420 §5.3 wire format for credentials is protocol.data_structures.Credential
+NOTE: The RFC 9420 §5.3 wire format for credentials is messages.data_structures.Credential
 (uint16 credential_type, opaque identity<V> or Certificate certificates<V> with varint
 lengths). This module provides BasicCredential and X509Credential with an internal
 encoding (uint8 type, opaque16, signature_scheme) for application use. Do not serialize
@@ -125,7 +125,7 @@ class X509Credential:
         Verify the certificate chain against the provided trust roots.
         Returns the leaf certificate's public key bytes on success.
         """
-        from ..crypto.x509 import verify_certificate_chain
+        from ..backends.identity.x509 import verify_certificate_chain
         return verify_certificate_chain(self.cert_chain, trust_roots)
 
     def verify_chain_with_policy(self, trust_roots: List[bytes], policy) -> bytes:
@@ -133,7 +133,7 @@ class X509Credential:
         Verify the certificate chain and enforce an X.509 policy.
         Returns the leaf certificate's public key bytes on success.
         """
-        from ..crypto.x509 import verify_certificate_chain_with_policy
+        from ..backends.identity.x509 import verify_certificate_chain_with_policy
         return verify_certificate_chain_with_policy(self.cert_chain, trust_roots, policy)
 
 

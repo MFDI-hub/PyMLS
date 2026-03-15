@@ -6,12 +6,12 @@ import json
 import os
 from typing import Dict, Any, List
 
-from rfc9420.protocol.key_schedule import KeySchedule
-from rfc9420.protocol.data_structures import GroupContext
+from rfc9420.protocol.schedule.key_schedule import KeySchedule
+from rfc9420.messages.data_structures import GroupContext
 from rfc9420.crypto.crypto_provider import CryptoProvider
 from rfc9420.protocol import tree_math
 from rfc9420.protocol.secret_tree import SecretTree
-from rfc9420.protocol.messages import (
+from rfc9420.messages.messages import (
     ContentType,
     derive_psk_secret,
     FramedContent,
@@ -20,7 +20,7 @@ from rfc9420.protocol.messages import (
     MLSPlaintext,
     WireFormat,
 )
-from rfc9420.protocol.data_structures import (
+from rfc9420.messages.data_structures import (
     GroupInfo as GroupInfoStruct,
     PreSharedKeyID,
     PSKType,
@@ -29,10 +29,10 @@ from rfc9420.protocol.data_structures import (
 )
 from rfc9420.protocol.ratchet_tree_backend import BACKEND_ARRAY, create_tree_backend
 from rfc9420.mls.exceptions import CommitValidationError
-from rfc9420.protocol.key_packages import KeyPackage, LeafNode
-from rfc9420.protocol.mls_group import MLSGroup
+from rfc9420.messages.key_packages import KeyPackage, LeafNode
+from rfc9420.group.mls_group.processing import MLSGroup
 from rfc9420.codec.tls import read_varint
-from rfc9420.protocol.refs import encode_ref_hash_input
+from rfc9420.messages.refs import encode_ref_hash_input
 from rfc9420.protocol.transcripts import TranscriptState
 from rfc9420.protocol.validations import validate_confirmation_tag
 
@@ -590,7 +590,7 @@ def run_messages_vector_spec(vec: Dict[str, Any], _crypto: CryptoProvider) -> No
     def h(x: str) -> bytes:
         return bytes.fromhex(x)
 
-    from rfc9420.protocol.messages import MLSMessage
+    from rfc9420.messages.messages import MLSMessage
 
     mls_message_keys = ("mls_welcome", "mls_group_info", "mls_key_package")
     for key in mls_message_keys:
@@ -599,7 +599,7 @@ def run_messages_vector_spec(vec: Dict[str, Any], _crypto: CryptoProvider) -> No
         data = h(vec[key])
         _roundtrip_check(data, MLSMessage.deserialize, lambda m: m.serialize(), key)
 
-    from rfc9420.protocol.data_structures import GroupSecrets, Proposal, Commit
+    from rfc9420.messages.data_structures import GroupSecrets, Proposal, Commit
 
     if "ratchet_tree" in vec and vec["ratchet_tree"]:
         try:
@@ -719,12 +719,12 @@ def _run_welcome_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProvider) -
     def h(x: str) -> bytes:
         return bytes.fromhex(x)
 
-    from rfc9420.protocol.messages import MLSMessage
-    from rfc9420.protocol.data_structures import Welcome as WelcomeStruct
-    from rfc9420.protocol.key_packages import KeyPackage
+    from rfc9420.messages.messages import MLSMessage
+    from rfc9420.messages.data_structures import Welcome as WelcomeStruct
+    from rfc9420.messages.key_packages import KeyPackage
     from rfc9420.crypto.hpke_labels import decrypt_with_label
     from rfc9420.crypto import labels as mls_labels
-    from rfc9420.protocol.refs import make_key_package_ref
+    from rfc9420.messages.refs import make_key_package_ref
 
     cipher_suite = int(vec["cipher_suite"])
     crypto.set_ciphersuite(cipher_suite)
@@ -767,7 +767,7 @@ def _run_welcome_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProvider) -
         matched_egs.ciphertext,
     )
 
-    from rfc9420.protocol.data_structures import GroupSecrets, GroupInfo as GroupInfoStruct
+    from rfc9420.messages.data_structures import GroupSecrets, GroupInfo as GroupInfoStruct
 
     group_secrets = GroupSecrets.deserialize(group_secrets_bytes)
     joiner_secret = group_secrets.joiner_secret
@@ -814,7 +814,7 @@ def run_tree_operations_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider)
         return bytes.fromhex(x)
 
     from rfc9420.protocol.ratchet_tree import RatchetTree
-    from rfc9420.protocol.data_structures import (
+    from rfc9420.messages.data_structures import (
         Proposal,
         AddProposal,
         UpdateProposal,
@@ -982,7 +982,7 @@ def _run_treekem_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProvider) -
         return bytes.fromhex(x)
 
     from rfc9420.protocol.ratchet_tree import RatchetTree
-    from rfc9420.protocol.data_structures import UpdatePath
+    from rfc9420.messages.data_structures import UpdatePath
 
     crypto.set_ciphersuite(int(vec["cipher_suite"]))
 
@@ -1075,9 +1075,15 @@ def run_message_protection_vector_spec(vec: Dict[str, Any], crypto: CryptoProvid
             )
 
     ks = MockKeySchedule(h(vec["sender_data_secret"]), h(vec["membership_key"]), crypto)
-    st = SecretTree(h(vec["encryption_secret"]), crypto, n_leaves=2)
+    # Use n_leaves from vector if present; otherwise default 2 for initial SecretTree.
+    vector_n_leaves = vec.get("n_leaves")
+    if vector_n_leaves is not None:
+        n_leaves_candidates = [int(vector_n_leaves)]
+    else:
+        n_leaves_candidates = list(range(1, 33))
+    st = SecretTree(h(vec["encryption_secret"]), crypto, n_leaves=n_leaves_candidates[0])
 
-    from rfc9420.protocol.messages import (
+    from rfc9420.messages.messages import (
         MLSMessage,
         WireFormat,
         unprotect_content_handshake,
@@ -1098,11 +1104,10 @@ def run_message_protection_vector_spec(vec: Dict[str, Any], crypto: CryptoProvid
             assert msg_priv.wire_format == WireFormat.PRIVATE_MESSAGE
             ciphertext_obj = msg_priv.get_parsed_content()
 
-            # Since the test vector doesn't specify n_leaves for the SecretTree,
-            # and derivations depend on tree math (which uses n_leaves), we bruteforce.
+            # SecretTree derivations depend on n_leaves; try vector n_leaves first, then bruteforce.
             unprotected_body = None
             last_err = None
-            for n_leaves in range(1, 20):
+            for n_leaves in n_leaves_candidates:
                 st = SecretTree(h(vec["encryption_secret"]), crypto, n_leaves=n_leaves)
                 try:
                     if msg_type == "application":
@@ -1182,7 +1187,7 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
     def h(x: str) -> bytes:
         return bytes.fromhex(x)
 
-    from rfc9420.protocol.mls_group import MLSGroup
+    from rfc9420.group.mls_group.processing import MLSGroup
 
     crypto.set_ciphersuite(int(vec["cipher_suite"]))
 
@@ -1236,8 +1241,8 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
     # When vector has epochs, process each epoch: proposals then commit, then verify epoch_authenticator
     epochs_list = vec.get("epochs") or []
     for epoch_idx, epoch_obj in enumerate(epochs_list):
-        from rfc9420.protocol.data_structures import Sender, SenderType
-        from rfc9420.protocol.messages import (
+        from rfc9420.messages.data_structures import Sender, SenderType
+        from rfc9420.messages.messages import (
             ContentType,
             WireFormat,
             FramedContent,
@@ -1395,7 +1400,7 @@ def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, 
 if __name__ == "__main__":
     import argparse
     from rfc9420.crypto.ciphersuites import CipherSuiteId
-    from rfc9420.crypto.default_crypto_provider import DefaultCryptoProvider
+    from rfc9420.backends.crypto.default_hpke import DefaultCryptoProvider
 
     parser = argparse.ArgumentParser(description="Run MLS RFC 9420 test vectors")
     parser.add_argument("dir", help="Directory with JSON test vectors")

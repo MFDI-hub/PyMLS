@@ -6,8 +6,8 @@ UpdatePath structures used in commits.
 """
 
 from typing import Any, Optional, Set, cast, List
-from .key_packages import KeyPackage, LeafNode, LeafNodeSource
-from ..codec.tls import (
+from ...messages.key_packages import KeyPackage, LeafNode, LeafNodeSource
+from ...codec.tls import (
     write_uint8,
     write_uint16,
     write_uint32,
@@ -21,13 +21,14 @@ from ..codec.tls import (
     read_varint,
     read_uint32,
 )
-from .data_structures import UpdatePath, Signature, serialize_bytes, UpdatePathNode
+from ...messages.data_structures import UpdatePath, Signature, serialize_bytes, UpdatePathNode
 from . import tree_math
-from ..crypto.crypto_provider import CryptoProvider
-from ..crypto.hpke_labels import encrypt_with_label, decrypt_with_label
-from ..crypto import labels as mls_labels
-from ..mls.exceptions import CommitValidationError
-import os
+from ...crypto.crypto_provider import CryptoProvider
+from ...providers.rand import RandProviderProtocol
+from ...backends.crypto.default_rand import DefaultRandProvider
+from ...crypto.hpke_labels import encrypt_with_label, decrypt_with_label
+from ...crypto import labels as mls_labels
+from ...mls.exceptions import CommitValidationError
 
 
 class RatchetTreeNode:
@@ -57,11 +58,16 @@ class RatchetTree:
 
     backend_id = "array"
 
-    def __init__(self, crypto_provider: CryptoProvider):
+    def __init__(
+        self,
+        crypto_provider: CryptoProvider,
+        rand_provider: Optional[RandProviderProtocol] = None,
+    ):
         """Create an empty ratchet tree."""
         self._n_leaves = 0
         self._nodes: dict[int, RatchetTreeNode] = {}
         self._crypto_provider = crypto_provider
+        self._rand_provider: RandProviderProtocol = rand_provider or DefaultRandProvider()
 
     @property
     def n_leaves(self):
@@ -677,7 +683,9 @@ class RatchetTree:
             return update_path, commit_secret, {}
 
         # RFC ?7.4: path_secret[0] = random; use current, THEN derive next (use-then-derive)
-        current_path_secret = os.urandom(self._crypto_provider.kdf_hash_len())
+        current_path_secret = self._rand_provider.random_bytes(
+            self._crypto_provider.kdf_hash_len()
+        )
 
         path_secret_by_node: dict[int, bytes] = {}
 
@@ -701,7 +709,7 @@ class RatchetTree:
 
         # RFC 9420 ?12.4.2: provisional GroupContext tree_hash MUST reflect the
         # tree AFTER the sender's direct path update. Recompute it now.
-        from .data_structures import GroupContext as _GC
+        from ...messages.data_structures import GroupContext as _GC
 
         try:
             gc_obj = _GC.deserialize(group_context_bytes)
@@ -807,13 +815,7 @@ class RatchetTree:
             Commit (RFC 9420 ?7.5). They MUST be excluded from the copath
             resolution when comparing length and when decrypting.
         """
-        # Update leaf node
         provided_leaf = LeafNode.deserialize(update_path.leaf_node)
-        self.update_leaf(committer_index, provided_leaf)
-
-        # Decrypt a single path_secret for the lowest applicable node; then derive upwards
-        # The UpdatePath nodes correspond to the *filtered direct path*.
-        # We need to map them to our direct path.
 
         # RFC 9420 ?7.4:
         # "The receiver... identifies the first node in the filtered direct path... for which it possesses a private key in the resolution of the copath node."
@@ -821,9 +823,14 @@ class RatchetTree:
         filtered_path = self.filtered_direct_path(
             committer_index * 2, excluded_leaf_pubkeys=excluded_leaf_pubkeys
         )
+        if len(update_path.nodes) != len(filtered_path):
+            raise CommitValidationError(
+                "UpdatePath node count does not match filtered direct path length"
+            )
+
         # RFC 9420 ?12.4.2: path encryption keys MUST be unique in the tree.
         try:
-            from .validations import validate_update_path_key_uniqueness
+            from ..validations import validate_update_path_key_uniqueness
 
             validate_update_path_key_uniqueness(
                 self,
@@ -838,25 +845,32 @@ class RatchetTree:
         decrypted_index: Optional[int] = None
         current_path_secret: Optional[bytes] = None
 
-        # Iterate over both the filtered path and the UpdatePath nodes
-        # They should align.
-        if len(update_path.nodes) != len(filtered_path):
-            pass
+        # Validate encrypted_path_secrets vector sizes before mutating state.
+        for i, node_index in enumerate(filtered_path):
+            if node_index == tree_math.root(self.n_leaves):
+                continue
+            up_node = update_path.nodes[i]
+            copath_node_index = tree_math.sibling(node_index, self.n_leaves)
+            resolution_filtered = self.resolve(
+                copath_node_index, excluded_leaf_pubkeys=excluded_leaf_pubkeys
+            )
+            if len(up_node.encrypted_path_secrets) != len(resolution_filtered):
+                raise CommitValidationError(
+                    "UpdatePath node encrypted_path_secret count does not match copath resolution length (RFC 9420 ?7.6)"
+                )
 
         # Phase 1: Update ALL public keys from UpdatePath before computing tree_hash.
         # RFC 9420 ?12.4.2: merge first, THEN construct provisional GroupContext
         # with the correct tree_hash, THEN decrypt path secrets.
+        self.update_leaf(committer_index, provided_leaf)
         for i, node_index in enumerate(filtered_path):
-            if i >= len(update_path.nodes):
-                break
-
             up_node = update_path.nodes[i]
             nd = self.get_node(node_index)
             nd.public_key = up_node.encryption_key
             nd.unmerged_leaves = []
 
         # Recompute tree_hash after merging public keys, then rebuild GC bytes
-        from .data_structures import GroupContext as _GC
+        from ...messages.data_structures import GroupContext as _GC
 
         try:
             gc_obj = _GC.deserialize(group_context_bytes)
@@ -875,9 +889,6 @@ class RatchetTree:
 
         # Phase 2: Attempt HPKE decryption using the corrected group_context_bytes
         for i, node_index in enumerate(filtered_path):
-            if i >= len(update_path.nodes):
-                break
-
             if current_path_secret is not None:
                 break
 
@@ -899,7 +910,7 @@ class RatchetTree:
                 if res_node.private_key:
                     blob = up_node.encrypted_path_secrets[j]
                     try:
-                        from .data_structures import deserialize_bytes
+                        from ...messages.data_structures import deserialize_bytes
 
                         kem_out, rest_ct = deserialize_bytes(blob)
                         ct, _ = deserialize_bytes(rest_ct)
@@ -998,6 +1009,10 @@ class RatchetTree:
         leaf_node_index = committer_index * 2
         filtered_path = self.filtered_direct_path(leaf_node_index)
         full_direct_path = tree_math.direct_path(leaf_node_index, self.n_leaves)
+        if len(update_path.nodes) != len(filtered_path):
+            raise CommitValidationError(
+                "UpdatePath node count does not match filtered direct path length"
+            )
 
         # RFC 9420 §7.5: blank all direct-path nodes before merge.
         for node_index in full_direct_path:
@@ -1013,8 +1028,6 @@ class RatchetTree:
         self.update_leaf(committer_index, provided_leaf)
 
         for i, node_index in enumerate(filtered_path):
-            if i >= len(update_path.nodes):
-                break
             up_node = update_path.nodes[i]
             nd = self.get_node(node_index)
             nd.public_key = up_node.encryption_key
@@ -1163,7 +1176,7 @@ class RatchetTree:
         The receiver extends with blank nodes until length is 2^(d+1)-1, then
         infers n_leaves = 2^d.
         """
-        from ..codec.tls import TLSDecodeError
+        from ...codec.tls import TLSDecodeError
 
         off = 0
         total_len, off = read_varint(data, off)
@@ -1185,7 +1198,7 @@ class RatchetTree:
                 raise TLSDecodeError("optional<Node> must have length 0 or 1")
             node_type, off = read_uint8(data, off)
             if node_type == 1:  # leaf
-                from .key_packages import LeafNode
+                from ...messages.key_packages import LeafNode
 
                 leaf_node, consumed = LeafNode.deserialize_partial(data[off:])
                 off += consumed
