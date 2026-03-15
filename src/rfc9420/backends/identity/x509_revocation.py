@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Optional, Callable
 
-from ..mls.exceptions import RFC9420Error
+from ...mls.exceptions import RFC9420Error
 
 
 def _now_utc() -> _dt.datetime:
@@ -207,5 +207,3 @@ def check_crl(
 
     cache[cache_key] = (now, True)
     return True
-
-

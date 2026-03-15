@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import List, Tuple
 import struct
 
-from ..protocol.data_structures import (
+from ..messages.data_structures import (
     Welcome,
     Commit,
     Proposal,
@@ -75,7 +75,7 @@ def decode_commit_message(data: bytes) -> Tuple[Commit, bytes]:
     """
     commit = Commit.deserialize(data)
     commit_len = len(commit.serialize())
-    from ..protocol.data_structures import Signature
+    from ..messages.data_structures import Signature
     signature = Signature.deserialize(data[commit_len:])
     return (commit, signature.value)
 

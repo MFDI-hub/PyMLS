@@ -1,288 +1,143 @@
 # Advanced Features
 
-This guide covers advanced features of RFC9420 including external commits, Pre-Shared Keys (PSKs), re-initialization, and X.509 credential handling.
+Advanced workflows built on the current `MLSGroup` / `MLSGroupSession` architecture.
 
-## External Commits
+## 1) Staged Processing (Non-Mutating Commit Path)
 
-External commits allow parties that are not currently group members to join a group without requiring a Welcome message. This is useful for scenarios where you want to allow external parties to join directly.
-
-### How External Commits Work
-
-1. The group publishes an `EXTERNAL_PUB` extension in `GroupInfo`
-2. An external party creates an external commit with their KeyPackage
-3. The commit is signed with the group's external key (no membership tag required)
-4. The commit includes an ExternalInit proposal and an Add proposal
-5. The commit is path-less (no UpdatePath) since the external party has no existing leaf
-
-### Example: External Commit
+Use this when you need to persist first, then apply:
 
 ```python
-from rfc9420 import Group
-
-# On the group side: Create external commit (low-level MLSGroup)
-external_kp = create_key_package(...)
-external_kem_pk = generate_kem_public_key()
-
-commit, welcomes = group._inner.external_commit(external_kp, external_kem_pk)
-
-# Send commit to group members
-# Group members process it:
-group._inner.process_external_commit(commit)
+staged = group.process_commit_staged(commit_plaintext, sender_leaf_index=sender)
+await staged.merge(group.config.storage_provider)
+group.apply_staged_commit(staged)
 ```
 
-### Processing External Commits
+This mirrors local commit creation:
 
 ```python
-# Group members receive and process external commit
-group._inner.process_external_commit(external_commit_message)
+staged = group.create_commit(signing_key)
+await staged.merge(group.config.storage_provider)
+group.apply_staged_commit(staged)
 ```
 
-**Note:** External commits are verified using the group's external public key, not membership tags.
+## 2) External Commit (Low-Level API)
 
-## Pre-Shared Keys (PSKs)
-
-PSKs allow groups to incorporate shared secrets into the key schedule. This is useful for:
-- Resuming previous group states
-- Adding external authentication
-- Implementing application-specific security policies
-
-### Creating PSK Proposals
+Available on the inner protocol group (`ProtocolMLSGroup`):
 
 ```python
-# Create a PSK proposal
-psk_id = b"my_psk_identifier"
-psk_proposal = group._inner.create_psk_proposal(psk_id, signing_key)
-
-# Process the proposal
-group.process_proposal(psk_proposal, sender_index)
-
-# Create commit (PSK binder will be automatically computed)
-commit, welcomes = group.commit(signing_key)
+commit_msg, welcomes = session._group._inner.external_commit(external_key_package, external_kem_public_key)
+session._group._inner.process_external_commit(commit_msg)
 ```
 
-### PSK Binders
+Use this path for advanced interoperability workflows where a non-member joins via external commit semantics.
 
-When a commit includes PSK proposals, a PSK binder is automatically computed and included in the `authenticated_data` field. The binder binds the PSK to the commit content, preventing replay attacks.
+## 3) PSK Proposals
 
-**PSK Binder Verification:**
-- By default, PSK binder verification is strict (required)
-- Configure with `group._inner.set_strict_psk_binders(False)` to relax verification (low-level only)
-
-### Resumption PSKs
-
-Each epoch generates a resumption PSK that can be used to resume the group state:
+Create PSK proposal on `_inner`, then feed it through normal proposal/commit flow:
 
 ```python
-# Export resumption PSK (on Group)
-resumption_psk = group.get_resumption_psk()
+from rfc9420.interop.wire import encode_handshake
 
-# Store for later use
-# ... later, use PSK in a new group or epoch
+psk_prop = session._group._inner.create_psk_proposal(psk_id=b"psk-1", signing_key=sig_sk)
+session.process_proposal(encode_handshake(psk_prop), session.own_leaf_index)
+commit_bytes, _ = session.commit(sig_sk)
 ```
 
-## Re-Initialization
-
-Re-initialization allows migrating a group to a new `group_id` and resetting the epoch. This is useful for:
-- Group lifecycle management
-- Implementing group archival
-- Creating group snapshots
-
-### Creating a ReInit Commit
+Binder behavior tuning:
 
 ```python
-new_group_id = b"new_group_identifier"
-commit, welcomes = group._inner.reinit_group_to(new_group_id, signing_key)
-
-# Process the commit
-group.apply_commit(commit, sender_index)
-# Group now has new_group_id and epoch reset to 0
+session._group._inner.set_strict_psk_binders(False)
 ```
 
-### ReInit Behavior
+## 4) Re-Initialization
 
-- The group migrates to the new `group_id`
-- Epoch resets to 0
-- All members remain in the group
-- Ratchet tree structure is preserved
-
-## Secret Tree Skipped-Keys Window
-
-RFC9420 supports out-of-order message decryption via a sliding window of skipped keys. This allows decrypting messages that arrive out of order without requiring on-demand key derivation for every skipped generation.
-
-### Configuration
+Re-init is exposed on `_inner`:
 
 ```python
-from rfc9420 import Group
+from rfc9420.interop.wire import encode_handshake
 
-# Create group with custom window size
-group = Group.create(
-    b"group1",
-    kp,
-    crypto,
-    secret_tree_window_size=256,  # Default is 128
+commit_msg, welcomes = session._group._inner.reinit_group_to(b"next-group-id", signing_key=sig_sk)
+commit_bytes = encode_handshake(commit_msg)
+```
+
+Other members process this commit normally (determine sender index then `apply_commit` / `process_commit`).
+
+## 5) Runtime Policy + Orchestration
+
+Policy defaults:
+
+```python
+from rfc9420.api.policy import MLSAppPolicy, MLSOrchestrator
+
+policy = MLSAppPolicy.recommended()
+session.apply_policy(policy)
+orchestrator = MLSOrchestrator(session, policy)
+```
+
+Ingest incoming commit with policy conflict strategy:
+
+```python
+result = orchestrator.ingest_commit(commit_bytes, sender_leaf_index=sender)
+print(result.status, result.applied, result.epoch, result.reason)
+```
+
+## 6) X.509 Support
+
+### Identity Provider Path
+
+Configure `GroupConfig(identity_provider=...)` with:
+
+```python
+from rfc9420.backends.identity import X509IdentityProvider
+
+identity = X509IdentityProvider(trust_roots=[root_cert_der])
+config = GroupConfig(
+    crypto_provider=crypto,
+    storage_provider=storage,
+    identity_provider=identity,
 )
-
-# Or adjust at runtime
-group.configure_runtime_policy(secret_tree_window_size=256)
 ```
 
-### How It Works
+### Credential Helpers
 
-- Messages within the window (e.g., 128 generations) are cached for fast decryption
-- Messages outside the window use on-demand derivation (slower but still works)
-- Window size is per-leaf, so each sender has their own window
-
-**Trade-offs:**
-- Larger window: Faster out-of-order decryption, more memory usage
-- Smaller window: Less memory, slower out-of-order decryption
-
-## Ratchet Tree Truncation
-
-The ratchet tree automatically truncates when the rightmost leaf (and all trailing leaves) are blank after a removal. This reduces sparse tails and keeps the tree hash consistent with RFC 9420 §7.7.
-
-**Behavior:**
-- Truncation happens automatically after Remove operations
-- Tree hash remains consistent with RFC expectations
-- No manual intervention required
-
-## X.509 Credentials
-
-RFC9420 supports X.509 certificate credentials for group members.
-
-### Basic X.509 Support
+`rfc9420.messages.credentials` provides helper encodings:
 
 ```python
-from rfc9420.crypto.x509 import X509Credential
+from rfc9420.messages.credentials import X509Credential
 
-# Deserialize X.509 credential
-cred = X509Credential.deserialize(cert_der)
-
-# Verify certificate chain
-trust_roots = [root_cert1_der, root_cert2_der]
-cred.verify_chain(trust_roots)
+x = X509Credential.deserialize(serialized_bytes)
+leaf_pub = x.verify_chain(trust_roots=[root_cert_der])
 ```
 
-### Configuring Trust Roots
+Note: MLS wire credentials used in key packages/leaf nodes are represented by `rfc9420.messages.data_structures.Credential`.
+
+## 7) Secret Tree Runtime Tuning
+
+Configure at group creation/load time through `GroupConfig`:
 
 ```python
-# Set trust roots for group (on Group)
-group.set_trust_roots([trust_root1_der, trust_root2_der])
-```
-
-### X.509 Revocation
-
-RFC9420 provides helpers for checking certificate revocation via OCSP and CRL:
-
-```python
-from rfc9420.crypto.x509_revocation import check_ocsp_end_entity, check_crl
-from rfc9420.crypto.x509_policy import X509Policy, RevocationConfig
-
-# Configure revocation policy
-policy = X509Policy(
-    revocation=RevocationConfig(
-        enable_ocsp=True,
-        enable_crl=True,
-        ocsp_checker=lambda cert_der: check_ocsp_end_entity(
-            cert_der, issuer_der, fail_open=False
-        ),
-        crl_checker=lambda cert_der: check_crl(
-            cert_der, issuer_der, fail_open=False
-        ),
-    )
+cfg = GroupConfig(
+    crypto_provider=crypto,
+    storage_provider=storage,
+    secret_tree_window_size=256,
+    max_generation_gap=2000,
+    aead_limit_bytes=32 * 1024 * 1024,
 )
-
-# Apply policy to group (on Group)
-group.set_x509_policy(policy)
 ```
 
-### Revocation Behavior
+## 8) Interop Wire Helpers + CLI
 
-- **Fail-closed (default)**: Network/responder errors return "revoked"
-- **Fail-open**: Network/responder errors return "not revoked"
-- Configure with `fail_open=True` parameter
+Programmatic helpers:
 
-## Proposal-by-Reference
+- `rfc9420.interop.wire.encode_handshake` / `decode_handshake`
+- `rfc9420.interop.wire.encode_application` / `decode_application`
 
-Proposals are cached using RFC 9420 §5.2 proposal references. Commits reference cached proposals rather than including them inline.
+CLI (`rfc9420-interop`) supports:
 
-**Benefits:**
-- Smaller commit messages
-- Efficient proposal validation
-- Supports distributed proposal distribution
-
-**How It Works:**
-1. Proposals are cached on receipt with a proposal reference
-2. Commits include `proposal_refs` instead of inline proposals
-3. Commit processing validates that referenced proposals match commit content
-
-## GroupContext Extensions
-
-GroupContext extensions allow groups to include custom data in the group context. Extension data is merged into GroupInfo extensions for Welcomes.
-
-**Note:** The GroupContext structure in RFC9420 remains minimal and does not store extensions explicitly. Extension data is handled via GroupInfo extensions.
-
-## Best Practices
-
-### Key Rotation
-
-Regularly update your leaf node keys:
-
-```python
-# Generate new keys periodically
-new_leaf = create_updated_leaf_node(...)
-update_prop = group.update(new_leaf, signing_key)
-group.process_proposal(update_prop, your_index)
-commit, _ = group.commit(signing_key)
-```
-
-### Error Handling
-
-Always handle exceptions appropriately:
-
-```python
-from rfc9420 import InvalidCommitError, InvalidSignatureError
-
-try:
-    group.apply_commit(commit)  # sender_leaf_index optional, read from message
-except InvalidCommitError as e:
-    print(f"Commit rejected: {e}")
-except InvalidSignatureError:
-    print("Invalid signature")
-```
-
-### State Persistence
-
-Persist group state between sessions:
-
-```python
-# Save group state
-group_state = {
-    'group_id': group.group_id,
-    'epoch': group.epoch,
-    # ... other state
-}
-
-# Restore group state
-# (Implementation depends on your storage backend)
-```
-
-### Performance Considerations
-
-- Use appropriate `secret_tree_window_size` based on your use case
-- Batch proposals when possible to reduce commit frequency
-- Consider using external commits for high-frequency joins
-
-## Security Considerations
-
-1. **Key Management**: Store private keys securely (use key management systems)
-2. **Credential Verification**: Always verify credentials before accepting members
-3. **Revocation**: Implement revocation checking for X.509 credentials
-4. **PSK Security**: Use cryptographically strong PSKs
-5. **External Commits**: Verify external commits carefully (they bypass normal membership checks)
-
-## Further Reading
-
-- [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html) - Complete MLS specification
-- [API Reference](api-reference.md) - Detailed API documentation
-- [Examples](examples.md) - Code examples for common scenarios
+- `plaintext decode <hex>`
+- `ciphertext decode <hex>`
+- `wire encode-handshake <hex>`
+- `wire decode-handshake <b64>`
+- `wire encode-application <hex>`
+- `wire decode-application <b64>`
 

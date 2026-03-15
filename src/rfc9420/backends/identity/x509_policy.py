@@ -28,5 +28,3 @@ class X509Policy:
     not_before_leeway_s: int = 300
     not_after_leeway_s: int = 300
     revocation: RevocationConfig = field(default_factory=RevocationConfig)
-
-

@@ -11,7 +11,7 @@ from rfc9180 import AEADID, HPKE, KDFID, KEMID
 from rfc9180.exceptions import OpenError
 from cryptography.exceptions import InvalidTag
 
-from .ciphersuites import AEAD, KDF, KEM
+from ...crypto.ciphersuites import AEAD, KDF, KEM
 
 
 def map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple[KEMID, KDFID, AEADID]:

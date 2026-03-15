@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Optional, Tuple
-import os
+from typing import Any, Literal, Optional, overload, Tuple
 
 from ..codec.tls import (
     write_uint16,
@@ -13,7 +12,8 @@ from ..codec.tls import (
     read_uint16,
     read_opaque_varint,
 )
-from ..protocol.data_structures import CredentialType, MLSVersion
+from ..messages.data_structures import CredentialType, MLSVersion
+from ..backends.crypto.default_rand import DefaultRandProvider
 
 
 class ExtensionType(IntEnum):
@@ -71,7 +71,7 @@ def random_grease_values(max_count: int = 2) -> list[int]:
         return []
     count = min(max_count, len(GREASE_VALUES))
     # Random sampling without replacement.
-    entropy = os.urandom(count)
+    entropy = DefaultRandProvider().random_bytes(count)
     out: list[int] = []
     used: set[int] = set()
     for b in entropy:
@@ -304,6 +304,18 @@ def build_capabilities_data(
         + encode_vec(prop_vals)
         + encode_vec(cred_vals)
     )
+
+
+@overload
+def parse_capabilities_data(
+    data: bytes, return_consumed: Literal[False] = False
+) -> dict[str, Any]: ...
+
+
+@overload
+def parse_capabilities_data(
+    data: bytes, return_consumed: Literal[True] = True
+) -> tuple[dict[str, Any], int]: ...
 
 
 def parse_capabilities_data(

@@ -1,10 +1,8 @@
-"""Concrete CryptoProvider using the 'cryptography' and 'rfc9180' packages.
+"""Default CryptoProvider implementation using cryptography and rfc9180 (HPKE).
 
-This module provides DefaultCryptoProvider, which implements the CryptoProvider
-interface using the cryptography library for hashing and signatures, and
-rfc9180 for HPKE, KDF, and AEAD. All RFC 9420 §16.3 AE1-secure ciphersuites
-are supported.
+Batteries-included backend; all RFC 9420 §16.3 AE1-secure ciphersuites supported.
 """
+from __future__ import annotations
 
 from cryptography.hazmat.primitives import hashes, hmac, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -21,7 +19,6 @@ from cryptography.exceptions import InvalidSignature
 from rfc9180 import HPKE
 from rfc9180.constants import AEAD_PARAMS, KEM_PARAMS
 
-# from rfc9180.exceptions import OpenError as HPKEOpenError
 from rfc9180.primitives.aead import AEADBase
 from rfc9180.primitives.kdf import KDFBase
 
@@ -30,8 +27,7 @@ from .hpke_backend import (
     hpke_seal as _hpke_seal_backend,
     map_hpke_enums,
 )
-from .crypto_provider import CryptoProvider
-from .ciphersuites import (
+from ...crypto.ciphersuites import (
     CipherSuiteId,
     KEM as KEMEnum,
     KDF as KDFEnum,
@@ -39,25 +35,24 @@ from .ciphersuites import (
     SignatureScheme,
     get_ciphersuite_by_id,
 )
-from ..codec.tls import write_uint16 as _write_uint16
-from ..mls.exceptions import (
+from ...codec.tls import write_uint16 as _write_uint16, write_opaque_varint
+from ...mls.exceptions import (
     InvalidSignatureError,
     RFC9420Error,
     UnsupportedCipherSuiteError,
 )
 
 
-class DefaultCryptoProvider(CryptoProvider):
+class DefaultCryptoProvider:
     """Concrete CryptoProvider implementation using cryptography and rfc9180.
 
     Supports all RFC 9420 §16.3 AE1-secure ciphersuites. Requires the
     cryptography and rfc9180 packages.
 
-    Parameters:
-        suite_id: MLS ciphersuite ID (default CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519). Must be AE1-secure.
-
-    Raises:
-        UnsupportedCipherSuiteError: If suite_id is unknown or not AE1-secure.
+    Parameters
+    ----------
+    suite_id : int, optional
+        RFC ciphersuite id (default MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519).
     """
 
     def __init__(self, suite_id: int = CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519):
@@ -77,11 +72,6 @@ class DefaultCryptoProvider(CryptoProvider):
         return self._suite
 
     def set_ciphersuite(self, suite_id: int) -> None:
-        """Switch the active ciphersuite by RFC suite id.
-
-        Raises:
-            UnsupportedCipherSuiteError: If suite_id is unknown or not AE1-secure.
-        """
         cs = get_ciphersuite_by_id(suite_id)
         if not cs:
             raise UnsupportedCipherSuiteError(f"Unsupported MLS ciphersuite id: {suite_id:#06x}")
@@ -89,7 +79,6 @@ class DefaultCryptoProvider(CryptoProvider):
             raise UnsupportedCipherSuiteError(f"Ciphersuite is not AE1-secure: {cs.name}")
         self._suite = cs
 
-    # --- Internals for algorithm selection ---
     def _hash_algo(self):
         if self._suite.kdf == KDFEnum.HKDF_SHA256:
             return hashes.SHA256()
@@ -98,15 +87,12 @@ class DefaultCryptoProvider(CryptoProvider):
         return hashes.SHA384()
 
     def _aead_impl(self) -> AEADBase:
-        """Return rfc9180 AEAD primitive for the active ciphersuite."""
         return AEADBase(self._suite.aead)
 
     def _get_kdf(self) -> KDFBase:
-        """Return rfc9180 KDF primitive for the active ciphersuite."""
         return KDFBase(self._suite.kdf)
 
     def _load_ec_private(self, data: bytes, curve: ec.EllipticCurve):
-        """Load an EC private key from DER or PEM bytes (used for Signing)."""
         try:
             return serialization.load_der_private_key(data, password=None)
         except Exception:
@@ -116,7 +102,6 @@ class DefaultCryptoProvider(CryptoProvider):
                 raise RFC9420Error("Invalid EC private key encoding (expect DER/PEM)") from e
 
     def _load_ec_public(self, data: bytes, curve: ec.EllipticCurve):
-        """Load an EC public key from RFC8446 point format, DER, or PEM."""
         if data and data[0] == 0x04:
             try:
                 return ec.EllipticCurvePublicKey.from_encoded_point(curve, data)
@@ -131,21 +116,13 @@ class DefaultCryptoProvider(CryptoProvider):
                 raise RFC9420Error("Invalid EC public key encoding (expect DER/PEM)") from e
 
     def _get_hpke_instance(self) -> HPKE:
-        """Helper to create an rfc9180-py HPKE instance for the active suite."""
         kem_id, kdf_id, aead_id = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
         return HPKE(kem_id, kdf_id, aead_id)
 
     def kdf_extract(self, salt: bytes, ikm: bytes) -> bytes:
-        """HKDF-Extract(salt, ikm) = HMAC-Hash(salt, ikm) per RFC 5869 §2.2.
-
-        If salt is empty, uses a zero-filled key of Hash.length bytes.
-        Output length equals the hash digest size (Hash.length).
-        Uses rfc9180 KDF primitive.
-        """
         return self._get_kdf().extract(salt, ikm)
 
     def kdf_expand(self, prk: bytes, info: bytes, length: int) -> bytes:
-        """HKDF-Expand(prk, info, length) per RFC 5869 §2.3. Uses rfc9180 KDF."""
         return self._get_kdf().expand(prk, info, length)
 
     def hash(self, data: bytes) -> bytes:
@@ -154,11 +131,9 @@ class DefaultCryptoProvider(CryptoProvider):
         return h.finalize()
 
     def aead_encrypt(self, key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
-        """AEAD seal using rfc9180 AEAD primitive."""
         return self._aead_impl().seal(key, nonce, aad, plaintext)
 
     def aead_decrypt(self, key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> bytes:
-        """AEAD open using rfc9180 AEAD primitive."""
         return self._aead_impl().open(key, nonce, aad, ciphertext)
 
     def hmac_sign(self, key: bytes, data: bytes) -> bytes:
@@ -177,9 +152,7 @@ class DefaultCryptoProvider(CryptoProvider):
             sk = Ed25519PrivateKey.from_private_bytes(private_key)
             return sk.sign(data)
         if scheme == SignatureScheme.ED448:
-            sk_448 = Ed448PrivateKey.from_private_bytes(
-                private_key
-            )  # FIX 2 (mypy assignment error)
+            sk_448 = Ed448PrivateKey.from_private_bytes(private_key)
             return sk_448.sign(data)
         if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
             sk = self._load_ec_private(private_key, ec.SECP256R1())
@@ -200,9 +173,7 @@ class DefaultCryptoProvider(CryptoProvider):
                 pk.verify(signature, data)
                 return
             if scheme == SignatureScheme.ED448:
-                pk_448 = Ed448PublicKey.from_public_bytes(
-                    public_key
-                )  # FIX 3 (mypy assignment error)
+                pk_448 = Ed448PublicKey.from_public_bytes(public_key)
                 pk_448.verify(signature, data)
                 return
             if scheme == SignatureScheme.ECDSA_SECP256R1_SHA256:
@@ -221,16 +192,8 @@ class DefaultCryptoProvider(CryptoProvider):
             raise InvalidSignatureError("invalid signature") from e
         raise UnsupportedCipherSuiteError("Unsupported signature scheme")
 
-    # --- Domain-separated signing ---
     @staticmethod
     def _encode_sign_content(label: bytes, content: bytes) -> bytes:
-        """Encode SignContent per RFC 9420 §5.1.2.
-
-        struct { opaque label<V>; opaque content<V>; } SignContent;
-        Uses varint (write_opaque_varint) length prefixes per RFC 9420 §2.1.2.
-        """
-        from ..codec.tls import write_opaque_varint
-
         return write_opaque_varint(label or b"") + write_opaque_varint(content or b"")
 
     def sign_with_label(self, private_key: bytes, label: bytes, content: bytes) -> bytes:
@@ -246,7 +209,6 @@ class DefaultCryptoProvider(CryptoProvider):
         self.verify(public_key, data, signature)
 
     def signature_public_from_private(self, private_key: bytes) -> bytes:
-        """Derive the public signing key bytes from a private signing key."""
         scheme = self._suite.signature
         if scheme == SignatureScheme.ED25519:
             sk = Ed25519PrivateKey.from_private_bytes(private_key)
@@ -288,11 +250,6 @@ class DefaultCryptoProvider(CryptoProvider):
         )
 
     def _normalize_hpke_private_key(self, private_key: bytes) -> bytes:
-        """Normalize HPKE private key encoding for NIST KEM suites.
-
-        Some interop vectors serialize NIST scalar keys without leading zero bytes.
-        HPKE deserialization expects fixed-width Nsk bytes, so we left-pad short keys.
-        """
         if self._suite.kem not in (
             KEMEnum.DHKEM_P256_HKDF_SHA256,
             KEMEnum.DHKEM_P384_HKDF_SHA384,
@@ -354,7 +311,6 @@ class DefaultCryptoProvider(CryptoProvider):
         export_label: bytes,
         export_length: int,
     ) -> tuple[bytes, bytes, bytes]:
-        """HPKE seal and export from sender context (RFC 9420 §8.3 external joiner init_secret)."""
         from .hpke_backend import hpke_seal_and_export as _hpke_seal_export_backend
 
         return _hpke_seal_export_backend(
@@ -370,15 +326,11 @@ class DefaultCryptoProvider(CryptoProvider):
         )
 
     def generate_key_pair(self) -> tuple[bytes, bytes]:
-        """Generate a KEM key pair using rfc9180-py."""
         hpke = self._get_hpke_instance()
         sk, pk = hpke.generate_key_pair()
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
-        """Derive a deterministic KEM key pair using rfc9180-py per RFC 9180 §7.1.3.
-        When seed is shorter than Nsk (e.g. MLS path_secret is Nh, P-521 Nsk=66),
-        expand to Nsk with KDF so the HPKE layer accepts it (RFC 9180 IKM SHOULD >= Nsk)."""
         nsk = self.kem_sk_ikm_min_size()
         if len(seed) < nsk:
             seed = self.expand_with_label(seed, b"hpke ikm", b"", nsk)
@@ -387,7 +339,6 @@ class DefaultCryptoProvider(CryptoProvider):
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
     def kem_pk_size(self) -> int:
-        """Return the public key size for the active KEM using rfc9180 params."""
         kem_id, _, _ = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
         params = KEM_PARAMS.get(kem_id)
         if params and "Npk" in params:
@@ -395,7 +346,6 @@ class DefaultCryptoProvider(CryptoProvider):
         raise UnsupportedCipherSuiteError("Unknown KEM parameters")
 
     def kem_sk_ikm_min_size(self) -> int:
-        """Return minimum IKM length for HPKE DeriveKeyPair (Nsk). RFC 9180 requires IKM >= Nsk."""
         kem_id, _, _ = map_hpke_enums(self._suite.kem, self._suite.kdf, self._suite.aead)
         params = KEM_PARAMS.get(kem_id)
         if params and "Nsk" in params:
@@ -403,27 +353,22 @@ class DefaultCryptoProvider(CryptoProvider):
         return self.kdf_hash_len()
 
     def aead_key_size(self) -> int:
-        """Return AEAD key size using rfc9180 AEAD_PARAMS."""
         params = AEAD_PARAMS.get(self._suite.aead)
         if params and "Nk" in params:
             return params["Nk"]
         raise UnsupportedCipherSuiteError("Unsupported AEAD")
 
     def aead_nonce_size(self) -> int:
-        """Return AEAD nonce size using rfc9180 AEAD_PARAMS."""
         params = AEAD_PARAMS.get(self._suite.aead)
         if params and "Nn" in params:
             return params["Nn"]
         return 12
 
     def kdf_hash_len(self) -> int:
-        """Return hash output length using rfc9180 KDF (Nh)."""
         return self._get_kdf().Nh
 
     def expand_with_label(self, secret: bytes, label: bytes, context: bytes, length: int) -> bytes:
         full_label = b"MLS 1.0 " + (label or b"")
-        from ..codec.tls import write_opaque_varint
-
         info = (
             _write_uint16(length)
             + write_opaque_varint(full_label)

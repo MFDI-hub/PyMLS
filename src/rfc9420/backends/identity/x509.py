@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import List
-from ..mls.exceptions import (
+from ...mls.exceptions import (
     RFC9420Error,
     UnsupportedCipherSuiteError,
     CredentialValidationError,

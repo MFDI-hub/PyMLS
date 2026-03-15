@@ -1,356 +1,101 @@
 # Architecture
 
-This document describes the internal architecture of RFC9420 and how the various components work together.
+This document maps the current code layout under `src/rfc9420` to runtime behavior.
 
-## Overview
+## Package Structure
 
-RFC9420 is organized into several main modules (package root: `src/rfc9420` or installed as `rfc9420`):
+- `rfc9420.api`: high-level session and policy (`MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`).
+- `rfc9420.group.mls_group`: active member API (`MLSGroup`, `StagedCommit`, `get_commit_sender_leaf_index`).
+- `rfc9420.group.public_group`: passive observer API (`PublicGroup`).
+- `rfc9420.group.mls_group.processing`: low-level protocol state machine (exported as `ProtocolMLSGroup`).
+- `rfc9420.providers`: provider protocols + `GroupConfig`.
+- `rfc9420.backends`: default providers (crypto/rand/storage/identity).
+- `rfc9420.protocol.tree` and `rfc9420.protocol.schedule`: tree + key schedule internals.
+- `rfc9420.messages`: wire/message/data structures.
+- `rfc9420.interop`: wire adapters and CLI helpers.
 
-- **`rfc9420.mls`**: High-level API (`Group` class, `get_commit_sender_leaf_index`)
-- **`rfc9420.api`**: Session and policy (`MLSGroupSession`, `MLSAppPolicy`, `MLSOrchestrator`, `CommitIngestResult`)
-- **`rfc9420.protocol`**: Core protocol implementation (`MLSGroup`, data structures, messages)
-- **`rfc9420.crypto`**: Cryptographic operations and providers
-- **`rfc9420.codec`**: TLS encoding/decoding
-- **`rfc9420.extensions`**: Extension handling (`src/rfc9420/extensions/extensions.py`)
-- **`rfc9420.interop`**: Interoperability tools and test vectors
-- **`rfc9420.dave`** (optional): DAVE protocol helpers (per-sender key ratchet, displayable codes, frame encryption)
+## Layering
 
-## High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Application Layer                    │
-│  (Uses Group API for MLS operations)                    │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│                  Group (High-Level API)                 │
-│  - Ergonomic wrapper around MLSGroup                    │
-│  - Simplified interface for common operations           │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│              MLSGroup (Protocol Layer)                  │
-│  - Ratchet tree management                              │
-│  - Key schedule derivation                              │
-│  - Proposal processing                                  │
-│  - Commit creation/processing                           │
-│  - Message protection                                   │
-└──────┬──────────────┬──────────────┬────────────────────┘
-       │              │              │
-┌──────▼──────┐ ┌─────▼──────┐ ┌────▼──────┐
-│ RatchetTree │ │KeySchedule │ │SecretTree │
-│             │ │            │ │           │
-│ - Tree ops  │ │ - Secrets  │ │ - Keys    │
-│ - Parent    │ │ - Branches │ │ - Window  │
-│   hash      │ │ - PSK      │ │           │
-└─────────────┘ └────────────┘ └───────────┘
-       │              │              │
-       └──────────────┼──────────────┘
-                      │
-            ┌─────────▼───────────┐
-            │  CryptoProvider     │
-            │  (Abstract)         │
-            └─────────┬───────────┘
-                      │
-            ┌─────────▼───────────┐
-            │DefaultCryptoProvider│
-            │  (cryptography)     │
-            └─────────────────────┘
+```text
+Application
+  -> MLSGroupSession (sync, bytes in/out)
+      -> MLSGroup (staged commit lifecycle)
+          -> ProtocolMLSGroup (state machine)
+              -> RatchetTree / SecretTree / KeySchedule
+              -> CryptoProviderProtocol + RandProviderProtocol
+              -> StorageProviderProtocol (for staged merge)
 ```
 
-## Core Components
+## Staged Commit Lifecycle
 
-### Group (High-Level API)
+The active API is intentionally split into persist and apply steps:
 
-The `Group` class provides an ergonomic interface for MLS operations. It wraps `MLSGroup` and provides:
-- Simplified method names
-- Automatic error conversion
-- Cleaner API surface
+1. `staged = group.create_commit(signing_key)`
+2. `await staged.merge(storage_provider)` (atomic persistence)
+3. `group.apply_staged_commit(staged)` (in-memory transition)
 
-**Location:** `src/rfc9420/mls/group.py`
+`MLSGroupSession.commit(...)` wraps these three steps synchronously via an internal async runner.
 
-### MLSGroup (Protocol Implementation)
+## Provider Composition
 
-The `MLSGroup` class implements the core MLS protocol state machine:
+`GroupConfig` contains:
 
-- **Ratchet Tree**: Binary tree of HPKE key pairs
-- **Key Schedule**: Epoch secret and branch secret derivation
-- **Secret Tree**: Per-sender encryption keys
-- **Transcript Hashes**: Interim and confirmed transcript hashes
-- **Proposal Queue**: Pending proposals awaiting commit
-- **Proposal Cache**: Map of proposal references to proposals
-
-**Location:** `src/rfc9420/protocol/mls_group.py`
-
-### Ratchet Tree
-
-The ratchet tree is a binary tree structure where:
-- Leaf nodes represent group members
-- Internal nodes contain HPKE key pairs
-- Parent hashes bind nodes to their parents (RFC §7.9)
-
-**Key Operations:**
-- `add_leaf()`: Add a new member
-- `remove_leaf()`: Remove a member
-- `update_leaf()`: Update a member's keys
-- `calculate_tree_hash()`: Compute tree hash for GroupContext
-
-**Backends:** The implementation supports pluggable backends (`array`, `perfect`, `linked`) via `create_tree_backend()`; see [API Reference](api-reference.md#ratchet-tree-backends).
-
-**Location:** `src/rfc9420/protocol/ratchet_tree.py`, `ratchet_tree_backend.py`, `ratchet_tree_perfect.py`, `ratchet_tree_linked.py`
-
-### Key Schedule
-
-The key schedule derives all secrets for an epoch:
-
-- **Epoch Secret**: Root secret for the epoch
-- **Application Secret**: For application message encryption
-- **Handshake Secret**: For handshake message encryption
-- **Exporter Secret**: For external key material export
-- **Confirmation Key**: For confirmation tag computation
-- **Membership Key**: For membership tag computation
-- **Resumption PSK**: For group resumption
-
-**Location:** `src/rfc9420/protocol/key_schedule.py`
-
-### Secret Tree
-
-The secret tree derives per-sender encryption keys:
-
-- **Application Keys**: For encrypting application messages
-- **Handshake Keys**: For encrypting handshake messages
-- **Skipped-Keys Window**: Caches keys for out-of-order decryption
-
-**Location:** `src/rfc9420/protocol/secret_tree.py`
-
-### CryptoProvider
-
-Abstract interface for cryptographic operations:
-
-- Key derivation (HKDF)
-- Hashing
-- AEAD encryption/decryption
-- Digital signatures
-- HPKE operations
-- Key generation
-
-**Concrete Implementation:** `DefaultCryptoProvider` uses the `cryptography` library.
-
-**Location:** 
-- Interface: `src/rfc9420/crypto/crypto_provider.py`
-- Implementation: `src/rfc9420/crypto/default_crypto_provider.py`
-
-## Message Flow
-
-### Proposal Flow
-
-```
-Member A                    Member B
-   │                           │
-   ├─ Create Proposal ─────────┤
-   │                           │
-   ├─ Sign & Send ────────────►│
-   │                           │
-   │                    ┌──────▼──────┐
-   │                    │ Verify Sig  │
-   │                    │ Cache Prop  │
-   │                    │ Queue Prop  │
-   │                    └─────────────┘
-   │                           │
-   │                    ┌──────▼──────┐
-   │                    │Process Prop │
-   │                    └─────────────┘
-```
-
-### Commit Flow
-
-```
-Member A                    Member B
-   │                           │
-   ├─ Create Commit ───────────┤
-   │  - Order proposals        │
-   │  - Generate UpdatePath    │
-   │  - Compute PSK binder     │
-   │  - Sign commit            │
-   │                           │
-   ├─ Send Commit ────────────►│
-   │                           │
-   │                    ┌──────▼──────┐
-   │                    │ Verify Sig  │
-   │                    │ Validate    │
-   │                    │ Apply Ops   │
-   │                    │ Update Tree │
-   │                    │ Derive Keys │
-   │                    └─────────────┘
-```
-
-### Application Message Flow
-
-```
-Sender                       Receiver
-   │                            │
-   ├─ Protect Message ──────────┤
-   │  - Get sender key          │
-   │  - Encrypt content         │
-   │  - Add sender data         │
-   │                            │
-   ├─ Send Ciphertext ─────────►│
-   │                            │
-   │                     ┌──────▼──────┐
-   │                     │ Unprotect   │
-   │                     │ - Decrypt   │
-   │                     │ - Verify    │
-   │                     │ - Extract   │
-   │                     └─────────────┘
-```
-
-## Key Derivation
-
-### Update Path Derivation (RFC §7.4)
-
-```
-Leaf Node
-   │
-   ├─ Generate path_secret
-   │
-   ├─ DeriveSecret(path_secret, "path") ──► Parent path_secret
-   │
-   ├─ DeriveSecret(path_secret, "node") ──► Node key pair
-   │
-   └─ Repeat for each node on path to root
-```
-
-### Key Schedule Derivation (RFC §9)
-
-```
-Joiner Secret / Epoch Secret
-   │
-   ├─ ExpandWithLabel(..., "epoch", GroupContext) ──► Epoch Secret
-   │
-   ├─ DeriveSecret(epoch_secret, "application") ──► Application Secret
-   ├─ DeriveSecret(epoch_secret, "handshake") ────► Handshake Secret
-   ├─ DeriveSecret(epoch_secret, "exporter") ─────► Exporter Secret
-   ├─ DeriveSecret(epoch_secret, "confirm") ─────► Confirmation Key
-   ├─ DeriveSecret(epoch_secret, "membership") ──► Membership Key
-   └─ DeriveSecret(epoch_secret, "resumption") ───► Resumption PSK
-```
-
-## Proposal Ordering (RFC §12.3)
-
-Commits order proposals as follows:
-
-1. **GroupContextExtensions**: Group-level extensions
-2. **Update**: Member key updates
-3. **Remove**: Member removals
-4. **Add**: Member additions
-5. **PreSharedKey**: PSK proposals
-
-**Note:** ReInit proposals are exclusive (cannot be combined with others).
-
-## Security Considerations
-
-### Forward Secrecy
-
-- Each epoch derives fresh secrets
-- Old epoch secrets are not retained
-- Update paths refresh keys
-
-### Post-Compromise Security
-
-- Update proposals refresh compromised keys
-- New epochs invalidate old keys
-- Ratchet tree structure ensures key independence
-
-### Authentication
-
-- All proposals and commits are signed
-- Membership tags prevent unauthorized messages
-- PSK binders prevent replay attacks
-
-## Extension Points
-
-### Custom CryptoProvider
-
-Implement `CryptoProvider` interface for custom cryptographic backends:
-
-```python
-class CustomCryptoProvider(CryptoProvider):
-    def hash(self, data: bytes) -> bytes:
-        # Custom implementation
-        pass
-    # ... implement all abstract methods
-```
-
-### X.509 Policy
-
-Customize X.509 credential validation:
-
-```python
-policy = X509Policy(
-    revocation=RevocationConfig(...),
-    # ... other policy options
-)
-group._inner.set_x509_policy(policy)
-```
-
-## Testing
-
-### Test Vectors
-
-RFC9420 includes support for RFC 9420 test vectors:
-
-```bash
-uv run python -m rfc9420.interop.test_vectors_runner /path/to/vectors --suite 0x0001
-```
-
-Or when using the project script (if installed):
-
-```bash
-rfc9420-interop /path/to/vectors --suite 0x0001
-```
-
-### Unit Tests
-
-Tests are organized by component:
-- `test_group_flow.py`: Group operations
-- `test_ratchet_tree_*.py`: Ratchet tree operations
-- `test_key_schedule.py`: Key derivation
-- `test_crypto_provider.py`: Cryptographic operations
-
-## Performance Considerations
-
-### Secret Tree Window
-
-- Larger window: Faster out-of-order decryption, more memory
-- Smaller window: Less memory, slower out-of-order decryption
-- Default: 128 generations per leaf
-
-### Proposal Batching
-
-- Batch multiple proposals in a single commit
-- Reduces overhead of multiple commits
-- Improves efficiency for bulk operations
-
-### Tree Truncation
-
-- Automatic truncation reduces tree size
-- Keeps tree hash consistent
-- Reduces memory usage for large groups
-
-## Future Enhancements
-
-Potential areas for improvement:
-
-1. **Full X.509 Support**: Complete EKU/keyUsage checks
-2. **Tree Sync**: Efficient tree synchronization protocols
-3. **Application Acknowledgments**: APP_ACK proposal support
-4. **Group Context Extensions**: Full extension support
-5. **Performance Optimizations**: Caching, batching improvements
-
-## References
-
-- [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html) - Messaging Layer Security
-- [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html) - HPKE: Hybrid Public Key Encryption
-- [API Reference](api-reference.md) - RFC9420 API documentation
+- `crypto_provider` (required)
+- `storage_provider` (required)
+- `identity_provider` (optional)
+- `rand_provider` (optional; defaults to `DefaultRandProvider`)
+- `tree_backend_id` (`"array"` by default)
+- runtime limits: `secret_tree_window_size`, `max_generation_gap`, `aead_limit_bytes`
+
+Identity provider hooks are wired into group creation/join/restore through credential validator callbacks.
+
+## Active vs Passive Group APIs
+
+### `MLSGroup` (active)
+
+- creates proposals and commits
+- protects/unprotects application data
+- owns pending proposal and pending commit state
+- can process received commits mutating (`process_commit`) or staged (`process_commit_staged`)
+
+### `PublicGroup` (passive)
+
+- loads from `GroupInfo` (`from_group_info`)
+- validates handshake signature/basic commit shape (`process_handshake`)
+- tracks public tree view (`group_id`, `epoch`, `member_count`, `get_leaf_node`)
+- does not maintain secret tree or key schedule
+
+## Tree Backends
+
+Tree backend IDs are exported from `rfc9420`:
+
+- `BACKEND_ARRAY`
+- `BACKEND_PERFECT`
+- `BACKEND_LINKED`
+- `DEFAULT_TREE_BACKEND`
+
+Set backend through `GroupConfig(tree_backend_id=...)`.
+
+## Policy Layer
+
+`MLSAppPolicy` and `MLSOrchestrator` provide app-level controls on top of sessions:
+
+- runtime limits (`secret_tree_window_size`, `max_generation_gap`, `aead_limit_bytes`)
+- self-update scheduling (`update_interval_seconds`, `max_idle_before_update`)
+- commit conflict strategy (`first_seen`, `highest_sender`, `deterministic_hash`)
+- retention of resumption PSKs
+- optional trust roots / X.509 policy passthrough
+
+## Interop Layer
+
+`rfc9420.interop.wire` provides presentation-layer helpers:
+
+- `encode_handshake` / `decode_handshake`
+- `encode_application` / `decode_application`
+
+`rfc9420-interop` CLI wraps encoding/decoding for plaintext/ciphertext and base64 wire format conversion.
+
+## Notes on Compatibility
+
+`rfc9420.protocol.__init__` keeps compatibility aliases for old import paths under `rfc9420.protocol.*` by wiring modules from `rfc9420.protocol.tree.*`.
 

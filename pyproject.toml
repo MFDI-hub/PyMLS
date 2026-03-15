@@ -29,12 +29,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+sqlite = [
+  "aiosqlite>=0.19",
+]
 dev = [
   "python-dotenv>=1.0.0",
   "pytest>=8",
   "ruff>=0.6",
   "mypy>=1.10",
   "tomli>=2.0.0",
+  "aiosqlite>=0.19",
 ]
 docs = [
   "mkdocs>=1.6,<2",
@@ -54,6 +58,9 @@ dev = [
   "ruff>=0.6.0",
   "mypy>=1.10.0",
   "tomli>=2.0.0",
+]
+sqlite = [
+  "aiosqlite>=0.19",
 ]
 docs = [
   "mkdocs>=1.6,<2",

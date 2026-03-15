@@ -15,10 +15,12 @@ if TYPE_CHECKING:
     from .data_structures import Sender, PreSharedKeyID, Welcome, GroupInfo
     from .key_packages import KeyPackage
 from .data_structures import MLSVersion, PreSharedKeyID, SenderType
-import os
 
-from ..mls.exceptions import InvalidSignatureError
+from ..mls.exceptions import InvalidSignatureError, MalformedMessageError
+from ..providers.rand import RandProviderProtocol
+from ..backends.crypto.default_rand import DefaultRandProvider
 from ..codec.tls import (
+    TLSDecodeError,
     write_opaque_varint,
     read_opaque_varint,
     write_varint,
@@ -31,7 +33,7 @@ from ..codec.tls import (
     write_uint64,
     read_uint64,
 )
-from .key_schedule import KeySchedule
+from ..protocol.schedule.key_schedule import KeySchedule
 from ..crypto.crypto_provider import CryptoProvider
 
 
@@ -449,7 +451,7 @@ class SenderData:
         out += write_uint32(self.generation)
         # reuse_guard is opaque[4], fixed length. NO length prefix.
         if len(self.reuse_guard) != 4:
-            raise ValueError("reuse_guard must be 4 bytes")
+            raise MalformedMessageError("reuse_guard must be 4 bytes")
         out += self.reuse_guard
         return out
 
@@ -635,7 +637,7 @@ def strip_content_padding(data: bytes, verify_all_zeros: bool = True) -> bytes:
     if verify_all_zeros:
         for b in data[end:]:
             if b != 0:
-                raise ValueError("non-zero padding byte in PrivateMessageContent")
+                raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
     return data[:end]
 
 
@@ -779,6 +781,7 @@ def protect_content_handshake(
     key_schedule: KeySchedule,
     secret_tree,
     crypto: CryptoProvider,
+    rand_provider: Optional[RandProviderProtocol] = None,
     confirmation_tag: Optional[bytes] = None,
     content_type: ContentType = ContentType.COMMIT,
     pad_to: int = 32,
@@ -811,7 +814,8 @@ def protect_content_handshake(
     aad = compute_ciphertext_aad(group_id, epoch, content_type, authenticated_data)
 
     # Random reuse guard and final content nonce (nonce XOR reuse_guard)
-    reuse_guard = os.urandom(4)
+    rand = rand_provider or DefaultRandProvider()
+    reuse_guard = rand.random_bytes(4)
     rg_padded = reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
     content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
 
@@ -881,6 +885,7 @@ def protect_content_application(
     key_schedule: KeySchedule,
     secret_tree,
     crypto: CryptoProvider,
+    rand_provider: Optional[RandProviderProtocol] = None,
     pad_to: int = 32,
 ) -> MLSCiphertext:
     """
@@ -905,7 +910,8 @@ def protect_content_application(
     aad = compute_ciphertext_aad(group_id, epoch, ContentType.APPLICATION, authenticated_data)
 
     # Random reuse guard and final content nonce (nonce XOR reuse_guard)
-    reuse_guard = os.urandom(4)
+    rand = rand_provider or DefaultRandProvider()
+    reuse_guard = rand.random_bytes(4)
     rg_padded = reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
     content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
     # Encrypt to obtain ciphertext sample
@@ -959,7 +965,7 @@ def unprotect_content_handshake(
         try:
             _ln = rt.get_node(sd.sender * 2)
             if _ln.leaf_node is None and _ln.public_key is None:
-                raise ValueError(f"SenderData references blank leaf at index {sd.sender}")
+                raise TLSDecodeError(f"SenderData references blank leaf at index {sd.sender}")
         except (AttributeError, IndexError):
             pass  # ratchet_tree not available; skip check
 
@@ -986,7 +992,7 @@ def unprotect_content_handshake(
         body = ptxt[:length]
         off = length
     else:
-        raise ValueError(f"Unsupported handshake content type: {m.content_type}")
+        raise TLSDecodeError(f"Unsupported handshake content type: {m.content_type}")
 
     # Parse AuthData
     auth, auth_len = FramedContentAuthData.deserialize(ptxt[off:], m.content_type)
@@ -995,7 +1001,7 @@ def unprotect_content_handshake(
     # Verify remaining bytes are all-zero padding (RFC 9420 §6.3.1 MUST)
     padding = ptxt[off:]
     if any(b != 0 for b in padding):
-        raise ValueError("non-zero padding byte in PrivateMessageContent")
+        raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
 
     return sd.sender, body, auth
 
@@ -1029,7 +1035,7 @@ def unprotect_content_application(
         try:
             _ln = rt.get_node(sd.sender * 2)
             if _ln.leaf_node is None and _ln.public_key is None:
-                raise ValueError(f"SenderData references blank leaf at index {sd.sender}")
+                raise TLSDecodeError(f"SenderData references blank leaf at index {sd.sender}")
         except (AttributeError, IndexError):
             pass  # ratchet_tree not available; skip check
 
@@ -1051,7 +1057,7 @@ def unprotect_content_application(
     # Verify remaining bytes are all-zero padding (RFC 9420 §6.3.1 MUST)
     padding = ptxt[off:]
     if any(b != 0 for b in padding):
-        raise ValueError("non-zero padding byte in PrivateMessageContent")
+        raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
 
     return sd.sender, body, auth
 
@@ -1096,7 +1102,7 @@ class MLSMessage:
             return GroupInfo.deserialize(self.content)
         if self.wire_format == WireFormat.KEY_PACKAGE:
             return KeyPackage.deserialize(self.content)
-        raise ValueError(f"unknown wire_format {self.wire_format}")
+        raise MalformedMessageError(f"unknown wire_format {self.wire_format}")
 
     @classmethod
     def deserialize(cls, data: bytes) -> "MLSMessage":
