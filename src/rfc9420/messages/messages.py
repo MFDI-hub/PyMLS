@@ -387,6 +387,23 @@ class AuthenticatedContent:
             out += write_opaque_varint(self.membership_tag)
         return out
 
+    def serialize_authenticated_content(self) -> bytes:
+        """RFC 9420 §6 AuthenticatedContent (ProposalRef input).
+
+        struct {
+            WireFormat wire_format;
+            FramedContent content;
+            FramedContentAuthData auth;
+        } AuthenticatedContent;
+
+        ProtocolVersion belongs on MLSMessage / FramedContentTBS, not here.
+        Does not include the PublicMessage membership_tag.
+        """
+        out = write_uint16(self.tbs.wire_format)
+        out += self.tbs.framed_content.serialize()
+        out += self.auth.serialize()
+        return out
+
     def serialize_tbm(self) -> bytes:
         """Serialize AuthenticatedContentTBM = TBS || AuthData."""
         return self.tbs.serialize() + self.auth.serialize()
@@ -675,6 +692,10 @@ def sign_authenticated_content(
     # RFC 9420 §6.1: GroupContext is included in TBS for member and new_member_commit only.
     if st in (SenderType.EXTERNAL, SenderType.NEW_MEMBER_PROPOSAL):
         group_context = None
+    if content_type == ContentType.APPLICATION and wire_format == WireFormat.PUBLIC_MESSAGE:
+        raise ValueError(
+            "Application messages MUST NOT be sent as PublicMessage (RFC 9420 §6.3.1)"
+        )
     framed = FramedContent(
         group_id=group_id,
         epoch=epoch,

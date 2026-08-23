@@ -9,6 +9,7 @@ description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420)
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "mfdi" }]
 keywords = ["mls", "messaging layer security", "rfc9420", "cryptography", "hpke"]
 classifiers = [

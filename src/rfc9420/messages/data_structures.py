@@ -360,12 +360,11 @@ class AddProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "AddProposal":
-        """Construct from raw KeyPackage bytes."""
+        """Parse an embedded KeyPackage from the front of data (RFC Add)."""
         from .key_packages import KeyPackage
 
-        kp = KeyPackage.deserialize(data)
-        length = len(kp.serialize())
-        return cls(data[:length])
+        _kp, consumed = KeyPackage.deserialize_partial(data)
+        return cls(data[:consumed])
 
 
 @dataclass(frozen=True)

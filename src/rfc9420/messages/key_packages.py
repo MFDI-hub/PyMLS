@@ -436,12 +436,13 @@ class KeyPackage:
         return out
 
     @classmethod
-    def deserialize(cls, data: bytes) -> "KeyPackage":
-        """
-        Parse KeyPackage from bytes.
-        RFC format only:
-          uint16(version) || uint16(suite_id) || opaque(init_key) ||
-          LeafNode || opaque(extensions) || opaque(signature)
+    def deserialize_partial(cls, data: bytes) -> tuple["KeyPackage", int]:
+        """Parse one RFC 9420 KeyPackage and return (KeyPackage, bytes_consumed).
+
+        KeyPackage is self-delimiting: its signature is opaque<V>. Callers that
+        embed a KeyPackage (Add proposal, PublicMessage) must use this so the
+        following FramedContentAuthData.signature is not treated as part of
+        the KeyPackage.
         """
         if len(data) < 4:
             raise ValueError(
@@ -478,17 +479,27 @@ class KeyPackage:
         if not rest:
             raise ValueError("truncated KeyPackage: missing signature")
         sig_bytes, rest = deserialize_bytes(rest)  # opaque signature<V>
-        if rest:
-            raise ValueError("trailing bytes after KeyPackage signature")
         signature = Signature.deserialize(sig_bytes)
-        return cls(
-            version=version,
-            cipher_suite=cipher_suite,
-            init_key=init_key,
-            leaf_node=leaf_node,
-            extensions=extensions,
-            signature=signature,
+        consumed_total = len(data) - len(rest)
+        return (
+            cls(
+                version=version,
+                cipher_suite=cipher_suite,
+                init_key=init_key,
+                leaf_node=leaf_node,
+                extensions=extensions,
+                signature=signature,
+            ),
+            consumed_total,
         )
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "KeyPackage":
+        """Parse a standalone KeyPackage (entire buffer)."""
+        kp, consumed = cls.deserialize_partial(data)
+        if consumed != len(data):
+            raise ValueError("trailing bytes after KeyPackage signature")
+        return kp
 
     def verify(
         self,

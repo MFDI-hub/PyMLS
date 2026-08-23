@@ -310,6 +310,9 @@ class MLSGroup:
         self._reinit_pending_welcome: bool = False
         self._resumption_psk_provider: Optional[Callable[[bytes, int], Optional[bytes]]] = None
         self._external_psk_provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None
+        # RFC 9420 §8.4: resumption PSK is the named epoch's secret, not the live one.
+        self._resumption_psks: dict[tuple[bytes, int], bytes] = {}
+        self._max_resumption_psks: int = 256
         # RFC 9420 §5.3.1: optional callback (credential, context_str) -> None; raise on invalid
         self._credential_validator: Optional[Callable[[object, str], None]] = None
 
@@ -362,13 +365,23 @@ class MLSGroup:
         """
         self._external_psk_provider = provider
 
+    def _remember_resumption_psk(self) -> None:
+        """Keep the current epoch's resumption_psk for later PreSharedKey proposals."""
+        if self._group_context is None or self._key_schedule is None:
+            return
+        psk = self._key_schedule.resumption_psk
+        if not psk:
+            return
+        key = (self._group_id, int(self._group_context.epoch))
+        self._resumption_psks[key] = bytes(psk)
+        while len(self._resumption_psks) > self._max_resumption_psks:
+            self._resumption_psks.pop(next(iter(self._resumption_psks)))
+
     def _get_psk_values(self, psk_ids: list) -> Optional[list[Optional[bytes]]]:
         """Resolve PSK values from resumption and external providers; return list aligned with psk_ids.
         None entries mean use fallback derivation for that slot. Returns None if no provider is set.
         """
         if not psk_ids:
-            return None
-        if not self._resumption_psk_provider and not self._external_psk_provider:
             return None
         values: list[Optional[bytes]] = []
         for psk in psk_ids:
@@ -376,17 +389,28 @@ class MLSGroup:
             if psktype == PSKType.EXTERNAL and self._external_psk_provider:
                 val = self._external_psk_provider(psk)
                 values.append(val)
-            elif (
-                psktype == PSKType.RESUMPTION
-                and getattr(psk, "usage", None) == ResumptionPSKUsage.APPLICATION
-                and getattr(psk, "psk_group_id", None) is not None
-                and getattr(psk, "psk_epoch", None) is not None
-                and self._resumption_psk_provider
-            ):
-                val = self._resumption_psk_provider(psk.psk_group_id, psk.psk_epoch)
+            elif psktype == PSKType.RESUMPTION:
+                val = None
+                gid = getattr(psk, "psk_group_id", None)
+                epoch = getattr(psk, "psk_epoch", None)
+                if (
+                    getattr(psk, "usage", None) == ResumptionPSKUsage.APPLICATION
+                    and gid is not None
+                    and epoch is not None
+                    and self._resumption_psk_provider
+                ):
+                    val = self._resumption_psk_provider(gid, epoch)
+                if val is None and gid is not None and epoch is not None:
+                    val = self._resumption_psks.get((gid, int(epoch)))
+                if (
+                    val is None
+                    and self._group_context is not None
+                    and self._key_schedule is not None
+                    and gid == self._group_id
+                    and epoch == self._group_context.epoch
+                ):
+                    val = self._key_schedule.resumption_psk
                 values.append(val)
-            else:
-                values.append(None)
         return values
 
     def _update_external_key_pair(self) -> None:
@@ -497,6 +521,7 @@ class MLSGroup:
 
         # Derive external key pair from the initial key schedule
         group._update_external_key_pair()
+        group._remember_resumption_psk()
 
         return group
 
@@ -518,6 +543,7 @@ class MLSGroup:
         branch_old_version: Optional[int] = None,
         branch_old_cipher_suite: Optional[int] = None,
         welcome_psk_resolver: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None,
+        encryption_private_key: Optional[bytes] = None,
     ) -> "MLSGroup":
         """Join a group using a Welcome message.
 
@@ -546,6 +572,9 @@ class MLSGroup:
                 GroupSecrets contains PSKs, used to resolve values for derive_psk_secret so that
                 encrypted_group_info can be decrypted. If None, synthetic fallback is used (not
                 suitable for test vectors or production when Welcome includes PSKs).
+            encryption_private_key: Optional HPKE private key matching the joiner's
+                LeafNode.encryption_key. Required to decrypt later UpdatePath ciphertexts
+                that are encrypted to the joiner's leaf.
 
         Returns:
             MLSGroup instance initialized from the Welcome.
@@ -721,6 +750,8 @@ class MLSGroup:
             tree_backend=tree_backend,
         )
         group._reinit_pending_welcome = False
+        if welcome_psk_resolver is not None:
+            group._external_psk_provider = welcome_psk_resolver
 
         # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
         verifier_keys: list[bytes] = []
@@ -893,6 +924,8 @@ class MLSGroup:
                     break
             if my_leaf >= 0:
                 group._own_leaf_index = my_leaf
+                if encryption_private_key is not None:
+                    group._ratchet_tree.get_node(my_leaf * 2).private_key = encryption_private_key
                 if group_secrets is not None and group_secrets.path_secret is not None:
                     group._ratchet_tree.apply_joiner_path_secret(
                         my_leaf, group_secrets.path_secret,
@@ -963,6 +996,7 @@ class MLSGroup:
             pass
         # Derive external key pair from the initial key schedule
         group._update_external_key_pair()
+        group._remember_resumption_psk()
 
         return group
 
@@ -1845,16 +1879,16 @@ class MLSGroup:
         except Exception as e:
             print(f"Error validating proposal: {e}")
             raise
-        # Compute RFC 9420 ?5.2 ProposalRef using RefHashInput
-        # Per RFC, the value hashed is the full AuthenticatedContent wire encoding.
+        # RFC 9420 §5.2 / §6: ProposalRef hashes AuthenticatedContent
+        # (wire_format || FramedContent || auth), not PublicMessage (no
+        # membership_tag) and not FramedContentTBS (no ProtocolVersion).
         from ...messages.refs import make_proposal_ref
 
-        # Use full AuthenticatedContent bytes for the ref hash input (RFC ?5.2)
         try:
-            prop_ref_input = message.auth_content.serialize()
+            prop_ref_input = message.auth_content.serialize_authenticated_content()
         except Exception:
             try:
-                prop_ref_input = message.serialize()
+                prop_ref_input = message.auth_content.serialize()
             except Exception:
                 prop_ref_input = proposal.serialize()
         prop_ref = make_proposal_ref(self._crypto_provider, prop_ref_input)
@@ -2210,9 +2244,9 @@ class MLSGroup:
             interim=self._interim_transcript_hash,
             confirmed=self._confirmed_transcript_hash,
         )
-        transcripts.update_with_handshake(pt)
-        # RFC 9420 §8.2: confirmed_transcript_hash = Hash(interim_{i-1} || ConfirmedTranscriptHashInput); stored in transcripts.interim
-        new_confirmed_hash = transcripts.interim or b""
+        # RFC 9420 §8.2: confirmed_transcript_hash_[n] =
+        # Hash(interim_transcript_hash_[n-1] || ConfirmedTranscriptHashInput)
+        new_confirmed_hash = transcripts.update_with_handshake(pt)
 
         # ReInit: reset epoch and switch group_id (creator updates self._group_id per RFC ?11.2)
         if reinit_prop:
@@ -2477,6 +2511,7 @@ class MLSGroup:
         self._external_init_secret_for_commit = state["external_init_secret_for_commit"]
         self._commit_pending = False
         self._state = MlsGroupState(state.get("group_state", MlsGroupState.OPERATIONAL))
+        self._remember_resumption_psk()
 
     def process_commit(self, message: MLSPlaintext, sender_index: int) -> None:
         """Verify a received Commit and advance the local group state.
@@ -2621,7 +2656,12 @@ class MLSGroup:
             from ...messages.key_packages import LeafNode as _LeafNode
 
             leaf = _LeafNode.deserialize(up.leaf_node)
-            if leaf.credential is not None and leaf.credential.public_key != leaf.signature_key:
+            pk = (
+                getattr(leaf.credential, "public_key", None)
+                if leaf.credential is not None
+                else None
+            )
+            if pk and pk != leaf.signature_key:
                 raise CommitValidationError(
                     "leaf credential public key does not match signature key"
                 )
@@ -2759,9 +2799,9 @@ class MLSGroup:
             interim=self._interim_transcript_hash,
             confirmed=self._confirmed_transcript_hash,
         )
-        transcripts.update_with_handshake(message)
-        # RFC 9420 §8.2: new confirmed_transcript_hash is in transcripts.interim
-        new_confirmed_hash = transcripts.interim or b""
+        # RFC 9420 §8.2: confirmed_transcript_hash_[n] =
+        # Hash(interim_transcript_hash_[n-1] || ConfirmedTranscriptHashInput)
+        new_confirmed_hash = transcripts.update_with_handshake(message)
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         new_group_context = GroupContext(
             new_group_id,
@@ -2796,6 +2836,7 @@ class MLSGroup:
                 raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
         else:
             prev_init_secret = self._key_schedule.init_secret
+        self._remember_resumption_psk()
         try:
             if self._secret_tree is not None:
                 self._secret_tree.wipe()
@@ -2840,6 +2881,7 @@ class MLSGroup:
             sender_confirm_tag,
         )
         self._update_external_key_pair()
+        self._remember_resumption_psk()
 
         # Clear sending restriction flags after successful apply
         self._received_commit_unapplied = False
@@ -2865,6 +2907,8 @@ class MLSGroup:
             rand_provider=self._rand_provider,
             tree_backend=backend_id,
         )
+        clone._resumption_psks = dict(self._resumption_psks)
+        clone._max_resumption_psks = self._max_resumption_psks
         clone.process_commit(message, sender_index)
         new_epoch_state = _state_to_new_epoch_state(clone)
         return (message, [], new_epoch_state)
@@ -3103,9 +3147,9 @@ class MLSGroup:
             interim=self._interim_transcript_hash,
             confirmed=self._confirmed_transcript_hash,
         )
-        transcripts.update_with_handshake(message)
-        # RFC 9420 §8.2: new confirmed_transcript_hash is in transcripts.interim
-        new_confirmed_hash = transcripts.interim or b""
+        # RFC 9420 §8.2: confirmed_transcript_hash_[n] =
+        # Hash(interim_transcript_hash_[n-1] || ConfirmedTranscriptHashInput)
+        new_confirmed_hash = transcripts.update_with_handshake(message)
         # RFC 9420 §12.1.6: Include extensions when building GroupContext (external commit).
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         effective_group_extensions = self._group_context.extensions if self._group_context else b""
@@ -3142,6 +3186,7 @@ class MLSGroup:
                 raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
         else:
             prev_init_secret = self._key_schedule.init_secret
+        self._remember_resumption_psk()
         try:
             if self._secret_tree is not None:
                 self._secret_tree.wipe()
@@ -3184,6 +3229,7 @@ class MLSGroup:
             sender_confirm_tag,
         )
         self._update_external_key_pair()
+        self._remember_resumption_psk()
 
     def reinit_group_to(
         self, new_group_id: bytes, signing_key: bytes
@@ -3708,3 +3754,4 @@ class MLSGroup:
             pass
         self._pending_proposals = []
         self._proposal_cache = {}
+        self._resumption_psks.clear()
