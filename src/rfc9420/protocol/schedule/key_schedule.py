@@ -6,7 +6,6 @@ sender-data, init for next epoch) using ExpandWithLabel/DeriveSecret from
 the CryptoProvider. Supports construction from full commit flow or from
 Welcome (from_epoch_secret, from_joiner_secret).
 """
-from typing import Optional
 from ...messages.data_structures import GroupContext
 from ...crypto.crypto_provider import CryptoProvider
 
@@ -19,7 +18,7 @@ class KeySchedule:
     handshake, application, exporter, external, and sender-data, as well as
     helpers for confirmation, membership, resumption, and content encryption.
     """
-    def __init__(self, init_secret: bytes, commit_secret: bytes, group_context: GroupContext, psk_secret: Optional[bytes], crypto_provider: CryptoProvider):
+    def __init__(self, init_secret: bytes, commit_secret: bytes, group_context: GroupContext, psk_secret: bytes | None, crypto_provider: CryptoProvider):
         """Construct a new key schedule for the current epoch.
 
         Parameters
@@ -123,7 +122,7 @@ class KeySchedule:
     def from_joiner_secret(
         cls,
         joiner_secret: bytes,
-        psk_secret: Optional[bytes],
+        psk_secret: bytes | None,
         group_context: GroupContext,
         crypto_provider: CryptoProvider,
     ) -> "KeySchedule":
@@ -257,9 +256,11 @@ class KeySchedule:
         bytes
             Exported secret of requested length.
         """
+        # RFC 9420 §8.5: MLS-Exporter(Label, Context, Length) =
+        #   ExpandWithLabel(DeriveSecret(exporter_secret, Label), "exported", Context, Length)
+        # Context is used as-is (not hashed). Hashing it is the TLS exporter, not MLS.
         secret = self._crypto_provider.derive_secret(self.exporter_secret, label)
-        context_hash = self._crypto_provider.hash(context)
-        return self._crypto_provider.expand_with_label(secret, b"exported", context_hash, length)
+        return self._crypto_provider.expand_with_label(secret, b"exported", context, length)
 
     @property
     def confirmation_key(self) -> bytes:

@@ -7,7 +7,6 @@ then split into handshake/application branch ratchet secrets.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Optional, Union
 from collections import OrderedDict
 
 from ...crypto.crypto_provider import CryptoProvider
@@ -20,14 +19,14 @@ class _LeafState:
     """Mutable per-leaf state for tracking send generations and ratchet secrets."""
     app_generation: int = 0
     hs_generation: int = 0
-    app_secret: Optional[bytearray] = None
-    hs_secret: Optional[bytearray] = None
+    app_secret: bytearray | None = None
+    hs_secret: bytearray | None = None
     app_recv_generation: int = 0
-    app_recv_secret: Optional[bytearray] = None
-    app_skipped: "OrderedDict[int, Tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
+    app_recv_secret: bytearray | None = None
+    app_skipped: "OrderedDict[int, tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
     hs_recv_generation: int = 0
-    hs_recv_secret: Optional[bytearray] = None
-    hs_skipped: "OrderedDict[int, Tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
+    hs_recv_secret: bytearray | None = None
+    hs_skipped: "OrderedDict[int, tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
 
 
 class SecretTree:
@@ -40,7 +39,7 @@ class SecretTree:
         n_leaves: int = 1,
         window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
     ):
         self._root_secret = bytearray(encryption_secret)
         self._crypto = crypto
@@ -49,14 +48,14 @@ class SecretTree:
         self._max_generation_gap = max(1, int(max_generation_gap))
         self._aead_limit_bytes = aead_limit_bytes if aead_limit_bytes is None else max(0, int(aead_limit_bytes))
         self._encrypted_bytes_total = 0
-        self._leaves: Dict[int, _LeafState] = {}
+        self._leaves: dict[int, _LeafState] = {}
 
     def _get_leaf_state(self, leaf: int) -> _LeafState:
         if leaf not in self._leaves:
             self._leaves[leaf] = _LeafState()
         return self._leaves[leaf]
 
-    def _derive_leaf_secret(self, root_secret: Union[bytes, bytearray], leaf: int) -> bytes:
+    def _derive_leaf_secret(self, root_secret: bytes | bytearray, leaf: int) -> bytes:
         n = self._n_leaves
         if leaf < 0 or leaf >= n:
             raise ValueError("leaf index out of range for current tree")
@@ -92,7 +91,7 @@ class SecretTree:
         next_secret = self._crypto.expand_with_label(current_secret, b"secret", ctx, self._crypto.kdf_hash_len())
         return key, nonce, next_secret
 
-    def next_application(self, leaf: int) -> Tuple[bytes, bytes, int]:
+    def next_application(self, leaf: int) -> tuple[bytes, bytes, int]:
         st = self._get_leaf_state(leaf)
         if st.app_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
@@ -118,7 +117,7 @@ class SecretTree:
             pass
         return key_out, nonce_out, gen
 
-    def application_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
+    def application_for(self, leaf: int, generation: int) -> tuple[bytes, bytes, int]:
         if generation < 0:
             raise ValueError("generation must be non-negative")
         st = self._get_leaf_state(leaf)
@@ -193,7 +192,7 @@ class SecretTree:
             pass
         return key_out, nonce_out, generation
 
-    def next_handshake(self, leaf: int) -> Tuple[bytes, bytes, int]:
+    def next_handshake(self, leaf: int) -> tuple[bytes, bytes, int]:
         st = self._get_leaf_state(leaf)
         if st.hs_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
@@ -219,7 +218,7 @@ class SecretTree:
             pass
         return key_out, nonce_out, gen
 
-    def handshake_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
+    def handshake_for(self, leaf: int, generation: int) -> tuple[bytes, bytes, int]:
         if generation < 0:
             raise ValueError("generation must be non-negative")
         st = self._get_leaf_state(leaf)

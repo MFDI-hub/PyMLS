@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import  Iterable
 
 # RFC 9420 §16.3 uses the same IANA values as RFC 9180 for KEM, KDF, AEAD.
 # Re-export from rfc9180 as the single source of truth.
@@ -73,11 +73,11 @@ class MlsCiphersuite:
     signature: SignatureScheme
 
     @property
-    def triple(self) -> Tuple[KEM, KDF, AEAD]:
+    def triple(self) -> tuple[KEM, KDF, AEAD]:
         """Return (KEM, KDF, AEAD) tuple for convenience comparisons.
 
         Returns:
-            Tuple of (KEM, KDF, AEAD) components.
+            tuple of (KEM, KDF, AEAD) components.
         """
         return (self.kem, self.kdf, self.aead)
 
@@ -89,7 +89,7 @@ class MlsCiphersuite:
 
 # RFC 9420 §16.3 ciphersuite registry
 # Note: IDs and names follow the RFC. This list is intentionally explicit.
-_REGISTRY_BY_ID: Dict[int, MlsCiphersuite] = {
+_REGISTRY_BY_ID: dict[int, MlsCiphersuite] = {
     int(CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519): MlsCiphersuite(
         suite_id=int(CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519),
         name="MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
@@ -148,12 +148,12 @@ _REGISTRY_BY_ID: Dict[int, MlsCiphersuite] = {
     ),
 }
 
-_REGISTRY_BY_NAME: Dict[str, MlsCiphersuite] = {
+_REGISTRY_BY_NAME: dict[str, MlsCiphersuite] = {
     cs.name: cs for cs in _REGISTRY_BY_ID.values()
 }
 
 
-def get_ciphersuite_by_id(suite_id: int) -> Optional[MlsCiphersuite]:
+def get_ciphersuite_by_id(suite_id: int) -> MlsCiphersuite | None:
     """Look up a ciphersuite by RFC suite id.
 
     Args:
@@ -169,7 +169,7 @@ def get_ciphersuite_by_id(suite_id: int) -> Optional[MlsCiphersuite]:
     return _REGISTRY_BY_ID.get(suite_id)
 
 
-def get_ciphersuite_by_name(name: str) -> Optional[MlsCiphersuite]:
+def get_ciphersuite_by_name(name: str) -> MlsCiphersuite | None:
     """Look up a ciphersuite by its canonical name.
 
     Args:
@@ -190,8 +190,8 @@ def all_ciphersuites() -> Iterable[MlsCiphersuite]:
     return _REGISTRY_BY_ID.values()
 
 
-def list_ciphersuite_ids() -> List[int]:
-    """List of all registered RFC suite ids (sorted).
+def list_ciphersuite_ids() -> list[int]:
+    """list of all registered RFC suite ids (sorted).
 
     Returns:
         Sorted list of all registered ciphersuite IDs.
@@ -199,8 +199,8 @@ def list_ciphersuite_ids() -> List[int]:
     return sorted(_REGISTRY_BY_ID.keys())
 
 
-def list_ciphersuite_names() -> List[str]:
-    """List of all registered ciphersuite names (sorted).
+def list_ciphersuite_names() -> list[str]:
+    """list of all registered ciphersuite names (sorted).
 
     Returns:
         Sorted list of all registered ciphersuite names.
@@ -208,11 +208,11 @@ def list_ciphersuite_names() -> List[str]:
     return sorted(_REGISTRY_BY_NAME.keys())
 
 
-def find_by_triple(triple: Tuple[KEM, KDF, AEAD]) -> Optional[MlsCiphersuite]:
+def find_by_triple(triple: tuple[KEM, KDF, AEAD]) -> MlsCiphersuite | None:
     """Find a ciphersuite matching the given (KEM, KDF, AEAD) triple.
 
     Args:
-        triple: Tuple of (KEM, KDF, AEAD) to search for.
+        triple: tuple of (KEM, KDF, AEAD) to search for.
 
     Returns:
         MlsCiphersuite instance if a matching ciphersuite is found, None otherwise.

@@ -1,7 +1,6 @@
 """Best-effort X.509 chain verification and policy enforcement helpers."""
 from __future__ import annotations
 
-from typing import List
 from ...mls.exceptions import (
     RFC9420Error,
     UnsupportedCipherSuiteError,
@@ -9,7 +8,7 @@ from ...mls.exceptions import (
     CredentialRevocationError,
 )
 
-def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes]) -> bytes:
+def verify_certificate_chain(chain_der: list[bytes], trust_roots_pem: list[bytes]) -> bytes:
     """
     Minimal X.509 chain verification:
     - chain_der[0] is the leaf, subsequent entries are intermediates
@@ -84,7 +83,7 @@ def verify_certificate_chain(chain_der: List[bytes], trust_roots_pem: List[bytes
     )
 
 
-def load_default_trust_roots() -> List[bytes]:
+def load_default_trust_roots() -> list[bytes]:
     """
     Load system default trust roots via certifi, if available.
     Returns a list with a single PEM bundle or empty if not available.
@@ -97,7 +96,7 @@ def load_default_trust_roots() -> List[bytes]:
         return []
 
 
-def verify_certificate_chain_with_policy(chain_der: List[bytes], trust_roots_pem: List[bytes], policy) -> bytes:
+def verify_certificate_chain_with_policy(chain_der: list[bytes], trust_roots_pem: list[bytes], policy) -> bytes:
     """
     Verify the certificate chain and enforce policy checks (validity, KU/EKU, revocation).
     Returns the leaf SPKI DER on success.

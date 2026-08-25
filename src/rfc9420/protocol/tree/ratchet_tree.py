@@ -5,7 +5,7 @@ removing, and updating leaves, computing node hashes, and producing/merging
 UpdatePath structures used in commits.
 """
 
-from typing import Any, Optional, Set, cast, List
+from typing import Any, cast
 from ...messages.key_packages import KeyPackage, LeafNode, LeafNodeSource
 from ...codec.tls import (
     write_uint8,
@@ -44,11 +44,11 @@ class RatchetTreeNode:
 
     def __init__(self, is_leaf: bool):
         self.is_leaf = is_leaf
-        self.public_key: Optional[bytes] = None
-        self.private_key: Optional[bytes] = None
-        self.parent_hash: Optional[bytes] = None
-        self.leaf_node: Optional[LeafNode] = None
-        self.hash: Optional[bytes] = None
+        self.public_key: bytes | None = None
+        self.private_key: bytes | None = None
+        self.parent_hash: bytes | None = None
+        self.leaf_node: LeafNode | None = None
+        self.hash: bytes | None = None
         # RFC ?7.1: track unmerged leaves for parent nodes
         self.unmerged_leaves: list[int] = [] if not is_leaf else []
 
@@ -61,7 +61,7 @@ class RatchetTree:
     def __init__(
         self,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
     ):
         """Create an empty ratchet tree."""
         self._n_leaves = 0
@@ -91,7 +91,7 @@ class RatchetTree:
             raise ValueError("KeyPackage.leaf_node must be present to add a leaf")
 
         # Find leftmost blank leaf (RFC ?12.1.1)
-        leaf_index: Optional[int] = None
+        leaf_index: int | None = None
         for i in range(self._n_leaves):
             node = self.get_node(i * 2)
             if node.leaf_node is None and node.public_key is None:
@@ -223,8 +223,8 @@ class RatchetTree:
         return parent_hash
 
     def _compute_update_path_unmerged_leaves(
-        self, child_index: int, excluded_leaf_pubkeys: Optional[Set[bytes]] = None
-    ) -> List[int]:
+        self, child_index: int, excluded_leaf_pubkeys: set[bytes] | None = None
+    ) -> list[int]:
         """Compute the unmerged_leaves for a node in an UpdatePath.
         RFC 9420 ?7.1: the parent node's unmerged_leaves is set to the unmerged_leaves
         of the child node on the direct path, plus the resolution of the copath sibling.
@@ -268,7 +268,7 @@ class RatchetTree:
         if self.n_leaves == 0:
             return
         root_idx = tree_math.root(self.n_leaves)
-        valid_parents: Set[int] = set()
+        valid_parents: set[int] = set()
 
         for leaf_index in range(self.n_leaves):
             leaf_node_index = leaf_index * 2
@@ -368,11 +368,11 @@ class RatchetTree:
     def _snapshot_node(
         self, node_index: int
     ) -> tuple[
-        Optional[bytes],
-        Optional[bytes],
-        Optional[bytes],
-        Optional[LeafNode],
-        Optional[bytes],
+        bytes | None,
+        bytes | None,
+        bytes | None,
+        LeafNode | None,
+        bytes | None,
         list[int],
     ]:
         """Capture node fields so temporary hash modifications can be reverted safely."""
@@ -390,11 +390,11 @@ class RatchetTree:
         self,
         node_index: int,
         snap: tuple[
-            Optional[bytes],
-            Optional[bytes],
-            Optional[bytes],
-            Optional[LeafNode],
-            Optional[bytes],
+            bytes | None,
+            bytes | None,
+            bytes | None,
+            LeafNode | None,
+            bytes | None,
             list[int],
         ],
     ) -> None:
@@ -545,7 +545,7 @@ class RatchetTree:
         return self.get_node(root_index).hash or b""
 
     def resolve(
-        self, node_index: int, excluded_leaf_pubkeys: Optional[Set[bytes]] = None
+        self, node_index: int, excluded_leaf_pubkeys: set[bytes] | None = None
     ) -> list[RatchetTreeNode]:
         """
         Return the resolution of a node as defined in RFC 9420 ?4.1.1.
@@ -577,7 +577,7 @@ class RatchetTree:
         return res
 
     def resolve_indices(
-        self, node_index: int, excluded_leaf_pubkeys: Optional[Set[bytes]] = None
+        self, node_index: int, excluded_leaf_pubkeys: set[bytes] | None = None
     ) -> list[int]:
         """Return the resolution of a node as a list of node indices (RFC 9420 ?4.1.1)."""
         node = self.get_node(node_index)
@@ -604,9 +604,9 @@ class RatchetTree:
 
         return res
 
-    def _leaf_indices_under(self, node_index: int) -> Set[int]:
+    def _leaf_indices_under(self, node_index: int) -> set[int]:
         """Return set of leaf indices that are descendants of the given node."""
-        out: Set[int] = set()
+        out: set[int] = set()
         node = self.get_node(node_index)
         if node.is_leaf:
             out.add(node_index // 2)
@@ -621,7 +621,7 @@ class RatchetTree:
         return out
 
     def _filtered_direct_path_pairs(
-        self, node_index: int, excluded_leaf_pubkeys: Optional[Set[bytes]] = None
+        self, node_index: int, excluded_leaf_pubkeys: set[bytes] | None = None
     ) -> list[tuple[int, int]]:
         """Return (filtered-direct-path node, corresponding copath child) pairs.
 
@@ -640,7 +640,7 @@ class RatchetTree:
         return pairs
 
     def filtered_direct_path(
-        self, node_index: int, excluded_leaf_pubkeys: Optional[Set[bytes]] = None
+        self, node_index: int, excluded_leaf_pubkeys: set[bytes] | None = None
     ) -> list[int]:
         """
         Return the filtered direct path of a node (RFC 9420 §4.1.2).
@@ -657,7 +657,7 @@ class RatchetTree:
     def _set_filtered_path_parent_hashes(
         self, leaf_node_index: int, filtered_pairs: list[tuple[int, int]]
     ) -> None:
-        """Set ParentNode.parent_hash along the filtered direct path (RFC 9420 §7.5, §7.9.1).
+        """set ParentNode.parent_hash along the filtered direct path (RFC 9420 §7.5, §7.9.1).
 
         Hashes are computed root-to-leaf. Each node's parent_hash is the parent
         hash of the *next* filtered-path node (the next non-blank ancestor),
@@ -686,7 +686,7 @@ class RatchetTree:
         committer_index: int,
         new_leaf_node: LeafNode,
         group_context_bytes: bytes,
-        excluded_leaf_pubkeys: Optional[Set[bytes]] = None,
+        excluded_leaf_pubkeys: set[bytes] | None = None,
     ) -> tuple[UpdatePath, bytes, dict[int, bytes]]:
         """Create an UpdatePath for the committer and derive the commit secret.
 
@@ -825,7 +825,7 @@ class RatchetTree:
         update_path: UpdatePath,
         committer_index: int,
         group_context_bytes: bytes,
-        excluded_leaf_pubkeys: Optional[Set[bytes]] = None,
+        excluded_leaf_pubkeys: set[bytes] | None = None,
     ) -> bytes:
         """Merge an UpdatePath from a received commit and return the commit secret.
 
@@ -868,8 +868,8 @@ class RatchetTree:
                 raise
             raise CommitValidationError(f"invalid UpdatePath encryption keys: {e}") from e
 
-        decrypted_index: Optional[int] = None
-        current_path_secret: Optional[bytes] = None
+        decrypted_index: int | None = None
+        current_path_secret: bytes | None = None
 
         # RFC 9420 §7.6: ciphertext count MUST match copath-child resolution
         # (excluding new members added in this Commit). Includes the root.
@@ -992,7 +992,7 @@ class RatchetTree:
         Per RFC 9420 §7.5 ordering:
         - Compute filtered direct path from current tree
         - Blank sender direct path
-        - Set filtered direct-path public keys from UpdatePath and clear unmerged lists
+        - set filtered direct-path public keys from UpdatePath and clear unmerged lists
         - Recompute parent hashes top-down and tree hash bottom-up
         Used for test-vector verification."""
         leaf_node_index = committer_index * 2
@@ -1159,7 +1159,7 @@ class RatchetTree:
         if end > len(data):
             raise TLSDecodeError("ratchet_tree extension shorter than declared length")
         # (node_type, payload): payload is bytes for leaf (1), (pk, ph, unmerged_leaves) for parent (2)
-        entries: list[Optional[tuple[int, Any]]] = []
+        entries: list[tuple[int, Any] | None] = []
         while off < end:
             opt_len, off = read_uint8(data, off)
             if opt_len == 0:

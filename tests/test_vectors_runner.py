@@ -476,11 +476,7 @@ def run_key_schedule_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) ->
                 exp["label"].encode("utf-8") if isinstance(exp["label"], str) else h(exp["label"])
             )
             context_bytes = h(exp["context"])
-            context_hash = crypto.hash(context_bytes)
-            derived = crypto.derive_secret(ks.exporter_secret, label_bytes)
-            got_export = crypto.expand_with_label(
-                derived, b"exported", context_hash, int(exp["length"])
-            )
+            got_export = ks.export(label_bytes, context_bytes, int(exp["length"]))
             _assert_bytes_equal(h(exp["secret"]), got_export, "exporter secret")
         init_secret = ks.init_secret
 

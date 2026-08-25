@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rfc9420"
-version = "0.9.0"
+version = "1.3.0"
 description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,7 +37,7 @@ dev = [
   "python-dotenv>=1.0.0",
   "pytest>=8",
   "ruff>=0.6",
-  "mypy>=1.10",
+  "ty>=0.0.74",
   "tomli>=2.0.0",
   "aiosqlite>=0.19",
 ]
@@ -57,7 +57,7 @@ dev = [
   "python-dotenv>=1.0.0",
   "pytest>=8.0.0",
   "ruff>=0.6.0",
-  "mypy>=1.10.0",
+  "ty>=0.0.74",
   "tomli>=2.0.0",
 ]
 sqlite = [
@@ -72,17 +72,14 @@ docs = [
 target-version = "py39"
 line-length = 100
 
-[tool.mypy]
+[tool.ty.environment]
 # Use Optional[] / Union[] for Python 3.9 compatibility (no PEP 604 X|Y at runtime).
-python_version = "3.9"
-warn_unused_ignores = true
-warn_redundant_casts = true
-warn_unused_configs = true
-strict_optional = true
-check_untyped_defs = true
-disallow_untyped_defs = false
+python-version = "3.9"
+
+[tool.ty.rules]
+unused-ignore-comment = "warn"
+redundant-cast = "warn"
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py"]
 testpaths = ["tests"]
-

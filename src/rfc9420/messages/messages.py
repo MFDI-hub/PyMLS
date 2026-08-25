@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .data_structures import Sender, PreSharedKeyID, Welcome, GroupInfo
@@ -112,7 +112,7 @@ class PSKLabel:
 def derive_psk_secret(
     crypto: "CryptoProvider",
     psk_ids: list[PreSharedKeyID],
-    psk_values: Optional[list[Optional[bytes]]] = None,
+    psk_values: list[bytes | None] | None = None,
 ) -> bytes:
     """Derive the PSK secret per RFC 9420 §8.4.
 
@@ -133,7 +133,7 @@ def derive_psk_secret(
 
     for i in range(n):
         # Get or derive the PSK value (psk_[i] in the RFC)
-        psk_i: Optional[bytes] = (
+        psk_i: bytes | None = (
             psk_values[i] if (psk_values is not None and i < len(psk_values)) else None
         )
         if psk_i is not None and len(psk_i) > 0:
@@ -168,7 +168,7 @@ def encode_psk_binder(binder: bytes) -> bytes:
     return b"PSKB" + write_opaque_varint(binder)
 
 
-def decode_psk_binder(authenticated_data: bytes) -> Optional[bytes]:
+def decode_psk_binder(authenticated_data: bytes) -> bytes | None:
     """
     Decode a PSK binder from authenticated_data if present.
     Returns binder bytes or None.
@@ -244,7 +244,7 @@ class FramedContent:
         ct = ContentType(ct_val)
         from .data_structures import Commit as _Commit, Proposal as _Proposal
 
-        obj: Union[_Commit, _Proposal]
+        obj: _Commit | _Proposal
         if ct == ContentType.APPLICATION:
             body, off = read_opaque_varint(data, off)
         elif ct == ContentType.COMMIT:
@@ -282,7 +282,7 @@ class AuthenticatedContentTBS:
 
     wire_format: int  # WireFormat enum value
     framed_content: FramedContent
-    group_context: Optional[bytes] = None  # serialized GroupContext (for member senders)
+    group_context: bytes | None = None  # serialized GroupContext (for member senders)
 
     def serialize(self) -> bytes:
         """Encode AuthenticatedContentTBS per RFC 9420 §6.1.
@@ -322,7 +322,7 @@ class FramedContentAuthData:
     """
 
     signature: bytes
-    confirmation_tag: Optional[bytes] = None  # Present only if content_type == COMMIT
+    confirmation_tag: bytes | None = None  # Present only if content_type == COMMIT
 
     def serialize(self) -> bytes:
         out = write_opaque_varint(self.signature)
@@ -368,7 +368,7 @@ class AuthenticatedContent:
 
     tbs: AuthenticatedContentTBS
     auth: FramedContentAuthData
-    membership_tag: Optional[bytes] = None  # Part of PublicMessage, not AuthenticatedContent
+    membership_tag: bytes | None = None  # Part of PublicMessage, not AuthenticatedContent
 
     # Backward compatibility properties
     @property
@@ -376,7 +376,7 @@ class AuthenticatedContent:
         return self.auth.signature
 
     @property
-    def confirmation_tag(self) -> Optional[bytes]:
+    def confirmation_tag(self) -> bytes | None:
         return self.auth.confirmation_tag
 
     def serialize(self) -> bytes:
@@ -531,7 +531,7 @@ def encrypt_sender_data(
     key_schedule: KeySchedule,
     crypto: CryptoProvider,
     aad: bytes = b"",
-    ciphertext_sample: Optional[bytes] = None,
+    ciphertext_sample: bytes | None = None,
 ) -> bytes:
     """Encrypt SenderData using sender data key/nonce derived from KeySchedule.
 
@@ -553,7 +553,7 @@ def decrypt_sender_data(
     key_schedule: KeySchedule,
     crypto: CryptoProvider,
     aad: bytes = b"",
-    ciphertext_sample: Optional[bytes] = None,
+    ciphertext_sample: bytes | None = None,
 ) -> SenderData:
     """Decrypt SenderData using sender data key/nonce."""
     if ciphertext_sample is not None:
@@ -571,7 +571,7 @@ def encode_encrypted_sender_data(
     sd: SenderData,
     key_schedule: KeySchedule,
     crypto: CryptoProvider,
-    ciphertext_sample: Optional[bytes] = None,
+    ciphertext_sample: bytes | None = None,
     sender_data_aad: bytes = b"",
 ) -> bytes:
     """
@@ -590,7 +590,7 @@ def decode_encrypted_sender_data(
     data: bytes,
     key_schedule: KeySchedule,
     crypto: CryptoProvider,
-    ciphertext_sample: Optional[bytes] = None,
+    ciphertext_sample: bytes | None = None,
     sender_data_aad: bytes = b"",
 ) -> SenderData:
     """Decrypt SenderData from the encrypted_sender_data<V> wire field.
@@ -667,9 +667,9 @@ def sign_authenticated_content(
     content: bytes,
     signing_private_key: bytes,
     crypto: CryptoProvider,
-    group_context: Optional[bytes] = None,
+    group_context: bytes | None = None,
     wire_format: int = WireFormat.PUBLIC_MESSAGE,
-    sender_type: Optional["SenderType"] = None,
+    sender_type: "SenderType" | None = None,
 ) -> MLSPlaintext:
     """Build MLSPlaintext by signing AuthenticatedContentTBS per RFC 9420 §6.1.
 
@@ -744,9 +744,9 @@ def attach_membership_tag(
 def verify_plaintext(
     plaintext: MLSPlaintext,
     sender_signature_key: bytes,
-    membership_key: Optional[bytes],
+    membership_key: bytes | None,
     crypto: CryptoProvider,
-    group_context: Optional[bytes] = None,
+    group_context: bytes | None = None,
 ) -> None:
     """
     Verify signature and (if provided) membership tag of an MLSPlaintext.
@@ -802,8 +802,8 @@ def protect_content_handshake(
     key_schedule: KeySchedule,
     secret_tree,
     crypto: CryptoProvider,
-    rand_provider: Optional[RandProviderProtocol] = None,
-    confirmation_tag: Optional[bytes] = None,
+    rand_provider: RandProviderProtocol | None = None,
+    confirmation_tag: bytes | None = None,
     content_type: ContentType = ContentType.COMMIT,
     pad_to: int = 32,
 ) -> MLSCiphertext:
@@ -906,7 +906,7 @@ def protect_content_application(
     key_schedule: KeySchedule,
     secret_tree,
     crypto: CryptoProvider,
-    rand_provider: Optional[RandProviderProtocol] = None,
+    rand_provider: RandProviderProtocol | None = None,
     pad_to: int = 32,
 ) -> MLSCiphertext:
     """
@@ -1001,7 +1001,7 @@ def unprotect_content_handshake(
 
     off = 0
     body = b""
-    obj: Union[_Commit, _Proposal]
+    obj: _Commit | _Proposal
     if m.content_type == ContentType.COMMIT:
         obj = _Commit.deserialize(ptxt)
         length = len(obj.serialize())
@@ -1108,7 +1108,7 @@ class MLSMessage:
 
     def get_parsed_content(
         self,
-    ) -> Union["AuthenticatedContent", "MLSCiphertext", "Welcome", "GroupInfo", "KeyPackage"]:
+    ) -> "AuthenticatedContent" | "MLSCiphertext" | "Welcome" | "GroupInfo" | "KeyPackage":
         """Parse and return the inner message based on wire_format (RFC 9420 §6 typed dispatch)."""
         from .data_structures import GroupInfo, Welcome
         from .key_packages import KeyPackage

@@ -1,8 +1,6 @@
 """Active MLSGroup API: staged commits and config-driven providers."""
 from __future__ import annotations
 
-from typing import Optional
-
 from .processing import MLSGroup as _ProtocolMLSGroup, PendingCommit
 from ...messages.key_packages import KeyPackage, LeafNode
 from ...messages.data_structures import Welcome
@@ -109,7 +107,7 @@ class MLSGroup:
         config: GroupConfig,
         welcome: Welcome,
         hpke_private_key: bytes,
-        key_package: Optional[KeyPackage] = None,
+        key_package: KeyPackage | None = None,
     ) -> "MLSGroup":
         """Join an existing group using a Welcome message.
 
@@ -235,14 +233,14 @@ class MLSGroup:
             message, Sender(sender_leaf_index, SenderType(sender_type))
         )
 
-    def process_commit(self, message: MLSPlaintext, sender_leaf_index: Optional[int] = None) -> None:
+    def process_commit(self, message: MLSPlaintext, sender_leaf_index: int | None = None) -> None:
         """Process a received commit and update in-memory state (mutating). Compatibility path."""
         if sender_leaf_index is None:
             sender_leaf_index = get_commit_sender_leaf_index(message.serialize())
         self._inner.process_commit(message, sender_leaf_index)
 
     def process_commit_staged(
-        self, message: MLSPlaintext, sender_leaf_index: Optional[int] = None
+        self, message: MLSPlaintext, sender_leaf_index: int | None = None
     ) -> StagedCommit:
         """Process a received commit and return a StagedCommit without mutating state.
 
@@ -267,7 +265,7 @@ class MLSGroup:
     def revoke_proposal(self, proposal_ref: bytes) -> None:
         self._inner.revoke_proposal(proposal_ref)
 
-    def protect(self, application_data: bytes, signing_key: Optional[bytes] = None) -> MLSCiphertext:
+    def protect(self, application_data: bytes, signing_key: bytes | None = None) -> MLSCiphertext:
         return self._inner.protect(application_data, signing_key=signing_key)
 
     def unprotect(self, message: MLSCiphertext) -> tuple[int, bytes]:

@@ -1,7 +1,7 @@
 """PublicGroup: passive observer view (no secret keys, tree and commit validation only)."""
 from __future__ import annotations
 
-from typing import Union, Any
+from typing import Any
 
 from ...group.mls_group.processing import MLSGroup as _ProtocolMLSGroup
 from ...messages.data_structures import GroupInfo, GroupContext
@@ -50,7 +50,7 @@ class PublicGroup:
     def from_group_info(
         cls,
         crypto_provider: CryptoProvider,
-        group_info: Union[GroupInfo, bytes],
+        group_info: GroupInfo | bytes,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "PublicGroup":
         """Build a PublicGroup from GroupInfo (e.g. from decrypted Welcome).

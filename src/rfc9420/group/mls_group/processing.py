@@ -19,6 +19,8 @@ Rationale:
 - Provides both high-level (Group) and low-level (MLSGroup) APIs.
 """
 
+from __future__ import annotations
+
 from ...messages.data_structures import (
     Proposal,
     Welcome,
@@ -76,6 +78,7 @@ from ...extensions.extensions import (
     deserialize_extensions,
     parse_capabilities_data,
     parse_required_capabilities,
+    leaf_supports_group_extension,
 )
 from ...protocol.validations import (
     validate_proposals_client_rules,
@@ -103,7 +106,7 @@ from ...mls.exceptions import (
 )
 
 from enum import Enum
-from typing import Callable, Dict, Optional, Union, cast
+from typing import Callable, cast
 import struct
 from ...crypto.hpke_labels import encrypt_with_label, decrypt_with_label
 from ...crypto import labels as mls_labels
@@ -251,12 +254,12 @@ class MLSGroup:
         self,
         group_id: bytes,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol],
+        rand_provider: RandProviderProtocol | None,
         own_leaf_index: int,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
-        tree_backend: Optional[Union[str, object]] = None,
+        aead_limit_bytes: int | None = None,
+        tree_backend: str | object | None = None,
     ):
         """Initialize a new MLSGroup wrapper around cryptographic providers.
 
@@ -281,18 +284,18 @@ class MLSGroup:
         else:
             self._ratchet_tree = cast(RatchetTreeBackend, tree_backend)
         self._tree_backend_id = getattr(self._ratchet_tree, "backend_id", DEFAULT_TREE_BACKEND)
-        self._group_context: Optional[GroupContext] = None
-        self._key_schedule: Optional[KeySchedule] = None
-        self._secret_tree: Optional[SecretTree] = None
-        self._interim_transcript_hash: Optional[bytes] = None
-        self._confirmed_transcript_hash: Optional[bytes] = None
+        self._group_context: GroupContext | None = None
+        self._key_schedule: KeySchedule | None = None
+        self._secret_tree: SecretTree | None = None
+        self._interim_transcript_hash: bytes | None = None
+        self._confirmed_transcript_hash: bytes | None = None
         self._pending_proposals: list[Proposal] = []
         # Map proposal reference -> (proposal, sender_leaf_index)
         self._proposal_cache: dict[bytes, tuple[Proposal, int]] = {}
         self._own_leaf_index = own_leaf_index
-        self._external_private_key: Optional[bytes] = None
-        self._external_public_key: Optional[bytes] = None
-        self._external_init_secret_for_commit: Optional[bytes] = (
+        self._external_private_key: bytes | None = None
+        self._external_public_key: bytes | None = None
+        self._external_init_secret_for_commit: bytes | None = (
             None  # RFC 9420 §8.3 joiner HPKE export
         )
         self._trust_roots: list[bytes] = []
@@ -300,7 +303,7 @@ class MLSGroup:
         self._x509_policy = None
         self._secret_tree_window_size: int = int(secret_tree_window_size)
         self._secret_tree_max_generation_gap: int = int(max_generation_gap)
-        self._secret_tree_aead_limit_bytes: Optional[int] = (
+        self._secret_tree_aead_limit_bytes: int | None = (
             None if aead_limit_bytes is None else int(aead_limit_bytes)
         )
         self._state: MlsGroupState = MlsGroupState.OPERATIONAL
@@ -308,13 +311,13 @@ class MLSGroup:
         self._received_commit_unapplied: bool = False
         self._received_commit_for_current_epoch: bool = False  # §14 same-epoch conflict detection
         self._reinit_pending_welcome: bool = False
-        self._resumption_psk_provider: Optional[Callable[[bytes, int], Optional[bytes]]] = None
-        self._external_psk_provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None
+        self._resumption_psk_provider: Callable[[bytes, int], bytes | None] | None = None
+        self._external_psk_provider: Callable[[PreSharedKeyID], bytes | None] | None = None
         # RFC 9420 §8.4: resumption PSK is the named epoch's secret, not the live one.
         self._resumption_psks: dict[tuple[bytes, int], bytes] = {}
         self._max_resumption_psks: int = 256
         # RFC 9420 §5.3.1: optional callback (credential, context_str) -> None; raise on invalid
-        self._credential_validator: Optional[Callable[[object, str], None]] = None
+        self._credential_validator: Callable[[object, str], None] | None = None
 
     def _assert_operational(self, operation: str) -> None:
         if self._state == MlsGroupState.INACTIVE:
@@ -331,7 +334,7 @@ class MLSGroup:
                 f"apply_staged_commit not allowed in state {self._state.value}"
             )
 
-    def set_credential_validator(self, validator: Optional[Callable[[object, str], None]]) -> None:
+    def set_credential_validator(self, validator: Callable[[object, str], None] | None = None) -> None:
         """Set callback for credential validation at RFC §5.3.1 events.
 
         Called with (credential, context) where context is one of:
@@ -346,7 +349,7 @@ class MLSGroup:
             self._credential_validator(credential, context)
 
     def set_resumption_psk_provider(
-        self, provider: Optional[Callable[[bytes, int], Optional[bytes]]]
+        self, provider: Callable[[bytes, int], bytes | None] | None = None
     ) -> None:
         """Set a callback (group_id, epoch) -> resumption_psk_bytes for APPLICATION resumption PSKs.
         Used when creating or processing commits that include PreSharedKey with usage APPLICATION.
@@ -355,7 +358,7 @@ class MLSGroup:
 
     def set_external_psk_provider(
         self,
-        provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]],
+        provider: Callable[[PreSharedKeyID], bytes | None] | None = None,
     ) -> None:
         """Set a callback (PreSharedKeyID) -> psk_value_bytes for EXTERNAL PSKs.
 
@@ -377,13 +380,13 @@ class MLSGroup:
         while len(self._resumption_psks) > self._max_resumption_psks:
             self._resumption_psks.pop(next(iter(self._resumption_psks)))
 
-    def _get_psk_values(self, psk_ids: list) -> Optional[list[Optional[bytes]]]:
+    def _get_psk_values(self, psk_ids: list) -> list[bytes | None] | None:
         """Resolve PSK values from resumption and external providers; return list aligned with psk_ids.
         None entries mean use fallback derivation for that slot. Returns None if no provider is set.
         """
         if not psk_ids:
             return None
-        values: list[Optional[bytes]] = []
+        values: list[bytes | None] = []
         for psk in psk_ids:
             psktype = getattr(psk, "psktype", None)
             if psktype == PSKType.EXTERNAL and self._external_psk_provider:
@@ -439,10 +442,10 @@ class MLSGroup:
         group_id: bytes,
         key_package: KeyPackage,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
         initial_extensions: bytes = b"",
     ) -> "MLSGroup":
@@ -531,19 +534,19 @@ class MLSGroup:
         welcome: Welcome,
         hpke_private_key: bytes,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
-        key_package: Optional[KeyPackage] = None,
-        existing_group_ids: Optional[list[bytes]] = None,
-        credential_validator: Optional[Callable[[object, str], None]] = None,
-        reinit_proposal: Optional["ReInitProposal"] = None,
-        branch_old_version: Optional[int] = None,
-        branch_old_cipher_suite: Optional[int] = None,
-        welcome_psk_resolver: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None,
-        encryption_private_key: Optional[bytes] = None,
+        key_package: KeyPackage | None = None,
+        existing_group_ids: list[bytes] | None = None,
+        credential_validator: Callable[[object, str], None] | None = None,
+        reinit_proposal: ReInitProposal | None = None,
+        branch_old_version: int | None = None,
+        branch_old_cipher_suite: int | None = None,
+        welcome_psk_resolver: Callable[[PreSharedKeyID], bytes | None] | None = None,
+        encryption_private_key: bytes | None = None,
     ) -> "MLSGroup":
         """Join a group using a Welcome message.
 
@@ -623,7 +626,7 @@ class MLSGroup:
         if group_secrets and group_secrets.psks:
             from ...messages.messages import derive_psk_secret
 
-            psk_values: Optional[list[Optional[bytes]]] = None
+            psk_values: list[bytes | None] | None = None
             if welcome_psk_resolver is not None:
                 psk_values = [welcome_psk_resolver(pid) for pid in group_secrets.psks]
             psk_secret = derive_psk_secret(
@@ -755,8 +758,8 @@ class MLSGroup:
 
         # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
         verifier_keys: list[bytes] = []
-        ext_external_pub: Optional[bytes] = None
-        ext_tree_bytes: Optional[bytes] = None
+        ext_external_pub: bytes | None = None
+        ext_tree_bytes: bytes | None = None
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
@@ -844,12 +847,11 @@ class MLSGroup:
                     if own_node and own_node.leaf_node and own_node.leaf_node.capabilities:
                         parsed = parse_capabilities_data(own_node.leaf_node.capabilities)
                         joiner_caps = set(parsed.get("extensions", []))
-                if joiner_caps:
-                    for ext in gc_exts:
-                        if int(ext.ext_type) not in joiner_caps:
-                            raise CommitValidationError(
-                                f"joiner does not support GroupContext extension {int(ext.ext_type)}"
-                            )
+                for ext in gc_exts:
+                    if not leaf_supports_group_extension(joiner_caps, ext.ext_type):
+                        raise CommitValidationError(
+                            f"joiner does not support GroupContext extension {int(ext.ext_type)}"
+                        )
         except CommitValidationError:
             raise
         except Exception as e:
@@ -1003,13 +1005,13 @@ class MLSGroup:
     @classmethod
     def from_group_info(
         cls,
-        group_info: Union[GroupInfo, bytes],
+        group_info: GroupInfo | bytes,
         crypto_provider: CryptoProvider,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
-        credential_validator: Optional[Callable[[object, str], None]] = None,
+        credential_validator: Callable[[object, str], None] | None = None,
     ) -> "MLSGroup":
         """Build group state from GroupInfo for joiner-initiated external commits (RFC 9420 §12.4.3.2).
 
@@ -1065,7 +1067,7 @@ class MLSGroup:
         group._pending_proposals = []
 
         verifier_keys: list[bytes] = []
-        ext_tree_bytes: Optional[bytes] = None
+        ext_tree_bytes: bytes | None = None
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
@@ -1135,9 +1137,9 @@ class MLSGroup:
     def configure_runtime_policy(
         self,
         *,
-        secret_tree_window_size: Optional[int] = None,
-        max_generation_gap: Optional[int] = None,
-        aead_limit_bytes: Optional[int] = None,
+        secret_tree_window_size: int | None = None,
+        max_generation_gap: int | None = None,
+        aead_limit_bytes: int | None = None,
     ) -> None:
         """Configure runtime SecretTree limits used for application traffic."""
         if secret_tree_window_size is not None:
@@ -1158,7 +1160,7 @@ class MLSGroup:
                 aead_limit_bytes=self._secret_tree_aead_limit_bytes,
             )
 
-    def get_runtime_policy(self) -> Dict[str, Optional[int]]:
+    def get_runtime_policy(self) -> dict[str, int | None]:
         """Return active runtime policy values backing SecretTree enforcement."""
         return {
             "secret_tree_window_size": int(self._secret_tree_window_size),
@@ -1176,7 +1178,7 @@ class MLSGroup:
         return self._key_schedule.epoch_authenticator
 
     def external_commit(
-        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: Optional[bytes] = None
+        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: bytes | None = None
     ) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create and sign an external commit that adds the joiner to the group (RFC 9420 §12.4.3.2).
 
@@ -1207,7 +1209,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(key_package.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(self._group_context.extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"joiner does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -1234,7 +1236,7 @@ class MLSGroup:
         return self.create_commit(signing_key)
 
     def external_join(
-        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: Optional[bytes] = None
+        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: bytes | None = None
     ) -> tuple[MLSPlaintext, list[Welcome]]:
         """Alias for external_commit when acting on behalf of a joiner."""
         return self.external_commit(key_package, signing_key, kem_public_key)
@@ -1330,7 +1332,7 @@ class MLSGroup:
         old_gid, old_epoch = self._group_id, self._group_context.epoch
         rpsk = self._key_schedule.resumption_psk
 
-        def _resumption_psk_provider(gid: bytes, epoch: int) -> Optional[bytes]:
+        def _resumption_psk_provider(gid: bytes, epoch: int) -> bytes | None:
             return rpsk if (gid, epoch) == (old_gid, old_epoch) else None
 
         new_group.set_resumption_psk_provider(_resumption_psk_provider)
@@ -1351,7 +1353,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(key_package.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(self._group_context.extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"added member does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -1699,7 +1701,7 @@ class MLSGroup:
         return self.external_commit(key_package, signing_key, kem_public_key)
 
     def process_proposal(
-        self, message: MLSPlaintext, sender: Sender, wire_format: Optional[int] = None
+        self, message: MLSPlaintext, sender: Sender, wire_format: int | None = None
     ) -> None:
         """Verify and enqueue a Proposal carried in MLSPlaintext.
 
@@ -2089,7 +2091,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(kp.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(effective_group_extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"added member does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -2325,18 +2327,8 @@ class MLSGroup:
             exts = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]
             if self._external_public_key:
                 exts.append(Extension(ExtensionType.EXTERNAL_PUB, self._external_public_key))
-            # RFC 9420 §13.5: include a GREASE extension in GroupInfo.extensions.
-            try:
-                from ...extensions.extensions import random_grease_values
-
-                used_types = {int(e.ext_type) for e in exts}
-                for grease_type in random_grease_values(2):
-                    if grease_type in used_types:
-                        continue
-                    exts.append(Extension(grease_type, b"groupinfo-grease"))
-                    break
-            except Exception:
-                pass
+            # Do not GREASE GroupInfo.extensions. RFC 9420 §13.5 is a SHOULD;
+            # OpenMLS / Discord DAVE reject unknown GroupInfo extension types.
             # # Include REQUIRED_CAPABILITIES so joiners can enforce support
             # try:
             #     from ...extensions.extensions import build_required_capabilities
@@ -2692,7 +2684,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(kp.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(effective_group_extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"added member does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -2893,7 +2885,7 @@ class MLSGroup:
             self._state = MlsGroupState.OPERATIONAL
 
     def process_commit_staged(
-        self, message: MLSPlaintext, sender_index: int, tree_backend_id: Optional[str] = None
+        self, message: MLSPlaintext, sender_index: int, tree_backend_id: str | None = None
     ) -> tuple:
         """Verify a received Commit and return staged state without mutating self.
 
@@ -3273,7 +3265,7 @@ class MLSGroup:
             raise RFC9420Error("group not initialized")
         return self._key_schedule.resumption_psk
 
-    def protect(self, app_data: bytes, signing_key: Optional[bytes] = None) -> MLSCiphertext:
+    def protect(self, app_data: bytes, signing_key: bytes | None = None) -> MLSCiphertext:
         """Encrypt application data into MLSCiphertext for the current epoch.
 
         Encrypts application data using the current epoch's application secret
@@ -3462,7 +3454,7 @@ class MLSGroup:
         cls,
         data: bytes,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroup":
         """Deserialize state created by to_bytes() and recreate schedule."""

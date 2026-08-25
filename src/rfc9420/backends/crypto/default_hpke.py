@@ -364,6 +364,7 @@ class DefaultCryptoProvider:
             sk, pk = hpke.derive_key_pair(seed)
             return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
+        from rfc9180.primitives.kem import DHKEM_NIST
         from rfc9180.utils import I2OSP, OS2IP
         from cryptography.hazmat.primitives.asymmetric import ec, x25519, x448
 
@@ -373,7 +374,7 @@ class DefaultCryptoProvider:
             ikm=seed,
             suite_id=kem.suite_id,
         )
-        if hasattr(kem, "order"):
+        if isinstance(kem, DHKEM_NIST):
             counter = 0
             while True:
                 if counter > 255:
@@ -385,7 +386,7 @@ class DefaultCryptoProvider:
                     L=kem.Nsk,
                     suite_id=kem.suite_id,
                 )
-                if getattr(kem, "mask", 0xFF) != 0xFF:
+                if kem.mask != 0xFF:
                     b = bytearray(candidate)
                     b[0] &= kem.mask
                     candidate = bytes(b)

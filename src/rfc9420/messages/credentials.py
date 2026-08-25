@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import List
 
 from ..codec.tls import (
     write_uint8,
@@ -95,7 +94,7 @@ class X509Credential:
     we carry it explicitly here for simplicity.
     """
 
-    cert_chain: List[bytes]
+    cert_chain: list[bytes]
     signature_scheme: SignatureScheme
 
     def serialize(self) -> bytes:
@@ -113,14 +112,14 @@ class X509Credential:
         if CredentialType(cred_type) != CredentialType.X509:
             raise CredentialValidationError("Not an X.509 credential")
         num, off = read_uint8(data, off)
-        chain: List[bytes] = []
+        chain: list[bytes] = []
         for _ in range(num):
             cert, off = read_opaque16(data, off)
             chain.append(cert)
         sig_code, off = read_uint8(data, off)
         return cls(chain, _decode_signature_scheme(sig_code))
 
-    def verify_chain(self, trust_roots: List[bytes]) -> bytes:
+    def verify_chain(self, trust_roots: list[bytes]) -> bytes:
         """
         Verify the certificate chain against the provided trust roots.
         Returns the leaf certificate's public key bytes on success.
@@ -128,7 +127,7 @@ class X509Credential:
         from ..backends.identity.x509 import verify_certificate_chain
         return verify_certificate_chain(self.cert_chain, trust_roots)
 
-    def verify_chain_with_policy(self, trust_roots: List[bytes], policy) -> bytes:
+    def verify_chain_with_policy(self, trust_roots: list[bytes], policy) -> bytes:
         """
         Verify the certificate chain and enforce an X.509 policy.
         Returns the leaf certificate's public key bytes on success.

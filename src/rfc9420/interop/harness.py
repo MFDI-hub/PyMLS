@@ -5,7 +5,6 @@ These helpers serialize/deserialize MLS core structures using RFC9420 codecs.
 External interop (OpenMLS/MLS++) can be added by invoking their CLIs/FFI here.
 """
 from __future__ import annotations
-from typing import Tuple, List
 import base64
 
 from ..codec.mls import (
@@ -22,13 +21,13 @@ from .wire import encode_handshake, decode_handshake, encode_application, decode
 
 
 
-def round_trip_commit(commit: Commit, signature: bytes) -> Tuple[Commit, bytes]:
+def round_trip_commit(commit: Commit, signature: bytes) -> tuple[Commit, bytes]:
     """Encode and decode a commit using the internal wire format."""
     data = encode_commit_message(commit, signature)
     return decode_commit_message(data)
 
 
-def round_trip_proposals(proposals: List[Proposal], signature: bytes) -> Tuple[List[Proposal], bytes]:
+def round_trip_proposals(proposals: list[Proposal], signature: bytes) -> tuple[list[Proposal], bytes]:
     """Encode and decode proposals using the internal wire format."""
     data = encode_proposals_message(proposals, signature)
     return decode_proposals_message(data)

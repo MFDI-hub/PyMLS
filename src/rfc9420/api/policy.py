@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from collections import OrderedDict
 from hashlib import sha256
-from typing import Dict, Optional
 
 from .session import MLSGroupSession
 from ..interop.wire import decode_handshake
@@ -14,20 +13,20 @@ from ..interop.wire import decode_handshake
 class MLSAppPolicy:
     """High-level application policy for RFC 9420 operational controls."""
 
-    update_interval_seconds: Optional[int] = None
-    max_idle_before_update: Optional[int] = None
+    update_interval_seconds: int | None = None
+    max_idle_before_update: int | None = None
     max_resumption_epochs: int = 8
 
     secret_tree_window_size: int = 128
     max_generation_gap: int = 1000
-    aead_limit_bytes: Optional[int] = None
+    aead_limit_bytes: int | None = None
 
     conflict_resolution_strategy: str = "first_seen"
     enforce_epoch_lock: bool = True
 
     x509_mode: str = "warn_only"
     trust_roots: list[bytes] = field(default_factory=list)
-    x509_policy: Optional[object] = None
+    x509_policy: object | None = None
 
     @classmethod
     def recommended(cls) -> "MLSAppPolicy":
@@ -44,7 +43,7 @@ class MLSAppPolicy:
             x509_mode="warn_only",
         )
 
-    def as_runtime_dict(self) -> Dict[str, Optional[int]]:
+    def as_runtime_dict(self) -> dict[str, int | None]:
         return {
             "secret_tree_window_size": int(self.secret_tree_window_size),
             "max_generation_gap": int(self.max_generation_gap),
@@ -81,7 +80,7 @@ class MLSOrchestrator:
     def note_activity(self) -> None:
         self._last_activity_at = datetime.now(timezone.utc)
 
-    def should_rotate_now(self, now: Optional[datetime] = None) -> bool:
+    def should_rotate_now(self, now: datetime | None = None) -> bool:
         now = now or datetime.now(timezone.utc)
         if self._policy.update_interval_seconds is not None:
             elapsed = (now - self._last_self_update_at).total_seconds()
@@ -93,7 +92,7 @@ class MLSOrchestrator:
                 return True
         return False
 
-    def record_self_update(self, now: Optional[datetime] = None) -> None:
+    def record_self_update(self, now: datetime | None = None) -> None:
         ts = now or datetime.now(timezone.utc)
         self._last_self_update_at = ts
         self._last_activity_at = ts

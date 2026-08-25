@@ -2,22 +2,22 @@
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Optional, Callable
+from typing import Callable
 
 from ...mls.exceptions import RFC9420Error
 
 
 def _now_utc() -> _dt.datetime:
     """Return current UTC time (separated for testability)."""
-    return _dt.datetime.utcnow()
+    return _dt.datetime.now(_dt.timezone.utc)
 
 def check_ocsp_end_entity(
     end_entity_der: bytes,
     issuer_der: bytes,
-    now: Optional[_dt.datetime] = None,
-    cache: Optional[dict] = None,
+    now: _dt.datetime | None = None,
+    cache: dict | None = None,
     ttl_seconds: int = 900,
-    fetcher: Optional[Callable[[str, bytes], bytes]] = None,
+    fetcher: Callable[[str, bytes], bytes] | None = None,
     fail_open: bool = False,
 ) -> bool:
     """
@@ -74,7 +74,7 @@ def check_ocsp_end_entity(
     builder = OCSPRequestBuilder().add_certificate(ee, issuer, hashes.SHA256())
     req = builder.build()
     # Fetch response from first available OCSP URL
-    resp_bytes: Optional[bytes] = None
+    resp_bytes: bytes | None = None
     if fetcher:
         try:
             resp_bytes = fetcher(ocsp_urls[0], req.public_bytes(serialization.Encoding.DER))
@@ -106,7 +106,7 @@ def check_ocsp_end_entity(
         return bool(fail_open)
     single = ocsp_resp  # cryptography returns a high-level object with .certificate_status
     try:
-        ocsp_resp._responder_key_hash  # type: ignore[attr-defined]
+        getattr(ocsp_resp, "_responder_key_hash", None)
     except Exception:
         # Can't access internals reliably; verify signature at a high level by catching exceptions
         pass
@@ -126,10 +126,10 @@ def check_ocsp_end_entity(
 def check_crl(
     end_entity_der: bytes,
     issuer_der: bytes,
-    now: Optional[_dt.datetime] = None,
-    cache: Optional[dict] = None,
+    now: _dt.datetime | None = None,
+    cache: dict | None = None,
     ttl_seconds: int = 900,
-    fetcher: Optional[Callable[[str], bytes]] = None,
+    fetcher: Callable[[str], bytes] | None = None,
     fail_open: bool = False,
 ) -> bool:
     """
@@ -173,7 +173,7 @@ def check_crl(
         if (now - ts).total_seconds() <= ttl_seconds:
             return bool(ok)
 
-    crl_bytes: Optional[bytes] = None
+    crl_bytes: bytes | None = None
     if fetcher:
         try:
             crl_bytes = fetcher(crl_urls[0])

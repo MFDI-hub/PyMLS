@@ -7,7 +7,6 @@ for tree and proposal references.
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional, Union
 import struct
 
 from .data_structures import (
@@ -34,7 +33,7 @@ from ..extensions.extensions import (
 
 
 def _prepare_extensions_for_signing(
-    exts: Optional[list[Extension]],
+    exts: list[Extension] | None,
     capabilities: bytes,
     grease_payload: bytes,
 ) -> list[Extension]:
@@ -81,14 +80,14 @@ class LeafNode:
 
     encryption_key: bytes
     signature_key: bytes
-    credential: Optional[Credential]
     capabilities: bytes
+    credential: Credential | None = None
     leaf_node_source: LeafNodeSource = LeafNodeSource.KEY_PACKAGE
     lifetime_not_before: int = 0  # uint64, only for KEY_PACKAGE
     lifetime_not_after: int = 0  # uint64, only for KEY_PACKAGE
     parent_hash: bytes = b""  # opaque<V>, only for UPDATE/COMMIT
-    extensions: list[Extension] = None  # type: ignore[assignment]
-    signature: Union[Signature, bytes] = b""
+    extensions: list[Extension] | None = None
+    signature: Signature | bytes = b""
 
     # RFC 9420 §7.2:
     # select (LeafNode.leaf_node_source) {
@@ -125,7 +124,7 @@ class LeafNode:
         return data
 
     def tbs_serialize(
-        self, group_id: Optional[bytes] = None, leaf_index: Optional[int] = None
+        self, group_id: bytes | None = None, leaf_index: int | None = None
     ) -> bytes:
         """Encode LeafNodeTBS (everything except signature) for signing."""
         data = serialize_bytes(self.encryption_key)
@@ -225,12 +224,12 @@ class LeafNode:
     def validate(
         self,
         crypto_provider,
-        group_id: Optional[bytes] = None,
-        leaf_index: Optional[int] = None,
-        current_time: Optional[int] = None,
+        group_id: bytes | None = None,
+        leaf_index: int | None = None,
+        current_time: int | None = None,
         group_context=None,
-        expected_source: Optional[LeafNodeSource] = None,
-        replacing_encryption_key: Optional[bytes] = None,
+        expected_source: LeafNodeSource | None = None,
+        replacing_encryption_key: bytes | None = None,
     ) -> None:
         """Verify LeafNode validity according to RFC 9420 §7.3.
 
@@ -390,8 +389,8 @@ class KeyPackage:
         KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM
     )
     init_key: bytes = b""  # HPKE init key (distinct from leaf_node.encryption_key)
-    leaf_node: Optional[LeafNode] = None
-    extensions: list[Extension] = None  # type: ignore[assignment]
+    leaf_node: LeafNode | None = None
+    extensions: list[Extension] | None = None
     signature: Signature = Signature(b"")
 
     def serialize(self) -> bytes:
@@ -505,8 +504,8 @@ class KeyPackage:
         self,
         crypto_provider,
         group_context=None,
-        current_time: Optional[int] = None,
-        seen_init_keys: Optional[set] = None,
+        current_time: int | None = None,
+        seen_init_keys: set | None = None,
     ) -> None:
         """Verify the KeyPackage signature and validity (RFC 9420 §10.1).
 

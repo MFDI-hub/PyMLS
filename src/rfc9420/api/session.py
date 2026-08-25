@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from ..group.mls_group.group import MLSGroup
 from ..messages.key_packages import KeyPackage, LeafNode
@@ -110,7 +110,7 @@ class MLSGroupSession:
         config: GroupConfig,
         welcome: Welcome,
         hpke_private_key: bytes,
-        key_package: Optional[KeyPackage] = None,
+        key_package: KeyPackage | None = None,
     ) -> "MLSGroupSession":
         """Join an existing group using GroupConfig (config-driven, identity provider wired).
 
@@ -122,7 +122,7 @@ class MLSGroupSession:
             Welcome message from the group.
         hpke_private_key : bytes
             Private key for the key package in the welcome.
-        key_package : Optional[KeyPackage], optional
+        key_package : KeyPackage | None, optional
             Local key package if not in welcome (default None).
 
         Returns
@@ -242,7 +242,7 @@ class MLSGroupSession:
         self,
         signing_key: bytes,
         return_per_joiner_welcomes: bool = False,
-    ) -> Tuple[bytes, List[Welcome]]:
+    ) -> tuple[bytes, list[Welcome]]:
         """Create a Commit covering all pending proposals and generate Welcomes.
 
         Parameters
@@ -255,7 +255,7 @@ class MLSGroupSession:
 
         Returns
         -------
-        Tuple[bytes, List[Welcome]]
+        tuple[bytes, list[Welcome]]
             (commit_handshake_bytes, list of Welcome messages for new members).
         """
         staged = self._group.create_commit(signing_key, return_per_joiner_welcomes)
@@ -277,14 +277,14 @@ class MLSGroupSession:
         self._group.process_commit(pt, sender_leaf_index)
 
     # --- Application data (byte I/O) ---
-    def protect_application(self, plaintext: bytes, signing_key: Optional[bytes] = None) -> bytes:
+    def protect_application(self, plaintext: bytes, signing_key: bytes | None = None) -> bytes:
         """Encrypt application data for the group.
 
         Parameters
         ----------
         plaintext : bytes
             Application message to encrypt.
-        signing_key : Optional[bytes], optional
+        signing_key : bytes | None, optional
             Optional member leaf signature key for RFC 9420 §6.1 signing (default None).
 
         Returns
@@ -295,7 +295,7 @@ class MLSGroupSession:
         ct: MLSCiphertext = self._group.protect(plaintext, signing_key=signing_key)
         return encode_application(ct)
 
-    def unprotect_application(self, ciphertext_bytes: bytes) -> Tuple[int, bytes]:
+    def unprotect_application(self, ciphertext_bytes: bytes) -> tuple[int, bytes]:
         """Decrypt application data and return sender and plaintext.
 
         Parameters
@@ -305,7 +305,7 @@ class MLSGroupSession:
 
         Returns
         -------
-        Tuple[int, bytes]
+        tuple[int, bytes]
             (sender_leaf_index, plaintext).
         """
         ct = decode_application(ciphertext_bytes)
@@ -359,12 +359,12 @@ class MLSGroupSession:
         if policy.x509_policy is not None:
             self._group._inner.set_x509_policy(policy.x509_policy)
 
-    def get_effective_policy(self) -> Dict[str, Optional[int]]:
+    def get_effective_policy(self) -> dict[str, int | None]:
         """Return effective runtime policy currently enforced by the group.
 
         Returns
         -------
-        Dict[str, Optional[int]]
+        dict[str, int | None]
             Effective runtime policy (secret_tree_window_size, max_generation_gap, aead_limit_bytes).
         """
         return self._group._inner.get_runtime_policy()

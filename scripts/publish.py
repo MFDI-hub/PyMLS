@@ -30,10 +30,10 @@ def load_env() -> None:
             return
 
 
-def run(command: list[str]) -> None:
+def run(command: list[str], env: dict[str, str] | None = None) -> None:
     """Run a command and stop on failure."""
     print(f"+ {' '.join(command)}")
-    subprocess.run(command, check=True)  # noqa: S603 (args are from this script, not user input)
+    subprocess.run(command, check=True, env=env)  # noqa: S603 (args are from this script, not user input)
 
 
 def require_uv() -> None:
@@ -56,7 +56,10 @@ def clean_dist() -> None:
 def build_package() -> None:
     clean_dist()
     run(["uv", "build"])
-    run(["uv", "run", "--with", "twine", "twine", "check", "dist/*"])
+    artifacts = sorted(glob.glob("dist/*"))
+    if not artifacts:
+        raise SystemExit("uv build produced no files in dist/.")
+    run(["uv", "run", "--with", "twine", "twine", "check", *artifacts])
 
 
 def upload(repository_url: str, token: str) -> None:
@@ -64,6 +67,9 @@ def upload(repository_url: str, token: str) -> None:
     if not artifacts:
         raise SystemExit("No files found in dist/. Build the package first.")
 
+    child_env = os.environ.copy()
+    child_env["TWINE_USERNAME"] = "__token__"
+    child_env["TWINE_PASSWORD"] = token
     run(
         [
             "uv",
@@ -74,12 +80,9 @@ def upload(repository_url: str, token: str) -> None:
             "upload",
             "--repository-url",
             repository_url,
-            "-u",
-            "__token__",
-            "-p",
-            token,
             *artifacts,
-        ]
+        ],
+        env=child_env,
     )
 
 

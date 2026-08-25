@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Literal, Optional, overload, Tuple
+from typing import Any, Literal, overload
 
 from ..codec.tls import (
     write_uint16,
@@ -65,6 +65,29 @@ def is_grease_value(value: int) -> bool:
     return int(value) in GREASE_VALUES
 
 
+# RFC 9420 §7.2 default extension types. These MUST NOT appear in
+# LeafNode.capabilities.extensions and are always considered supported.
+DEFAULT_EXTENSION_TYPES: frozenset[int] = frozenset(
+    {
+        int(ExtensionType.APPLICATION_ID),
+        int(ExtensionType.RATCHET_TREE),
+        int(ExtensionType.REQUIRED_CAPABILITIES),
+        int(ExtensionType.EXTERNAL_PUB),
+        int(ExtensionType.EXTERNAL_SENDERS),
+    }
+)
+
+
+def leaf_supports_group_extension(advertised: set[int], ext_type: int) -> bool:
+    """Return True if a LeafNode supports a GroupContext extension type.
+
+    Default types (RFC 9420 §7.2) are always supported even when omitted
+    from capabilities.extensions, matching Discord / OpenMLS KeyPackages.
+    """
+    t = int(ext_type)
+    return t in DEFAULT_EXTENSION_TYPES or t in advertised
+
+
 def random_grease_values(max_count: int = 2) -> list[int]:
     """Pick up to max_count GREASE values for extensibility hardening."""
     if max_count <= 0:
@@ -97,7 +120,7 @@ class Extension:
         return write_uint16(self.ext_type) + write_opaque_varint(self.data)
 
     @classmethod
-    def deserialize(cls, data: bytes) -> Tuple["Extension", int]:
+    def deserialize(cls, data: bytes) -> tuple["Extension", int]:
         """Parse an Extension from the beginning of data and return (ext, bytes_used)."""
         off = 0
         t, off = read_uint16(data, off)
@@ -257,9 +280,9 @@ def parse_external_senders(data: bytes) -> list[ExternalSender]:
 def build_capabilities_data(
     ciphersuite_ids: list[int],
     supported_exts: list[int],
-    versions: Optional[list[int]] = None,
-    proposals: Optional[list[int]] = None,
-    credentials: Optional[list[int]] = None,
+    versions: list[int] | None = None,
+    proposals: list[int] | None = None,
+    credentials: list[int] | None = None,
     include_grease: bool = True,
 ) -> bytes:
     """Encode Capabilities per RFC 9420 §7.2.
@@ -384,8 +407,8 @@ def parse_capabilities_data(
 
 def build_required_capabilities(
     exts_required: list[int],
-    props_required: Optional[list[int]] = None,
-    creds_required: Optional[list[int]] = None,
+    props_required: list[int] | None = None,
+    creds_required: list[int] | None = None,
 ) -> bytes:
     """Encode REQUIRED_CAPABILITIES extension.
 

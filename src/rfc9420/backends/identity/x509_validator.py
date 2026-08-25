@@ -5,7 +5,7 @@ Uses chain verification and optional policy/revocation from rfc9420.crypto.x509.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any
 
 from .x509 import verify_certificate_chain_with_policy
 from .x509_policy import X509Policy
@@ -23,8 +23,8 @@ class X509IdentityProvider:
 
     def __init__(
         self,
-        trust_roots: Optional[List[bytes]] = None,
-        policy: Optional[X509Policy] = None,
+        trust_roots: list[bytes] | None = None,
+        policy: X509Policy | None = None,
     ) -> None:
         self._trust_roots = trust_roots or []
         self._policy = policy

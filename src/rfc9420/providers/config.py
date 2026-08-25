@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from .crypto import CryptoProviderProtocol
 from .rand import RandProviderProtocol
@@ -40,12 +39,12 @@ class GroupConfig:
 
     crypto_provider: CryptoProviderProtocol
     storage_provider: StorageProviderProtocol
-    identity_provider: Optional[IdentityProviderProtocol] = None
-    rand_provider: Optional[RandProviderProtocol] = None
+    identity_provider: IdentityProviderProtocol | None = None
+    rand_provider: RandProviderProtocol | None = None
     tree_backend_id: str = "array"
     secret_tree_window_size: int = 128
     max_generation_gap: int = 1000
-    aead_limit_bytes: Optional[int] = None
+    aead_limit_bytes: int | None = None
 
     def resolved_rand_provider(self) -> RandProviderProtocol:
         """Return configured randomness provider or default implementation."""
