@@ -687,6 +687,8 @@ class RatchetTree:
         new_leaf_node: LeafNode,
         group_context_bytes: bytes,
         excluded_leaf_pubkeys: set[bytes] | None = None,
+        signing_private_key: bytes | None = None,
+        group_id: bytes | None = None,
     ) -> tuple[UpdatePath, bytes, dict[int, bytes]]:
         """Create an UpdatePath for the committer and derive the commit secret.
 
@@ -748,6 +750,34 @@ class RatchetTree:
         self._set_filtered_path_parent_hashes(leaf_node_index, filtered_pairs)
         parent_hash = self._compute_parent_hash_for_leaf(committer_index)
 
+        if not signing_private_key or group_id is None:
+            raise ValueError("UpdatePath leaf must be signed over LeafNodeTBS for source commit")
+        from ...messages.data_structures import Signature as _Signature
+
+        leaf_fields = dict(
+            encryption_key=new_leaf_node.encryption_key,
+            signature_key=new_leaf_node.signature_key,
+            credential=new_leaf_node.credential,
+            capabilities=new_leaf_node.capabilities,
+            leaf_node_source=LeafNodeSource.COMMIT,
+            parent_hash=parent_hash,
+            lifetime_not_before=new_leaf_node.lifetime_not_before,
+            lifetime_not_after=new_leaf_node.lifetime_not_after,
+            extensions=new_leaf_node.extensions,
+        )
+        unsigned_leaf = LeafNode(**leaf_fields, signature=_Signature(b""))
+        leaf_sig = self._crypto_provider.sign_with_label(
+            signing_private_key,
+            b"LeafNodeTBS",
+            unsigned_leaf.tbs_serialize(group_id, committer_index),
+        )
+        leaf_for_path = LeafNode(**leaf_fields, signature=_Signature(leaf_sig))
+        # The new leaf is part of the tree hash inside the HPKE context.
+        installed = self.get_node(leaf_node_index)
+        installed.leaf_node = leaf_for_path
+        installed.public_key = leaf_for_path.encryption_key
+        self._recalculate_hashes_from(leaf_node_index)
+
         from ...messages.data_structures import GroupContext as _GC
 
         try:
@@ -797,20 +827,6 @@ class RatchetTree:
                     encryption_key=node.public_key, encrypted_path_secrets=encrypted_secrets
                 )
             )
-
-        # Create leaf with COMMIT source
-        leaf_for_path = LeafNode(
-            encryption_key=new_leaf_node.encryption_key,
-            signature_key=new_leaf_node.signature_key,
-            credential=new_leaf_node.credential,
-            capabilities=new_leaf_node.capabilities,
-            leaf_node_source=LeafNodeSource.COMMIT,
-            parent_hash=parent_hash,
-            lifetime_not_before=new_leaf_node.lifetime_not_before,
-            lifetime_not_after=new_leaf_node.lifetime_not_after,
-            extensions=new_leaf_node.extensions,
-            signature=new_leaf_node.signature,
-        )
 
         update_path = UpdatePath(leaf_for_path.serialize(), update_path_nodes)
         # RFC 9420 ?7.4: commit_secret = path_secret[n+1] = DeriveSecret(path_secret[n], "path")

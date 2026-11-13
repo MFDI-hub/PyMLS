@@ -1,4 +1,4 @@
-"""RFC 9420 §8.5 MLS-Exporter uses Context unhashed (not the TLS exporter)."""
+"""RFC 9420 §8.5 MLS-Exporter hashes Context before ExpandWithLabel."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ class _CaptureCrypto:
     def __init__(self) -> None:
         self.expand_contexts: list[bytes] = []
 
+    def hash(self, data: bytes) -> bytes:
+        return hashlib.sha256(data).digest()
+
     def derive_secret(self, secret: bytes, label: bytes) -> bytes:
         return b"\x11" * 32
 
@@ -22,7 +25,7 @@ class _CaptureCrypto:
         return b"\x22" * length
 
 
-def test_export_passes_context_unhashed() -> None:
+def test_export_hashes_context() -> None:
     crypto = _CaptureCrypto()
     ks = KeySchedule.__new__(KeySchedule)
     ks._crypto_provider = crypto
@@ -30,8 +33,7 @@ def test_export_passes_context_unhashed() -> None:
     context = b"\x01\x02\x03\x04\x05\x06\x07\x08"
     result = ks.export(b"Discord Secure Frames v0", context, 16)
     assert result == b"\x22" * 16
-    assert crypto.expand_contexts == [context]
-    assert crypto.expand_contexts[0] != hashlib.sha256(context).digest()
+    assert crypto.expand_contexts == [hashlib.sha256(context).digest()]
 
 
 def test_leaf_supports_default_group_extensions_when_unadvertised() -> None:

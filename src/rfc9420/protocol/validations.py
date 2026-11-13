@@ -69,11 +69,18 @@ def validate_unique_adds_by_user_id(proposals: Iterable[Proposal]) -> None:
             seen.add(user_id)
 
 
-def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int) -> None:
+def validate_proposals_client_rules(
+    proposals: Iterable[Proposal],
+    n_leaves: int,
+    *,
+    enforce_unique_identities: bool = False,
+) -> None:
     """Baseline client-side proposal checks.
 
-    Enforce uniqueness of Add by user ID and ensure Remove indices are within
-    current tree size.
+    Remove indices must be inside the current tree. Rejecting two Adds that
+    share a credential identity is an application policy (not RFC 9420): the
+    RFC requires unique keys, and one user may have several devices. Pass
+    enforce_unique_identities=True to apply that policy.
 
     Parameters
     ----------
@@ -82,12 +89,16 @@ def validate_proposals_client_rules(proposals: Iterable[Proposal], n_leaves: int
     n_leaves : int
         Current number of leaves in the tree.
 
+    enforce_unique_identities : bool, optional
+        When True, reject two Add proposals that share a credential identity.
+
     Raises
     ------
     CommitValidationError
         If validation fails.
     """
-    validate_unique_adds_by_user_id(proposals)
+    if enforce_unique_identities:
+        validate_unique_adds_by_user_id(proposals)
     for p in proposals:
         if isinstance(p, RemoveProposal):
             if p.removed < 0 or p.removed >= n_leaves:
@@ -115,6 +126,7 @@ def validate_proposals_server_rules(
     allow_external_init: bool = False,
     update_leaf_indices: list[tuple[Proposal, int]] | None = None,
     add_for_existing_ok: set[int] | None = None,
+    enforce_unique_identities: bool = False,
 ) -> None:
     """Server-side proposal checks per RFC 9420 §12.2 (subset).
 
@@ -159,7 +171,9 @@ def validate_proposals_server_rules(
     """
     from ..messages.data_structures import PreSharedKeyProposal, AddProposal
     plist = list(proposals)
-    validate_proposals_client_rules(plist, n_leaves)
+    validate_proposals_client_rules(
+        plist, n_leaves, enforce_unique_identities=enforce_unique_identities
+    )
     # No Remove of committer
     for p in plist:
         if isinstance(p, RemoveProposal) and p.removed == committer_index:
@@ -259,10 +273,17 @@ def validate_proposals_server_rules(
                 raise
             except Exception:
                 pass
-    # At most one Update proposal per leaf index (RFC §12.2)
-    update_count = sum(1 for p in plist if isinstance(p, UpdateProposal))
-    if update_count > 1:
-        raise CommitValidationError("at most one Update proposal per member per commit")
+    # At most one Update proposal per leaf (RFC 9420 §12.2).
+    # UpdateProposal does not carry a leaf index; callers pass (proposal, leaf_index).
+    # A raw count of Update proposals would reject updates from different members.
+    if update_leaf_indices:
+        seen_update_leaves: set[int] = set()
+        for _prop, leaf_idx in update_leaf_indices:
+            if leaf_idx in seen_update_leaves:
+                raise CommitValidationError(
+                    "at most one Update proposal per member per commit"
+                )
+            seen_update_leaves.add(leaf_idx)
     # ReInit proposal version monotonicity check (§12.1.5)
     if current_version is not None:
         for p in plist:
@@ -444,9 +465,10 @@ def commit_path_required(proposals: Iterable[Proposal]) -> bool:
 
 def validate_confirmation_tag(crypto: CryptoProvider, confirmation_key: bytes, confirmed_transcript_hash: bytes, tag: bytes) -> None:
     """Verify confirmation_tag == MAC(confirmation_key, confirmed_transcript_hash) per RFC 9420 §8.1."""
-    expected = crypto.hmac_sign(confirmation_key, confirmed_transcript_hash)
-    if expected != tag:
-        raise CommitValidationError("invalid confirmation tag")
+    try:
+        crypto.hmac_verify(confirmation_key, confirmed_transcript_hash, tag)
+    except Exception as e:
+        raise CommitValidationError("invalid confirmation tag") from e
 
 
 def derive_ops_from_proposals(proposals: Iterable[Proposal]) -> tuple[list[int], list[bytes]]:
@@ -531,9 +553,12 @@ def validate_tree_leaf_key_uniqueness(ratchet_tree: Any) -> None:
 
 
 def validate_credential_identity_uniqueness(ratchet_tree: Any) -> None:
-    """
-    Ensure no two leaves in the tree share the same credential identity (RFC 9420 §5.3.3;
-    required by protocols such as DAVE that reject duplicate user IDs).
+    """Reject two leaves that share a credential identity.
+
+    This is an application policy (for example DAVE), not an RFC 9420 rule.
+    RFC 9420 requires unique signature keys and encryption keys, which
+    validate_tree_leaf_key_uniqueness enforces. One identity may own several
+    devices. Callers opt in via MLSGroup.set_enforce_unique_credential_identities.
     """
     seen: dict[bytes, int] = {}
     for idx in range(getattr(ratchet_tree, "n_leaves", 0)):

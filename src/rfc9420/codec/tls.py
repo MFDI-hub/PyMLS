@@ -30,23 +30,36 @@ class TLSDecodeError(MalformedMessageError):
     """Raised when decoding fails due to insufficient or malformed input."""
 
 
-def _require_length(buf: bytes, need: int) -> None:
-    """Ensure that the provided buffer contains at least 'need' bytes.
+def _require_length(buf: bytes, need: int, offset: int = 0) -> None:
+    """Ensure buf contains at least `need` bytes starting at `offset`.
 
     Parameters
     ----------
     buf : bytes
         Bytes-like object to check.
     need : int
-        Minimum number of bytes required.
+        Minimum number of bytes required from offset.
+    offset : int, optional
+        Start index. Default 0 checks the whole buffer, which is what
+        callers that pass an already-sliced buffer rely on.
 
     Raises
     ------
     TLSDecodeError
-        If len(buf) < need.
+        If the span starting at offset is shorter than need.
     """
-    if len(buf) < need:
-        raise TLSDecodeError(f"buffer too short: need {need}, have {len(buf)}")
+    if offset < 0 or len(buf) - offset < need:
+        have = len(buf) - offset if 0 <= offset <= len(buf) else 0
+        raise TLSDecodeError(f"buffer too short: need {need}, have {have}")
+
+
+def _check_uint_range(x: int, bits: int) -> None:
+    """Raise ValueError when x is outside an unsigned `bits`-wide range."""
+    if isinstance(x, bool) or not isinstance(x, int):
+        raise ValueError(f"uint{bits} value must be an int, got {type(x).__name__}")
+    limit = (1 << bits) - 1
+    if x < 0 or x > limit:
+        raise ValueError(f"uint{bits} out of range: {x}")
 
 
 def write_uint8(x: int) -> bytes:
@@ -61,8 +74,14 @@ def write_uint8(x: int) -> bytes:
     -------
     bytes
         Encoded single-byte representation.
+
+    Raises
+    ------
+    ValueError
+        If x is outside [0, 255].
     """
-    return bytes((x & 0xFF,))
+    _check_uint_range(x, 8)
+    return bytes((x,))
 
 
 def write_uint16(x: int) -> bytes:
@@ -77,8 +96,14 @@ def write_uint16(x: int) -> bytes:
     -------
     bytes
         2-byte big-endian encoding.
+
+    Raises
+    ------
+    ValueError
+        If x is outside [0, 65535].
     """
-    return ((x >> 8) & 0xFF).to_bytes(1, "big") + (x & 0xFF).to_bytes(1, "big")
+    _check_uint_range(x, 16)
+    return x.to_bytes(2, "big")
 
 
 def write_uint24(x: int) -> bytes:
@@ -93,8 +118,14 @@ def write_uint24(x: int) -> bytes:
     -------
     bytes
         3-byte big-endian encoding.
+
+    Raises
+    ------
+    ValueError
+        If x is outside [0, 2^24 - 1].
     """
-    return bytes(((x >> 16) & 0xFF, (x >> 8) & 0xFF, x & 0xFF))
+    _check_uint_range(x, 24)
+    return x.to_bytes(3, "big")
 
 
 def write_uint32(x: int) -> bytes:
@@ -149,7 +180,7 @@ def read_uint8(buf: bytes, offset: int = 0) -> tuple[int, int]:
     TLSDecodeError
         If insufficient bytes are available.
     """
-    _require_length(buf[offset:], 1)
+    _require_length(buf, 1, offset)
     return buf[offset], offset + 1
 
 
@@ -173,7 +204,7 @@ def read_uint16(buf: bytes, offset: int = 0) -> tuple[int, int]:
     TLSDecodeError
         If insufficient bytes are available.
     """
-    _require_length(buf[offset:], 2)
+    _require_length(buf, 2, offset)
     return int.from_bytes(buf[offset : offset + 2], "big"), offset + 2
 
 
@@ -197,7 +228,7 @@ def read_uint24(buf: bytes, offset: int = 0) -> tuple[int, int]:
     TLSDecodeError
         If insufficient bytes are available.
     """
-    _require_length(buf[offset:], 3)
+    _require_length(buf, 3, offset)
     val = (buf[offset] << 16) | (buf[offset + 1] << 8) | buf[offset + 2]
     return val, offset + 3
 
@@ -222,7 +253,7 @@ def read_uint32(buf: bytes, offset: int = 0) -> tuple[int, int]:
     TLSDecodeError
         If insufficient bytes are available.
     """
-    _require_length(buf[offset:], 4)
+    _require_length(buf, 4, offset)
     return int.from_bytes(buf[offset : offset + 4], "big"), offset + 4
 
 
@@ -246,7 +277,7 @@ def read_uint64(buf: bytes, offset: int = 0) -> tuple[int, int]:
     TLSDecodeError
         If insufficient bytes are available.
     """
-    _require_length(buf[offset:], 8)
+    _require_length(buf, 8, offset)
     return int.from_bytes(buf[offset : offset + 8], "big"), offset + 8
 
 

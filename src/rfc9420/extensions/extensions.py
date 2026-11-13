@@ -57,6 +57,7 @@ GREASE_VALUES: tuple[int, ...] = (
     0xCACA,
     0xDADA,
     0xEAEA,
+    0xFAFA,
 )
 
 
@@ -405,6 +406,27 @@ def parse_capabilities_data(
         return res
 
 
+def _encode_uint16_vector(values: list[int]) -> bytes:
+    """Encode uint16 elements as a TLS <V> vector (varint byte-length prefix)."""
+    body = b"".join(write_uint16(int(v)) for v in values)
+    return write_opaque_varint(body)
+
+
+def _decode_uint16_vector(data: bytes, offset: int) -> tuple[list[int], int]:
+    """Decode a <V> vector of uint16 values. Returns (values, new_offset)."""
+    body, offset = read_opaque_varint(data, offset)
+    if len(body) % 2 != 0:
+        from ..codec.tls import TLSDecodeError
+
+        raise TLSDecodeError("uint16 vector length is not a multiple of 2")
+    values: list[int] = []
+    inner = 0
+    while inner < len(body):
+        val, inner = read_uint16(body, inner)
+        values.append(val)
+    return values, offset
+
+
 def build_required_capabilities(
     exts_required: list[int],
     props_required: list[int] | None = None,
@@ -412,31 +434,22 @@ def build_required_capabilities(
 ) -> bytes:
     """Encode REQUIRED_CAPABILITIES extension.
 
-    RFC 9420 §11.1:
+    RFC 9420 §7.2 / §12.1.1:
     struct {
         ExtensionType extension_types<V>;
         ProposalType proposal_types<V>;
         CredentialType credential_types<V>;
     } RequiredCapabilities;
-    """
-    from ..codec.tls import write_uint16
 
+    Each <V> vector uses a varint byte-length prefix, not a uint16 element count.
+    """
     props_required = props_required or []
     creds_required = creds_required or []
-
-    out = write_uint16(len(exts_required))
-    for e in exts_required:
-        out += write_uint16(int(e))
-
-    out += write_uint16(len(props_required))
-    for p in props_required:
-        out += write_uint16(int(p))
-
-    out += write_uint16(len(creds_required))
-    for c in creds_required:
-        out += write_uint16(int(c))
-
-    return out
+    return (
+        _encode_uint16_vector(exts_required)
+        + _encode_uint16_vector(props_required)
+        + _encode_uint16_vector(creds_required)
+    )
 
 
 def parse_required_capabilities(data: bytes) -> tuple[list[int], list[int], list[int]]:
@@ -445,29 +458,12 @@ def parse_required_capabilities(data: bytes) -> tuple[list[int], list[int], list
     Returns:
         (extension_types, proposal_types, credential_types)
     """
-    from ..codec.tls import read_uint16
-
     off = 0
+    exts, off = _decode_uint16_vector(data, off)
+    props, off = _decode_uint16_vector(data, off)
+    creds, off = _decode_uint16_vector(data, off)
+    if off != len(data):
+        from ..codec.tls import TLSDecodeError
 
-    # Extension types
-    num_ext, off = read_uint16(data, off)
-    exts: list[int] = []
-    for _ in range(num_ext):
-        val, off = read_uint16(data, off)
-        exts.append(val)
-
-    # Proposal types
-    num_prop, off = read_uint16(data, off)
-    props: list[int] = []
-    for _ in range(num_prop):
-        val, off = read_uint16(data, off)
-        props.append(val)
-
-    # Credential types
-    num_cred, off = read_uint16(data, off)
-    creds: list[int] = []
-    for _ in range(num_cred):
-        val, off = read_uint16(data, off)
-        creds.append(val)
-
+        raise TLSDecodeError("trailing bytes in RequiredCapabilities")
     return exts, props, creds

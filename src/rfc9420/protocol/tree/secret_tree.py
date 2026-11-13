@@ -141,24 +141,9 @@ class SecretTree:
                 except Exception:
                     pass
                 return key_out, nonce_out, generation
-            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            secret = self._crypto.derive_secret(leaf_secret, b"application")
-            try:
-                secure_wipe(bytearray(leaf_secret))
-            except Exception:
-                pass
-            key, nonce = bytearray(), bytearray()
-            for g in range(generation + 1):
-                k, n, secret = self._ratchet_step(secret, g)
-                key, nonce = bytearray(k), bytearray(n)
-            key_out, nonce_out = bytes(key), bytes(nonce)
-            try:
-                secure_wipe(key)
-                secure_wipe(nonce)
-                secure_wipe(bytearray(secret))
-            except Exception:
-                pass
-            return key_out, nonce_out, generation
+            # RFC 9420 §9.2: a consumed generation is deleted. Re-deriving it
+            # from the epoch root would accept replays.
+            raise ValueError("application generation already consumed or outside the replay window")
         if self._window_size > 0 and generation > st.app_recv_generation:
             temp_secret = st.app_recv_secret
             assert temp_secret is not None
@@ -242,24 +227,7 @@ class SecretTree:
                 except Exception:
                     pass
                 return key_out, nonce_out, generation
-            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            secret = self._crypto.derive_secret(leaf_secret, b"handshake")
-            try:
-                secure_wipe(bytearray(leaf_secret))
-            except Exception:
-                pass
-            key, nonce = bytearray(), bytearray()
-            for g in range(generation + 1):
-                k, n, secret = self._ratchet_step(secret, g)
-                key, nonce = bytearray(k), bytearray(n)
-            key_out, nonce_out = bytes(key), bytes(nonce)
-            try:
-                secure_wipe(key)
-                secure_wipe(nonce)
-                secure_wipe(bytearray(secret))
-            except Exception:
-                pass
-            return key_out, nonce_out, generation
+            raise ValueError("handshake generation already consumed or outside the replay window")
         if self._window_size > 0 and generation > st.hs_recv_generation:
             temp_secret = st.hs_recv_secret
             assert temp_secret is not None

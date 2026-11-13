@@ -66,15 +66,7 @@ class KeySchedule:
         self._resumption_psk = self._crypto_provider.derive_secret(self._epoch_secret, b"resumption")
         self._epoch_authenticator = self._crypto_provider.derive_secret(self._epoch_secret, b"authentication")
 
-        # RFC 9420 §9.2: zero input and intermediate secrets after use
-        from ...crypto.utils import secure_wipe
-        for buf in (init_secret, commit_secret, pre_joiner):
-            if buf:
-                ba = bytearray(buf)
-                secure_wipe(ba)
-        if psk_secret:
-            ba = bytearray(psk_secret)
-            secure_wipe(ba)
+        # Inputs are immutable bytes. Drop the copies this object does not keep.
         self._init_secret = b""
         self._commit_secret = b""
         self._psk_secret = None
@@ -256,11 +248,13 @@ class KeySchedule:
         bytes
             Exported secret of requested length.
         """
-        # RFC 9420 §8.5: MLS-Exporter(Label, Context, Length) =
-        #   ExpandWithLabel(DeriveSecret(exporter_secret, Label), "exported", Context, Length)
-        # Context is used as-is (not hashed). Hashing it is the TLS exporter, not MLS.
+        # RFC 9420 §8.5:
+        # MLS-Exporter(Label, Context, Length) =
+        #   ExpandWithLabel(DeriveSecret(exporter_secret, Label),
+        #                   "exported", Hash(Context), Length)
         secret = self._crypto_provider.derive_secret(self.exporter_secret, label)
-        return self._crypto_provider.expand_with_label(secret, b"exported", context, length)
+        hashed = self._crypto_provider.hash(context)
+        return self._crypto_provider.expand_with_label(secret, b"exported", hashed, length)
 
     @property
     def confirmation_key(self) -> bytes:
@@ -299,8 +293,12 @@ class KeySchedule:
         return getattr(self, "_welcome_secret", b"")
 
     def wipe(self) -> None:
-        """Zero all held secrets (RFC 9420 §9.2)."""
-        from ...crypto.utils import secure_wipe
+        """Drop references to epoch secrets held by this object.
+
+        ``bytes`` cannot be overwritten in place, so this replaces each
+        attribute with empty bytes. Later reads no longer return the key
+        material. It does not erase copies still held by the caller.
+        """
         if self._wiped:
             return
         for name in [
@@ -315,9 +313,11 @@ class KeySchedule:
             "_resumption_psk",
             "_epoch_authenticator",
             "_welcome_secret",
+            "_joiner_secret",
+            "_init_secret",
+            "_commit_secret",
         ]:
-            val = getattr(self, name, None)
-            if isinstance(val, (bytes, bytearray)) and val:
-                ba = bytearray(val)
-                secure_wipe(ba)
+            if isinstance(getattr(self, name, None), (bytes, bytearray)):
+                setattr(self, name, b"")
+        self._psk_secret = None
         self._wiped = True

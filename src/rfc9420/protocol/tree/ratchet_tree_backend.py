@@ -37,6 +37,8 @@ class RatchetTreeBackend(Protocol):
         new_leaf_node: "LeafNode",
         group_context_bytes: bytes,
         excluded_leaf_pubkeys: set[bytes] | None = None,
+        signing_private_key: bytes | None = None,
+        group_id: bytes | None = None,
     ) -> tuple["UpdatePath", bytes, dict]: ...
     def merge_update_path(
         self,

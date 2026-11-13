@@ -361,7 +361,10 @@ def _run_messages_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
         op = step.get("op", "").lower()
         if op == "protect":
             data = h(step.get("data", ""))
-            msg = group.protect(data)
+            signing_key = h(step["signing_key"]) if step.get("signing_key") else b""
+            if not signing_key:
+                raise AssertionError("protect step requires signing_key (RFC 9420 §6.1)")
+            msg = group.protect(data, signing_key)
             exp = step.get("expect")
             if exp is not None:
                 _assert_bytes_equal(h(exp), msg.serialize(), "mls_message")
@@ -1376,6 +1379,7 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
 
     # Join group using Welcome and HPKE init_priv
     init_priv = h(vec["init_priv"])
+    ratchet_tree_hex = vec.get("ratchet_tree")
     group = MLSGroup.from_welcome(
         welcome=welcome_obj,
         hpke_private_key=init_priv,
@@ -1383,10 +1387,10 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
         key_package=kp,
         welcome_psk_resolver=welcome_psk_resolver,
         encryption_private_key=h(vec["encryption_priv"]),
+        external_ratchet_tree=h(ratchet_tree_hex) if ratchet_tree_hex else None,
     )
 
     # If an explicit ratchet_tree is provided, load it to align with vector state.
-    ratchet_tree_hex = vec.get("ratchet_tree")
     if ratchet_tree_hex:
         from rfc9420.protocol.ratchet_tree_backend import create_tree_backend
 

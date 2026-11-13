@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .key_packages import KeyPackage
 from .data_structures import MLSVersion, PreSharedKeyID, SenderType
 
-from ..mls.exceptions import InvalidSignatureError, MalformedMessageError
+from ..mls.exceptions import InvalidSignatureError, MalformedMessageError, RFC9420Error
 from ..providers.rand import RandProviderProtocol
 from ..backends.crypto.default_rand import DefaultRandProvider
 from ..codec.tls import (
@@ -136,12 +136,11 @@ def derive_psk_secret(
         psk_i: bytes | None = (
             psk_values[i] if (psk_values is not None and i < len(psk_values)) else None
         )
-        if psk_i is not None and len(psk_i) > 0:
-            psk_val: bytes = psk_i
-        else:
-            # MVP fallback: derive a synthetic PSK from the ID serialization
-            # This is NOT secure for production without real PSK storage
-            psk_val = crypto.kdf_extract(b"psk", psk_ids[i].serialize())
+        if psk_i is None or len(psk_i) == 0:
+            raise RFC9420Error(
+                "missing PSK value; refusing to invent one from the public PreSharedKeyID"
+            )
+        psk_val: bytes = psk_i
 
         # psk_extracted_[i] = KDF.Extract(0, psk_[i]) per RFC 9420 §8.4
         psk_extracted = crypto.kdf_extract(zero_salt, psk_val)
@@ -783,12 +782,13 @@ def verify_plaintext(
         # Check membership tag over AuthenticatedContentTBM (TBS || AuthData)
         # TBM uses the *full* TBS (including GroupContext)
         tbm = tbs_ser + plaintext.auth_content.auth.serialize()
-        tag = crypto.hmac_sign(membership_key, tbm)
-        if (
-            plaintext.auth_content.membership_tag is None
-            or plaintext.auth_content.membership_tag != tag
-        ):
+        membership_tag = plaintext.auth_content.membership_tag
+        if not membership_tag:
             raise InvalidSignatureError("invalid membership tag")
+        try:
+            crypto.hmac_verify(membership_key, tbm, membership_tag)
+        except Exception as e:
+            raise InvalidSignatureError("invalid membership tag") from e
 
 
 # --- High-level content protection helpers (MVP) ---

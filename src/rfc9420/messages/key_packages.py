@@ -628,7 +628,7 @@ class KeyPackage:
                 # Check KeyPackage extensions
                 if self.extensions:
                     for ext in self.extensions:
-                        if (ext.ext_type & 0x0A0A) == 0x0A0A:
+                        if is_grease_value(ext.ext_type):
                             continue
                         if ext.ext_type not in supported_exts:
                             raise InvalidSignatureError(
@@ -638,7 +638,7 @@ class KeyPackage:
                 # Check LeafNode extensions
                 if self.leaf_node.extensions:
                     for ext in self.leaf_node.extensions:
-                        if (ext.ext_type & 0x0A0A) == 0x0A0A:
+                        if is_grease_value(ext.ext_type):
                             continue
                         if ext.ext_type not in supported_exts:
                             raise InvalidSignatureError(
