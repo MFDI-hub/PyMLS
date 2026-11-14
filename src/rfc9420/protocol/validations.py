@@ -1,7 +1,7 @@
 """Client-side and commit validations for MLS proposals and commits (MVP)."""
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from ..messages.data_structures import Proposal, AddProposal, Commit, RemoveProposal, UpdateProposal, ProposalOrRef, ProposalOrRefType, GroupContextExtensionsProposal, ExternalInitProposal, ReInitProposal
 from ..messages.key_packages import KeyPackage
@@ -124,7 +124,7 @@ def validate_proposals_server_rules(
     allow_branch_psk: bool = False,
     current_version: int | None = None,
     allow_external_init: bool = False,
-    update_leaf_indices: list[tuple[Proposal, int]] | None = None,
+    update_leaf_indices: Sequence[tuple[Proposal, int]] | None = None,
     add_for_existing_ok: set[int] | None = None,
     enforce_unique_identities: bool = False,
 ) -> None:
@@ -157,7 +157,7 @@ def validate_proposals_server_rules(
     allow_external_init : bool, optional
         If True, allow ExternalInit (external commit per §12.4.3.2) and enforce
         external-commit-only proposal set (default False).
-    update_leaf_indices : Optional[list[tuple[Proposal, int]]], optional
+    update_leaf_indices : Optional[Sequence[tuple[Proposal, int]]], optional
         Optional list of (UpdateProposal, leaf_index) to enforce no multiple
         Update/Remove for same leaf (default None).
     add_for_existing_ok : Optional[set[int]], optional

@@ -745,9 +745,11 @@ class RatchetTree:
 
         if not signing_private_key or group_id is None:
             raise ValueError("UpdatePath leaf must be signed over LeafNodeTBS for source commit")
+        from dataclasses import replace
+
         from ...messages.data_structures import Signature as _Signature
 
-        leaf_fields = dict(
+        unsigned_leaf = LeafNode(
             encryption_key=new_leaf_node.encryption_key,
             signature_key=new_leaf_node.signature_key,
             credential=new_leaf_node.credential,
@@ -757,14 +759,14 @@ class RatchetTree:
             lifetime_not_before=new_leaf_node.lifetime_not_before,
             lifetime_not_after=new_leaf_node.lifetime_not_after,
             extensions=new_leaf_node.extensions,
+            signature=_Signature(b""),
         )
-        unsigned_leaf = LeafNode(**leaf_fields, signature=_Signature(b""))
         leaf_sig = self._crypto_provider.sign_with_label(
             signing_private_key,
             b"LeafNodeTBS",
             unsigned_leaf.tbs_serialize(group_id, committer_index),
         )
-        leaf_for_path = LeafNode(**leaf_fields, signature=_Signature(leaf_sig))
+        leaf_for_path = replace(unsigned_leaf, signature=_Signature(leaf_sig))
         # The new leaf is part of the tree hash inside the HPKE context.
         installed = self.get_node(leaf_node_index)
         installed.leaf_node = leaf_for_path
