@@ -95,10 +95,13 @@ def test_required_capabilities_uses_varint_length_prefix():
 
 
 def test_grease_list_matches_rfc_9420():
-    assert len(GREASE_VALUES) == 16
-    assert 0xFAFA in GREASE_VALUES
-    assert is_grease_value(0xFAFA)
+    assert len(GREASE_VALUES) == 15
+    assert GREASE_VALUES[0] == 0x0A0A
+    assert GREASE_VALUES[-1] == 0xEAEA
+    assert 0xFAFA not in GREASE_VALUES
     assert is_grease_value(0x0A0A)
+    assert is_grease_value(0xEAEA)
+    assert not is_grease_value(0xFAFA)
     assert not is_grease_value(0x0A0B)
     assert not is_grease_value(0xFFFF)
 

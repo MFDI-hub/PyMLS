@@ -41,6 +41,7 @@ class ExtensionType(IntEnum):
     EPOCH_AUTHENTICATOR = 0xFF01
 
 
+# RFC 9420 §13.5 registers 0x0A0A through 0xEAEA. 0xFAFA is private-use, not GREASE.
 GREASE_VALUES: tuple[int, ...] = (
     0x0A0A,
     0x1A1A,
@@ -57,7 +58,6 @@ GREASE_VALUES: tuple[int, ...] = (
     0xCACA,
     0xDADA,
     0xEAEA,
-    0xFAFA,
 )
 
 
