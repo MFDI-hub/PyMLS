@@ -7,13 +7,13 @@ from __future__ import annotations
 
 
 def secure_wipe(buf: bytearray) -> None:
-    """Overwrite this bytearray with zeros in place.
+    """Overwrite a bytearray this process owns.
 
-    Only the object passed in is modified. ``secure_wipe(bytearray(some_bytes))``
-    clears a temporary copy and leaves ``some_bytes`` unchanged, because
-    ``bytes`` objects cannot be overwritten. Callers that need a secret to
-    become unreadable should drop the reference (assign ``b""``) as well.
-    CPython may still retain the previous allocation until garbage collection.
+    ``bytes`` cannot be overwritten. ``secure_wipe(bytearray(some_bytes))``
+    zeros a throwaway copy and leaves ``some_bytes`` in memory, so that call
+    does not provide forward secrecy. Pass the ``bytearray`` that stores the
+    secret (ratchet state does this). CPython can still keep an old
+    allocation until that object is collected.
 
     Args:
         buf: The bytearray to wipe. Modified in-place.

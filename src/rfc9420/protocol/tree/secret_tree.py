@@ -6,9 +6,11 @@ then split into handshake/application branch ratchet secrets.
 """
 from __future__ import annotations
 
+import copy
 import struct
-from dataclasses import dataclass, field
 from collections import OrderedDict
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 from ...crypto.crypto_provider import CryptoProvider
 from ...crypto.utils import secure_wipe
@@ -103,6 +105,35 @@ class SecretTree:
         self._aead_limit_bytes = aead_limit_bytes if aead_limit_bytes is None else max(0, int(aead_limit_bytes))
         self._encrypted_bytes_total = 0
         self._leaves: dict[int, _LeafState] = {}
+
+    def checkpoint_leaf(self, leaf: int) -> _LeafState | None:
+        """Deep-copy one leaf's ratchet state, or None if that leaf is untouched."""
+        state = self._leaves.get(leaf)
+        if state is None:
+            return None
+        return copy.deepcopy(state)
+
+    def restore_leaf(self, leaf: int, checkpoint: _LeafState | None) -> None:
+        """Put back a checkpoint from ``checkpoint_leaf``. None drops the leaf."""
+        if checkpoint is None:
+            self._leaves.pop(leaf, None)
+        else:
+            self._leaves[leaf] = checkpoint
+
+    @contextmanager
+    def tentative_receive(self, leaf: int):
+        """Roll back this leaf's receive ratchet if the body raises.
+
+        ``application_for`` / ``handshake_for`` advance state as they derive
+        keys. Decryption must run inside this context so a failed AEAD open
+        does not consume a generation or evict skipped keys.
+        """
+        checkpoint = self.checkpoint_leaf(leaf)
+        try:
+            yield
+        except Exception:
+            self.restore_leaf(leaf, checkpoint)
+            raise
 
     def _get_leaf_state(self, leaf: int) -> _LeafState:
         if leaf not in self._leaves:

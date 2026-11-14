@@ -242,8 +242,10 @@ def validate_proposals_server_rules(
                                 )
                 except CommitValidationError:
                     raise
-                except Exception:
-                    pass
+                except Exception as exc:
+                    raise CommitValidationError(
+                        "invalid Add key package while checking existing members"
+                    ) from exc
     # At most one GCE proposal per commit (RFC §12.2)
     gce_count = sum(1 for p in plist if isinstance(p, GroupContextExtensionsProposal))
     if gce_count > 1:
@@ -254,8 +256,8 @@ def validate_proposals_server_rules(
         if isinstance(p, PreSharedKeyProposal):
             try:
                 psk_canonical = p.psk.serialize()
-            except Exception:
-                psk_canonical = str(p.psk).encode()
+            except Exception as exc:
+                raise CommitValidationError("invalid PSK ID") from exc
             if psk_canonical in psk_id_set:
                 raise CommitValidationError("duplicate PSK ID in commit")
             psk_id_set.add(psk_canonical)
@@ -271,8 +273,8 @@ def validate_proposals_server_rules(
                         raise CommitValidationError("resumption+branch PSK not allowed in this context")
             except CommitValidationError:
                 raise
-            except Exception:
-                pass
+            except Exception as exc:
+                raise CommitValidationError("invalid resumption PSK") from exc
     # At most one Update proposal per leaf (RFC 9420 §12.2).
     # UpdateProposal does not carry a leaf index; callers pass (proposal, leaf_index).
     # A raw count of Update proposals would reject updates from different members.

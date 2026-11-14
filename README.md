@@ -22,8 +22,7 @@ RFC9420 is a minimal, pragmatic implementation of the Messaging Layer Security p
 ## Quickstart
 
 ```python
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+import secrets
 
 from rfc9420 import (
     GroupConfig,
@@ -31,46 +30,67 @@ from rfc9420 import (
     MemoryStorageProvider,
     MLSGroupSession,
 )
-from rfc9420.messages.key_packages import KeyPackage, LeafNode
+from rfc9420.extensions.extensions import build_capabilities_data
 from rfc9420.messages.data_structures import Credential, Signature
+from rfc9420.messages.key_packages import KeyPackage, LeafNode
 
 crypto = DefaultCryptoProvider()
 storage = MemoryStorageProvider()
 config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
 
-def make_member(identity: bytes):
-    kem_sk = X25519PrivateKey.generate()
-    kem_pk = kem_sk.public_key()
-    sig_sk = Ed25519PrivateKey.generate()
-    sig_pk = sig_sk.public_key()
-    cred = Credential(identity=identity, public_key=sig_pk.public_bytes_raw())
-    leaf = LeafNode(
-        encryption_key=kem_pk.public_bytes_raw(),
-        signature_key=sig_pk.public_bytes_raw(),
-        credential=cred,
-        capabilities=b"",
-        parent_hash=b"",
-    )
-    sig = sig_sk.sign(leaf.serialize())
-    kp = KeyPackage(leaf, Signature(sig))
-    return kp, kem_sk.private_bytes_raw(), sig_sk.private_bytes_raw()
 
-# Creator (A): config-driven session
-kp_a, kem_sk_a, sig_sk_a = make_member(b"userA")
+def make_member(identity: bytes):
+    """Return (KeyPackage, init private key, leaf signature private key)."""
+    sig_sk = secrets.token_bytes(32)
+    sig_pk = crypto.signature_public_from_private(sig_sk)
+    _enc_sk, enc_pk = crypto.generate_key_pair()
+    init_sk, init_pk = crypto.generate_key_pair()
+    caps = build_capabilities_data(
+        ciphersuite_ids=[crypto.active_ciphersuite.suite_id],
+        supported_exts=[],
+        include_grease=False,
+    )
+    cred = Credential(identity=identity, public_key=sig_pk)
+    unsigned_leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
+        credential=cred,
+        capabilities=caps,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
+    )
+    leaf_sig = crypto.sign_with_label(sig_sk, b"LeafNodeTBS", unsigned_leaf.tbs_serialize())
+    leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
+        credential=cred,
+        capabilities=caps,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
+        signature=Signature(leaf_sig),
+    )
+    unsigned_kp = KeyPackage(init_key=init_pk, leaf_node=leaf)
+    kp_sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", unsigned_kp.tbs_serialize())
+    kp = KeyPackage(init_key=init_pk, leaf_node=leaf, signature=Signature(kp_sig))
+    return kp, init_sk, sig_sk
+
+
+# Creator (A). add_member queues the Add locally; commit then builds the Welcome.
+kp_a, _init_sk_a, sig_sk_a = make_member(b"userA")
 session_a = MLSGroupSession.create_with_config(config, b"group1", kp_a)
 
-# Joiner (B)
-kp_b, kem_sk_b, sig_sk_b = make_member(b"userB")
+# Joiner (B). Welcome is encrypted to init_key, not the leaf encryption key.
+kp_b, init_sk_b, _sig_sk_b = make_member(b"userB")
 session_a.add_member(kp_b, sig_sk_a)
-commit_bytes, welcomes = session_a.commit(sig_sk_a)
+_commit_bytes, welcomes = session_a.commit(sig_sk_a)
 
 session_b = MLSGroupSession.join_from_welcome_with_config(
-    config, welcomes[0], kem_sk_b
+    config, welcomes[0], init_sk_b, key_package=kp_b
 )
 
-ct = session_a.protect_application(b"hello")
+ct = session_a.protect_application(b"hello", sig_sk_a)
 sender, pt = session_b.unprotect_application(ct)
-print(sender, pt)  # 0, b'hello'
+assert (sender, pt) == (0, b"hello")
 ```
 
 ## Installation
@@ -87,6 +107,21 @@ uv run mypy src
 uv run pytest -q
 ```
 
+## State at rest
+
+`MemoryStorageProvider` keeps state in process memory. `SQLiteStorageProvider` writes it to a file. The tree snapshot contains private HPKE keys and the state payload contains epoch secrets.
+
+Without `at_rest_key`, those blobs are plaintext in the database file. Pass a 32-byte key to encrypt them with AES-256-GCM. The provider also sets the file mode to `0o600` where the platform honors POSIX permissions. Key packages and proposals are stored with their TLS encoding; `pickle` is not accepted.
+
+```python
+import secrets
+from rfc9420.backends.storage import SQLiteStorageProvider
+
+storage = SQLiteStorageProvider("group.sqlite", at_rest_key=secrets.token_bytes(32))
+```
+
+Keep `at_rest_key` outside the database. A lost key makes the file unreadable.
+
 ## Core Features
 
 ### Group Operations
@@ -94,13 +129,13 @@ uv run pytest -q
 Use **`GroupConfig`** (crypto + storage + optional identity providers) and **`MLSGroupSession`** for the high-level API:
 
 - **`MLSGroupSession.create_with_config(config, group_id, key_package)`**: Create a new group with an initial member
-- **`MLSGroupSession.join_from_welcome_with_config(config, welcome, hpke_private_key)`**: Join via Welcome message
+- **`MLSGroupSession.join_from_welcome_with_config(config, welcome, init_private_key, key_package)`**: Join via Welcome. `init_private_key` decrypts the Welcome; `key_package` identifies the joiner's leaf.
 - **`MLSGroupSession.deserialize_with_config(config, data)`**: Restore a session from serialized state
-- **`session.add_member(key_package, signing_key)`**, **`session.update_self(...)`**, **`session.remove_member(...)`**: Proposals
-- **`session.process_proposal(handshake_bytes, sender_leaf_index)`**: Process a received proposal
+- **`session.add_member(key_package, signing_key)`**, **`session.update_self(...)`**, **`session.remove_member(...)`**: Create a proposal, queue it on this session, and return the bytes to send. Do not `process_proposal` those bytes locally.
+- **`session.process_proposal(handshake_bytes, sender_leaf_index=None)`**: Queue a proposal received from another member. The sender is read from the authenticated message.
 - **`session.commit(signing_key)`**: Create a commit (staged merge + apply)
-- **`session.apply_commit(handshake_bytes, sender_leaf_index)`**: Apply a received commit
-- **`session.protect_application(plaintext)`** / **`session.unprotect_application(ciphertext_bytes)`**: Application data
+- **`session.apply_commit(handshake_bytes, sender_leaf_index=None)`**: Apply a received commit. The committer is read from the authenticated message.
+- **`session.protect_application(plaintext, signing_key)`** / **`session.unprotect_application(ciphertext_bytes)`**: Application data. `signing_key` is required.
 
 For staged commits and direct group access, use **`MLSGroup`** and **`StagedCommit`** from `rfc9420`.
 

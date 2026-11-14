@@ -350,3 +350,60 @@ def test_failed_commit_does_not_corrupt_the_group():
     assert bob.get_epoch() == epoch
     assert bob.get_epoch_authenticator() == authenticator
     assert bob.unprotect(spare) == (0, b"still good")
+
+
+def test_failed_receive_does_not_consume_generation():
+    crypto = DefaultCryptoProvider()
+    tree = SecretTree(os.urandom(crypto.kdf_hash_len()), crypto, n_leaves=1)
+    with pytest.raises(ValueError, match="decrypt failed"):
+        with tree.tentative_receive(0):
+            tree.application_for(0, 5)
+            raise ValueError("decrypt failed")
+    state = tree._leaves.get(0)
+    assert state is None or (state.app_recv_generation == 0 and not state.app_skipped)
+    _key, _nonce, generation = tree.application_for(0, 0)
+    assert generation == 0
+
+
+def test_corrupt_ciphertext_does_not_burn_application_key():
+    from dataclasses import replace
+
+    crypto = DefaultCryptoProvider()
+    alice_kp, alice_sk, _a_init, _a_enc = _member(crypto, b"alice")
+    bob_kp, _bob_sk, bob_init, bob_enc = _member(crypto, b"bob")
+    alice = ProtocolMLSGroup.create(b"group-ratchet-rollback", alice_kp, crypto)
+    alice.process_proposal(
+        alice.create_add_proposal(bob_kp, alice_sk),
+        Sender(0, SenderType.MEMBER),
+    )
+    pending = alice.create_commit(alice_sk)
+    alice.apply_own_commit(pending)
+    bob = ProtocolMLSGroup.from_welcome(
+        pending.welcomes[0],
+        bob_init,
+        crypto,
+        key_package=bob_kp,
+        encryption_private_key=bob_enc,
+    )
+    good = alice.protect(b"keep", alice_sk)
+    flipped = good.ciphertext[:-1] + bytes([good.ciphertext[-1] ^ 0xFF])
+    bad = replace(good, ciphertext=flipped)
+    with pytest.raises(Exception):
+        bob.unprotect(bad)
+    assert bob.unprotect(good) == (0, b"keep")
+
+
+def test_derive_key_pair_matches_hpke_without_touching_its_cache():
+    crypto = DefaultCryptoProvider()
+    seed = b"\x11" * 64
+    sk, pk = crypto.derive_key_pair(seed)
+    hpke = crypto._get_hpke_instance()
+    before = len(getattr(hpke.kem, "_raw_private_bytes", {}))
+    sk_obj, _pk_obj = hpke.derive_key_pair(seed)
+    assert sk == hpke.serialize_private_key(sk_obj)
+    assert pk == hpke.serialize_public_key(_pk_obj)
+    # Our derivation must not have been what filled the dependency cache.
+    assert len(getattr(hpke.kem, "_raw_private_bytes", {})) == before + 1
+    again_sk, again_pk = crypto.derive_key_pair(seed)
+    assert (again_sk, again_pk) == (sk, pk)
+    assert len(getattr(hpke.kem, "_raw_private_bytes", {})) == before + 1

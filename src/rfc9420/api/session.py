@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 
 from ..group.mls_group.group import MLSGroup
 from ..messages.key_packages import KeyPackage, LeafNode
-from ..messages.data_structures import Welcome
+from ..messages.data_structures import Sender, Welcome
+from ..mls.exceptions import RFC9420Error
 from ..interop.wire import (
     encode_handshake,
     decode_handshake,
@@ -17,6 +18,14 @@ from ..providers.config import GroupConfig
 
 if TYPE_CHECKING:
     from .policy import MLSAppPolicy
+
+
+def _authenticated_sender(pt: MLSPlaintext) -> Sender:
+    """Return the Sender embedded in an authenticated handshake message."""
+    sender = pt.auth_content.tbs.framed_content.sender
+    if isinstance(sender, Sender):
+        return sender
+    return Sender(int(sender))
 
 
 def _run_async(coro):
@@ -161,7 +170,11 @@ class MLSGroupSession:
 
     # --- Handshake proposals and commits (byte I/O) ---
     def add_member(self, key_package: KeyPackage, signing_key: bytes) -> bytes:
-        """Create an Add proposal for a new member.
+        """Create an Add proposal, queue it locally, and return the bytes to send.
+
+        The proposal is already pending on this session. Do not pass the
+        returned bytes back through ``process_proposal``; that would queue a
+        second copy. Other members call ``process_proposal`` on the bytes.
 
         Parameters
         ----------
@@ -176,10 +189,14 @@ class MLSGroupSession:
             Handshake bytes (MLSPlaintext) to send to the group.
         """
         pt: MLSPlaintext = self._group.add(key_package, signing_key)
+        self._group.process_proposal(pt, self.own_leaf_index)
         return encode_handshake(pt)
 
     def update_self(self, leaf_node: LeafNode, signing_key: bytes) -> bytes:
-        """Create an Update proposal for this member's leaf.
+        """Create an Update proposal, queue it locally, and return the bytes to send.
+
+        The proposal is already pending on this session. Other members call
+        ``process_proposal`` on the returned bytes.
 
         Parameters
         ----------
@@ -194,10 +211,14 @@ class MLSGroupSession:
             Handshake bytes to send to the group.
         """
         pt: MLSPlaintext = self._group.update(leaf_node, signing_key)
+        self._group.process_proposal(pt, self.own_leaf_index)
         return encode_handshake(pt)
 
     def remove_member(self, removed_index: int, signing_key: bytes) -> bytes:
-        """Create a Remove proposal for the member at the given leaf index.
+        """Create a Remove proposal, queue it locally, and return the bytes to send.
+
+        The proposal is already pending on this session. Other members call
+        ``process_proposal`` on the returned bytes.
 
         Parameters
         ----------
@@ -212,20 +233,31 @@ class MLSGroupSession:
             Handshake bytes to send to the group.
         """
         pt: MLSPlaintext = self._group.remove(removed_index, signing_key)
+        self._group.process_proposal(pt, self.own_leaf_index)
         return encode_handshake(pt)
 
-    def process_proposal(self, handshake_bytes: bytes, sender_leaf_index: int) -> None:
+    def process_proposal(
+        self, handshake_bytes: bytes, sender_leaf_index: int | None = None
+    ) -> None:
         """Process a received proposal and update internal state.
+
+        The sender is taken from the authenticated ``FramedContent``. When
+        ``sender_leaf_index`` is passed, it must match that field.
 
         Parameters
         ----------
         handshake_bytes : bytes
             Encoded MLSPlaintext (proposal).
-        sender_leaf_index : int
-            Leaf index of the sender.
+        sender_leaf_index : int or None, optional
+            Expected sender leaf index. Omit it to use the message sender.
         """
         pt = decode_handshake(handshake_bytes)
-        self._group.process_proposal(pt, sender_leaf_index)
+        sender = _authenticated_sender(pt)
+        if sender_leaf_index is not None and int(sender.sender) != int(sender_leaf_index):
+            raise RFC9420Error(
+                "sender_leaf_index does not match the sender in the authenticated message"
+            )
+        self._group.process_proposal(pt, sender.sender, sender_type=int(sender.sender_type))
 
     def revoke_proposal(self, proposal_ref: bytes) -> None:
         """Remove a cached proposal by its ProposalRef (e.g. when the delivery service revokes it).
@@ -264,29 +296,42 @@ class MLSGroupSession:
         self._group.apply_staged_commit(staged)
         return encode_handshake(staged.commit_message), staged.welcomes
 
-    def apply_commit(self, handshake_bytes: bytes, sender_leaf_index: int) -> None:
+    def apply_commit(
+        self, handshake_bytes: bytes, sender_leaf_index: int | None = None
+    ) -> None:
         """Apply a received Commit and update group state.
+
+        The committer leaf index is taken from the authenticated message.
+        When ``sender_leaf_index`` is passed, it must match that field.
 
         Parameters
         ----------
         handshake_bytes : bytes
             Encoded MLSPlaintext (Commit).
-        sender_leaf_index : int
-            Leaf index of the committer.
+        sender_leaf_index : int or None, optional
+            Expected committer leaf index. Omit it to use the message sender.
         """
         pt = decode_handshake(handshake_bytes)
-        self._group.process_commit(pt, sender_leaf_index)
+        sender = _authenticated_sender(pt)
+        if sender_leaf_index is not None and int(sender.sender) != int(sender_leaf_index):
+            raise RFC9420Error(
+                "sender_leaf_index does not match the sender in the authenticated message"
+            )
+        self._group.process_commit(pt, sender.sender)
 
     # --- Application data (byte I/O) ---
-    def protect_application(self, plaintext: bytes, signing_key: bytes | None = None) -> bytes:
-        """Encrypt application data for the group.
+    def protect_application(self, plaintext: bytes, signing_key: bytes) -> bytes:
+        """Encrypt and sign application data for the group.
+
+        RFC 9420 §6.1 requires every FramedContent to be signed, so
+        ``signing_key`` is the member's leaf signature private key.
 
         Parameters
         ----------
         plaintext : bytes
             Application message to encrypt.
-        signing_key : bytes | None, optional
-            Optional member leaf signature key for RFC 9420 §6.1 signing (default None).
+        signing_key : bytes
+            Member leaf signature private key.
 
         Returns
         -------

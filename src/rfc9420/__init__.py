@@ -7,6 +7,7 @@ Public API (breaking from pre-1.0):
 - PublicGroup: passive observer (no secrets); from_group_info, process_handshake.
 - get_commit_sender_leaf_index(commit_bytes): committer leaf index from serialized commit.
 - DefaultCryptoProvider, MemoryStorageProvider: batteries-included backends.
+- MLSGroupSession: synchronous byte-oriented session (create, join, commit, protect).
 - ProtocolMLSGroup: low-level protocol state machine (for tests/advanced use).
 """
 from .providers import (
@@ -22,6 +23,7 @@ from .group.public_group import PublicGroup
 from .backends.crypto.default_hpke import DefaultCryptoProvider
 from .backends.storage.memory import MemoryStorageProvider
 from .backends.crypto.default_rand import DefaultRandProvider
+from .api.session import MLSGroupSession
 from .group.mls_group.processing import MLSGroup as ProtocolMLSGroup
 from .messages.data_structures import CipherSuite, MLSVersion, Sender, SenderType
 from .crypto.ciphersuites import CipherSuiteId
@@ -65,6 +67,7 @@ __all__ = [
     "DefaultCryptoProvider",
     "MemoryStorageProvider",
     "DefaultRandProvider",
+    "MLSGroupSession",
     "ProtocolMLSGroup",
     "CipherSuite",
     "CipherSuiteId",
@@ -94,4 +97,4 @@ __all__ = [
     "TLSDecodeError",
 ]
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"

@@ -41,18 +41,17 @@ uv run pytest -q
 ## First Group (Two Members)
 
 ```python
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+import secrets
 
 from rfc9420 import (
     GroupConfig,
     DefaultCryptoProvider,
     MemoryStorageProvider,
+    MLSGroupSession,
 )
-from rfc9420.api.session import MLSGroupSession
 from rfc9420.extensions.extensions import build_capabilities_data
-from rfc9420.messages.key_packages import KeyPackage, LeafNode, LeafNodeSource
 from rfc9420.messages.data_structures import Credential, Signature
+from rfc9420.messages.key_packages import KeyPackage, LeafNode
 
 crypto = DefaultCryptoProvider()
 storage = MemoryStorageProvider()
@@ -60,56 +59,55 @@ config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
 
 
 def make_member(identity: bytes):
-    kem_sk = X25519PrivateKey.generate()
-    kem_pk = kem_sk.public_key()
-    init_sk = X25519PrivateKey.generate()  # for Welcome decrypt, distinct from leaf key
-    init_pk = init_sk.public_key()
-
-    sig_sk = Ed25519PrivateKey.generate()
-    sig_pk = sig_sk.public_key()
-    sig_pk_raw = sig_pk.public_bytes_raw()
+    sig_sk = secrets.token_bytes(32)
+    sig_pk = crypto.signature_public_from_private(sig_sk)
+    _enc_sk, enc_pk = crypto.generate_key_pair()
+    init_sk, init_pk = crypto.generate_key_pair()
     caps = build_capabilities_data(
         ciphersuite_ids=[crypto.active_ciphersuite.suite_id],
         supported_exts=[],
         include_grease=False,
     )
-    cred = Credential(identity=identity, public_key=sig_pk_raw)
-    leaf = LeafNode(
-        encryption_key=kem_pk.public_bytes_raw(),
-        signature_key=sig_pk_raw,
+    cred = Credential(identity=identity, public_key=sig_pk)
+    unsigned_leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
         credential=cred,
         capabilities=caps,
-        leaf_node_source=LeafNodeSource.KEY_PACKAGE,
-        parent_hash=b"",
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
     )
-    kp_tbs = KeyPackage(leaf_node=leaf, init_key=init_pk.public_bytes_raw())
-    sig = sig_sk.sign(kp_tbs.tbs_serialize())
-    kp = KeyPackage(
-        leaf_node=leaf,
-        init_key=init_pk.public_bytes_raw(),
-        signature=Signature(sig),
+    leaf_sig = crypto.sign_with_label(sig_sk, b"LeafNodeTBS", unsigned_leaf.tbs_serialize())
+    leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
+        credential=cred,
+        capabilities=caps,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
+        signature=Signature(leaf_sig),
     )
-    return kp, init_sk.private_bytes_raw(), sig_sk.private_bytes_raw()
+    unsigned_kp = KeyPackage(init_key=init_pk, leaf_node=leaf)
+    kp_sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", unsigned_kp.tbs_serialize())
+    kp = KeyPackage(init_key=init_pk, leaf_node=leaf, signature=Signature(kp_sig))
+    return kp, init_sk, sig_sk
 
 
-# Alice creates group
-kp_alice, init_sk_alice, sig_sk_alice = make_member(b"alice")
+kp_alice, _init_sk_alice, sig_sk_alice = make_member(b"alice")
 alice = MLSGroupSession.create_with_config(config, b"my-group", kp_alice)
 
-# Bob key package
-kp_bob, init_sk_bob, sig_sk_bob = make_member(b"bob")
-
-# Alice proposes + commits Add(Bob)
+kp_bob, init_sk_bob, _sig_sk_bob = make_member(b"bob")
+# add_member queues the Add on Alice. commit() covers that queue.
 alice.add_member(kp_bob, sig_sk_alice)
-commit_bytes, welcomes = alice.commit(sig_sk_alice)
+_commit_bytes, welcomes = alice.commit(sig_sk_alice)
 
-# Bob joins via Welcome (using init private key)
-bob = MLSGroupSession.join_from_welcome_with_config(config, welcomes[0], init_sk_bob)
+bob = MLSGroupSession.join_from_welcome_with_config(
+    config, welcomes[0], init_sk_bob, key_package=kp_bob
+)
 
-# App message
-ct = alice.protect_application(b"hello bob")
+ct = alice.protect_application(b"hello bob", sig_sk_alice)
 sender, pt = bob.unprotect_application(ct)
-print(sender, pt)
+assert (sender, pt) == (0, b"hello bob")
 ```
 
 ## Common Operations
@@ -117,8 +115,8 @@ print(sender, pt)
 ### Self Update
 
 ```python
+# update_self queues the proposal locally. Send new_hs to the other members.
 new_hs = alice.update_self(new_leaf_node, sig_sk_alice)
-alice.process_proposal(new_hs, alice.own_leaf_index)
 commit_bytes, _ = alice.commit(sig_sk_alice)
 ```
 
@@ -126,7 +124,6 @@ commit_bytes, _ = alice.commit(sig_sk_alice)
 
 ```python
 rm_hs = alice.remove_member(removed_index=1, signing_key=sig_sk_alice)
-alice.process_proposal(rm_hs, alice.own_leaf_index)
 commit_bytes, _ = alice.commit(sig_sk_alice)
 ```
 

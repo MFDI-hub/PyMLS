@@ -31,7 +31,7 @@ def storage(db_path):
 def test_key_package_roundtrip(storage):
     async def _():
         ref = b"kp_ref_1"
-        kp = {"init_key": b"fake_pk", "leaf_node": b"fake_leaf"}
+        kp = b"fake-key-package"
         await storage.save_key_package(ref, kp)
         got = await storage.get_key_package(ref)
         assert got == kp
@@ -43,8 +43,8 @@ def test_key_package_roundtrip(storage):
 def test_proposals_append_and_get(storage):
     async def _():
         gid = b"group1"
-        p1 = {"type": "add", "key_package": b"kp1"}
-        p2 = {"type": "remove", "index": 1}
+        p1 = b"add-proposal"
+        p2 = b"remove-proposal"
         await storage.append_proposal(gid, p1)
         await storage.append_proposal(gid, p2)
         proposals = await storage.get_proposals(gid)
@@ -58,7 +58,7 @@ def test_proposals_append_and_get(storage):
 def test_clear_proposals(storage):
     async def _():
         gid = b"group1"
-        await storage.append_proposal(gid, {"type": "add"})
+        await storage.append_proposal(gid, b"add")
         await storage.clear_proposals(gid)
         assert await storage.get_proposals(gid) == []
 
@@ -160,3 +160,74 @@ def test_merge_group_state_rollback_on_failure(db_path):
         assert got is not None and got.epoch == 1
 
     _run(_())
+
+
+def test_rejects_non_protocol_objects(storage):
+    async def _():
+        with pytest.raises(TypeError, match="pickle"):
+            await storage.save_key_package(b"ref", {"init_key": b"x"})
+
+    _run(_())
+
+
+def test_rejects_pickle_payload(db_path, storage):
+    import pickle
+
+    import aiosqlite
+
+    async def _():
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS key_packages (ref BLOB PRIMARY KEY, data BLOB NOT NULL)"
+            )
+            await db.execute(
+                "INSERT OR REPLACE INTO key_packages (ref, data) VALUES (?, ?)",
+                (b"pickled", pickle.dumps({"init_key": b"x"})),
+            )
+            await db.commit()
+        with pytest.raises(ValueError, match="pickle"):
+            await storage.get_key_package(b"pickled")
+
+    _run(_())
+
+
+def test_at_rest_key_encrypts_group_secrets(db_path):
+    key = b"k" * 32
+    secret = b"PRIVATE-HPKE-KEY-MATERIAL"
+    encrypted = SQLiteStorageProvider(db_path, at_rest_key=key)
+
+    async def _():
+        gid = b"sealed"
+        await encrypted.merge_group_state(
+            gid,
+            GroupEpochState(
+                group_id=gid,
+                epoch=3,
+                tree_snapshot=secret,
+                group_context=b"gc",
+                state_payload=b"epoch-secrets",
+            ),
+        )
+        raw = Path(db_path).read_bytes()
+        assert secret not in raw
+        assert b"epoch-secrets" not in raw
+        got = await encrypted.get_group_state(gid)
+        assert got is not None
+        assert got.tree_snapshot == secret
+        assert got.state_payload == b"epoch-secrets"
+        plain = SQLiteStorageProvider(db_path)
+        with pytest.raises(ValueError, match="encrypted"):
+            await plain.get_group_state(gid)
+
+    _run(_())
+
+
+def test_database_file_is_owner_only(db_path, storage):
+    import os
+    import stat
+
+    _run(storage.save_key_package(b"ref", b"bytes"))
+    if os.name == "nt":
+        return
+    mode = stat.S_IMODE(Path(db_path).stat().st_mode)
+    assert mode & 0o077 == 0

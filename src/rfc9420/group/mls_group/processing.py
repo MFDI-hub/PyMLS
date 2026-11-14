@@ -1877,73 +1877,80 @@ class MLSGroup:
             )
             proposal = Proposal.deserialize(message.auth_content.tbs.framed_content.content)
         # Validate credentials for Add/Update/GCE proposals (RFC 9420 §5.3.1)
-        try:
-            if isinstance(proposal, AddProposal):
-                kp = KeyPackage.deserialize(proposal.key_package)
-                kp.verify(self._crypto_provider, group_context=self._group_context)
-                self._validate_credential_if_set(
-                    kp.leaf_node.credential if kp.leaf_node else None, "add_proposal"
-                )
-                pending_removes = {
-                    int(p.removed)
-                    for p in self._pending_proposals
-                    if isinstance(p, RemoveProposal)
-                }
-                validate_leaf_node_unique_against_tree(
-                    self._ratchet_tree,
-                    kp.leaf_node,
-                    replacing_leaf_index=None,
-                    ignored_leaf_indices=pending_removes,
-                )
-            elif isinstance(proposal, UpdateProposal):
-                from ...messages.key_packages import LeafNode as _LeafNode
+        if isinstance(proposal, AddProposal):
+            kp = KeyPackage.deserialize(proposal.key_package)
+            kp.verify(self._crypto_provider, group_context=self._group_context)
+            self._validate_credential_if_set(
+                kp.leaf_node.credential if kp.leaf_node else None, "add_proposal"
+            )
+            pending_removes = {
+                int(p.removed)
+                for p in self._pending_proposals
+                if isinstance(p, RemoveProposal)
+            }
+            validate_leaf_node_unique_against_tree(
+                self._ratchet_tree,
+                kp.leaf_node,
+                replacing_leaf_index=None,
+                ignored_leaf_indices=pending_removes,
+            )
+        elif isinstance(proposal, UpdateProposal):
+            from ...messages.key_packages import LeafNode as _LeafNode
 
-                leaf = _LeafNode.deserialize(proposal.leaf_node)
-                pk = (
-                    getattr(leaf.credential, "public_key", None)
-                    if leaf.credential is not None
-                    else None
+            leaf = _LeafNode.deserialize(proposal.leaf_node)
+            pk = (
+                getattr(leaf.credential, "public_key", None)
+                if leaf.credential is not None
+                else None
+            )
+            if pk and pk != leaf.signature_key:
+                raise CommitValidationError(
+                    "leaf credential public key does not match signature key"
                 )
-                if pk and pk != leaf.signature_key:
+            current_leaf = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
+            try:
+                leaf.validate(
+                    self._crypto_provider,
+                    group_id=self._group_id,
+                    leaf_index=sender.sender,
+                    group_context=self._group_context,
+                    expected_source=LeafNodeSource.UPDATE,
+                    replacing_encryption_key=current_leaf.encryption_key
+                    if current_leaf
+                    else None,
+                )
+            except CommitValidationError:
+                raise
+            except Exception as e:
+                raise CommitValidationError(f"Update proposal LeafNode invalid: {e}") from e
+            validate_leaf_node_unique_against_tree(
+                self._ratchet_tree,
+                leaf,
+                replacing_leaf_index=sender.sender,
+            )
+            self._validate_credential_if_set(leaf.credential, "update_proposal")
+        elif isinstance(proposal, GroupContextExtensionsProposal):
+            from ...extensions.extensions import parse_external_senders
+
+            try:
+                extensions = deserialize_extensions(proposal.extensions)
+            except Exception as exc:
+                raise CommitValidationError(
+                    "invalid GroupContextExtensions proposal"
+                ) from exc
+            for ext in extensions:
+                if int(ext.ext_type) != int(ExtensionType.EXTERNAL_SENDERS):
+                    continue
+                try:
+                    external_senders = parse_external_senders(ext.data)
+                except Exception as exc:
                     raise CommitValidationError(
-                        "leaf credential public key does not match signature key"
+                        "invalid external_senders extension in GroupContextExtensions proposal"
+                    ) from exc
+                for es in external_senders:
+                    self._validate_credential_if_set(
+                        getattr(es, "credential", None), "external_senders"
                     )
-                current_leaf = self._ratchet_tree.get_node(sender.sender * 2).leaf_node
-                try:
-                    leaf.validate(
-                        self._crypto_provider,
-                        group_id=self._group_id,
-                        leaf_index=sender.sender,
-                        group_context=self._group_context,
-                        expected_source=LeafNodeSource.UPDATE,
-                        replacing_encryption_key=current_leaf.encryption_key
-                        if current_leaf
-                        else None,
-                    )
-                except Exception as e:
-                    raise CommitValidationError(f"Update proposal LeafNode invalid: {e}") from e
-                validate_leaf_node_unique_against_tree(
-                    self._ratchet_tree,
-                    leaf,
-                    replacing_leaf_index=sender.sender,
-                )
-                self._validate_credential_if_set(leaf.credential, "update_proposal")
-            elif isinstance(proposal, GroupContextExtensionsProposal):
-                try:
-                    from ...extensions.extensions import parse_external_senders
-
-                    for ext in deserialize_extensions(proposal.extensions):
-                        if int(ext.ext_type) == int(ExtensionType.EXTERNAL_SENDERS):
-                            for es in parse_external_senders(ext.data):
-                                self._validate_credential_if_set(
-                                    getattr(es, "credential", None), "external_senders"
-                                )
-                            break
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"Error validating proposal: {e}")
-            raise
         # RFC 9420 §5.2 / §6: ProposalRef hashes AuthenticatedContent
         # (wire_format || FramedContent || auth), not PublicMessage (no
         # membership_tag) and not FramedContentTBS (no ProtocolVersion).
@@ -1951,11 +1958,8 @@ class MLSGroup:
 
         try:
             prop_ref_input = message.auth_content.serialize_authenticated_content()
-        except Exception:
-            try:
-                prop_ref_input = message.auth_content.serialize()
-            except Exception:
-                prop_ref_input = proposal.serialize()
+        except Exception as exc:
+            raise RFC9420Error("could not serialize proposal for ProposalRef") from exc
         prop_ref = make_proposal_ref(self._crypto_provider, prop_ref_input)
         self._proposal_cache[prop_ref] = (proposal, sender.sender)
         self._pending_proposals.append(proposal)

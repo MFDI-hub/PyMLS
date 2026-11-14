@@ -7,6 +7,7 @@ Includes content types, wire format discriminators, and PSK/PSKLabel handling.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING
@@ -956,6 +957,35 @@ def protect_content_application(
     )
 
 
+def _ratchet_attempt(secret_tree, leaf: int):
+    """Return a context that rolls back ``leaf`` if decryption fails.
+
+    Secret trees that implement ``tentative_receive`` restore receive state
+    when the body raises. Other objects are left unchanged by this wrapper.
+    """
+    tentative = getattr(secret_tree, "tentative_receive", None)
+    if tentative is None:
+        return nullcontext()
+    return tentative(leaf)
+
+
+def _require_occupied_sender_leaf(secret_tree, sender: int) -> None:
+    """Reject SenderData that names a blank or out-of-range leaf (RFC 9420 §6.3.2)."""
+    ratchet_tree = getattr(secret_tree, "_ratchet_tree", None)
+    if ratchet_tree is None and hasattr(secret_tree, "get_node"):
+        ratchet_tree = secret_tree
+    if ratchet_tree is None:
+        return
+    try:
+        node = ratchet_tree.get_node(sender * 2)
+    except AttributeError:
+        return
+    except IndexError as exc:
+        raise TLSDecodeError(f"SenderData leaf index out of range: {sender}") from exc
+    if node is None or (node.leaf_node is None and getattr(node, "public_key", None) is None):
+        raise TLSDecodeError(f"SenderData references blank leaf at index {sender}")
+
+
 def unprotect_content_handshake(
     m: MLSCiphertext,
     key_schedule: KeySchedule,
@@ -978,53 +1008,46 @@ def unprotect_content_handshake(
         sender_data_aad=sd_aad,
     )
 
-    # RFC §6.3.2: sender leaf MUST be non-blank in the ratchet tree.
-    rt = getattr(secret_tree, "_ratchet_tree", None) or (
-        secret_tree if hasattr(secret_tree, "get_node") else None
-    )
-    if rt is not None:
-        try:
-            _ln = rt.get_node(sd.sender * 2)
-            if _ln.leaf_node is None and _ln.public_key is None:
-                raise TLSDecodeError(f"SenderData references blank leaf at index {sd.sender}")
-        except (AttributeError, IndexError):
-            pass  # ratchet_tree not available; skip check
+    _require_occupied_sender_leaf(secret_tree, sd.sender)
 
-    key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
-    rg_padded = sd.reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
-    content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
-    ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
+    # Derive the generation inside a rollback context. A failed AEAD open or a
+    # malformed plaintext must not advance the receive ratchet or evict skipped keys.
+    with _ratchet_attempt(secret_tree, sd.sender):
+        key, nonce, _ = secret_tree.handshake_for(sd.sender, sd.generation)
+        rg_padded = sd.reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
+        content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
+        ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
 
-    # Parse PrivateMessageContent: content || auth || padding
-    # RFC §6.3.1: parse content, then auth, THEN verify remaining bytes are zero padding.
-    from .data_structures import Commit as _Commit, Proposal as _Proposal
+        # Parse PrivateMessageContent: content || auth || padding
+        # RFC §6.3.1: parse content, then auth, THEN verify remaining bytes are zero padding.
+        from .data_structures import Commit as _Commit, Proposal as _Proposal
 
-    off = 0
-    body = b""
-    obj: _Commit | _Proposal
-    if m.content_type == ContentType.COMMIT:
-        obj = _Commit.deserialize(ptxt)
-        length = len(obj.serialize())
-        body = ptxt[:length]
-        off = length
-    elif m.content_type == ContentType.PROPOSAL:
-        obj = _Proposal.deserialize(ptxt)
-        length = len(obj.serialize())
-        body = ptxt[:length]
-        off = length
-    else:
-        raise TLSDecodeError(f"Unsupported handshake content type: {m.content_type}")
+        off = 0
+        body = b""
+        obj: _Commit | _Proposal
+        if m.content_type == ContentType.COMMIT:
+            obj = _Commit.deserialize(ptxt)
+            length = len(obj.serialize())
+            body = ptxt[:length]
+            off = length
+        elif m.content_type == ContentType.PROPOSAL:
+            obj = _Proposal.deserialize(ptxt)
+            length = len(obj.serialize())
+            body = ptxt[:length]
+            off = length
+        else:
+            raise TLSDecodeError(f"Unsupported handshake content type: {m.content_type}")
 
-    # Parse AuthData
-    auth, auth_len = FramedContentAuthData.deserialize(ptxt[off:], m.content_type)
-    off += auth_len
+        # Parse AuthData
+        auth, auth_len = FramedContentAuthData.deserialize(ptxt[off:], m.content_type)
+        off += auth_len
 
-    # Verify remaining bytes are all-zero padding (RFC 9420 §6.3.1 MUST)
-    padding = ptxt[off:]
-    if any(b != 0 for b in padding):
-        raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
+        # Verify remaining bytes are all-zero padding (RFC 9420 §6.3.1 MUST)
+        padding = ptxt[off:]
+        if any(b != 0 for b in padding):
+            raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
 
-    return sd.sender, body, auth
+        return sd.sender, body, auth
 
 
 def unprotect_content_application(
@@ -1048,39 +1071,31 @@ def unprotect_content_application(
         sender_data_aad=sd_aad,
     )
 
-    # RFC §6.3.2: sender leaf MUST be non-blank in the ratchet tree.
-    rt = getattr(secret_tree, "_ratchet_tree", None) or (
-        secret_tree if hasattr(secret_tree, "get_node") else None
-    )
-    if rt is not None:
-        try:
-            _ln = rt.get_node(sd.sender * 2)
-            if _ln.leaf_node is None and _ln.public_key is None:
-                raise TLSDecodeError(f"SenderData references blank leaf at index {sd.sender}")
-        except (AttributeError, IndexError):
-            pass  # ratchet_tree not available; skip check
+    _require_occupied_sender_leaf(secret_tree, sd.sender)
 
-    key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
-    rg_padded = sd.reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
-    content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
-    ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
+    # Consume the generation only if AEAD and plaintext checks succeed.
+    with _ratchet_attempt(secret_tree, sd.sender):
+        key, nonce, _ = secret_tree.application_for(sd.sender, sd.generation)
+        rg_padded = sd.reuse_guard.ljust(crypto.aead_nonce_size(), b"\x00")
+        content_nonce = bytes(a ^ b for a, b in zip(nonce, rg_padded))
+        ptxt = crypto.aead_decrypt(key, content_nonce, m.ciphertext, aad)
 
-    # Parse PrivateMessageContent: content || auth || padding
-    # RFC §6.3.1: parse content, then auth, THEN verify remaining bytes are zero padding.
-    off = 0
-    # Application: opaque application_data<V>
-    body, off = read_opaque_varint(ptxt, off)
+        # Parse PrivateMessageContent: content || auth || padding
+        # RFC §6.3.1: parse content, then auth, THEN verify remaining bytes are zero padding.
+        off = 0
+        # Application: opaque application_data<V>
+        body, off = read_opaque_varint(ptxt, off)
 
-    # Parse AuthData
-    auth, auth_len = FramedContentAuthData.deserialize(ptxt[off:], m.content_type)
-    off += auth_len
+        # Parse AuthData
+        auth, auth_len = FramedContentAuthData.deserialize(ptxt[off:], m.content_type)
+        off += auth_len
 
-    # Verify remaining bytes are all-zero padding (RFC 9420 §6.3.1 MUST)
-    padding = ptxt[off:]
-    if any(b != 0 for b in padding):
-        raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
+        # Verify remaining bytes are all-zero padding (RFC 9420 §6.3.1 MUST)
+        padding = ptxt[off:]
+        if any(b != 0 for b in padding):
+            raise TLSDecodeError("non-zero padding byte in PrivateMessageContent")
 
-    return sd.sender, body, auth
+        return sd.sender, body, auth
 
 
 @dataclass(frozen=True)

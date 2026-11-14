@@ -52,14 +52,16 @@ Module: `rfc9420.api.session`
 - `add_member(key_package, signing_key) -> bytes`
 - `update_self(leaf_node, signing_key) -> bytes`
 - `remove_member(removed_index, signing_key) -> bytes`
-- `process_proposal(handshake_bytes, sender_leaf_index) -> None`
+- `process_proposal(handshake_bytes, sender_leaf_index=None) -> None` — sender is read from the authenticated message
 - `revoke_proposal(proposal_ref) -> None`
 - `commit(signing_key, return_per_joiner_welcomes=False) -> tuple[bytes, list[Welcome]]`
-- `apply_commit(handshake_bytes, sender_leaf_index) -> None`
+- `apply_commit(handshake_bytes, sender_leaf_index=None) -> None` — committer is read from the authenticated message
+
+`add_member`, `update_self`, and `remove_member` queue the proposal on the calling session. Send the returned bytes to other members; do not `process_proposal` them again locally.
 
 ### Application Methods
 
-- `protect_application(plaintext, signing_key=None) -> bytes`
+- `protect_application(plaintext, signing_key) -> bytes` — `signing_key` is required
 - `unprotect_application(ciphertext_bytes) -> tuple[int, bytes]`
 
 ### Export/Policy/Persistence

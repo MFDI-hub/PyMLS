@@ -25,7 +25,11 @@ def check_ocsp_end_entity(
     - Attempts to find an OCSP responder URL in the AIA extension.
     - Builds an OCSP request and fetches a response (using fetcher or urllib).
     - Verifies the OCSP response signature with the issuer public key.
-    - Returns True if status is 'good', False if 'revoked'. Returns True if no responder.
+    - Returns True only when the responder says the certificate is good.
+    - Returns False when the certificate is revoked or the status is unknown.
+    - A missing responder URL, or a fetch failure, follows ``fail_open``
+      (default False). That is not evidence the certificate is unrevoked.
+      Pass ``fail_open=True`` only for an explicit best-effort check.
 
     This helper performs best-effort network fetching if a fetcher is not provided.
     In environments without network, pass a custom fetcher or leave OCSP disabled.
@@ -60,8 +64,8 @@ def check_ocsp_end_entity(
     except x509.ExtensionNotFound:
         pass
     if not ocsp_urls:
-        # No OCSP responder advertised; treat as not revoked
-        return True
+        # No responder URL is not evidence the certificate is unrevoked.
+        return bool(fail_open)
 
     # Cache key by serial
     cache_key = f"ocsp:{ee.serial_number:x}"
@@ -114,11 +118,10 @@ def check_ocsp_end_entity(
         ocsp_resp.public_bytes(serialization.Encoding.DER)  # force parse
     except Exception as e:
         raise RFC9420Error("OCSP response parsing failed") from e
-    # Certificate status
-    if single.certificate_status.name == "REVOKED":
+    status_name = single.certificate_status.name
+    if status_name != "GOOD":
         cache[cache_key] = (now, False)
         return False
-    # Not revoked
     cache[cache_key] = (now, True)
     return True
 
@@ -136,7 +139,9 @@ def check_crl(
     Basic CRL check for an end-entity certificate.
     - Attempts to find a CRL Distribution Point in the certificate.
     - Downloads a CRL (using fetcher or urllib) and verifies if the EE serial is listed.
-    - Returns True if not listed (not revoked), False if listed. Returns True if no CDP.
+    - Returns True if the serial is not listed, False if it is listed.
+    - A missing distribution point, or a fetch failure, follows ``fail_open``
+      (default False). That is not evidence the certificate is unrevoked.
     """
     try:
         from cryptography import x509
@@ -165,7 +170,7 @@ def check_crl(
     except x509.ExtensionNotFound:
         pass
     if not crl_urls:
-        return True
+        return bool(fail_open)
 
     cache_key = f"crl:{ee.serial_number:x}"
     if cache_key in cache:

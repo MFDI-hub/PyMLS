@@ -5,13 +5,12 @@ Practical snippets for the current API.
 ## Shared Setup
 
 ```python
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+import secrets
 
 from rfc9420 import GroupConfig, DefaultCryptoProvider, MemoryStorageProvider
 from rfc9420.extensions.extensions import build_capabilities_data
 from rfc9420.messages.data_structures import Credential, Signature
-from rfc9420.messages.key_packages import KeyPackage, LeafNode, LeafNodeSource
+from rfc9420.messages.key_packages import KeyPackage, LeafNode
 
 crypto = DefaultCryptoProvider()
 storage = MemoryStorageProvider()
@@ -19,31 +18,38 @@ config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
 
 
 def make_key_package(identity: bytes):
-    kem_sk = X25519PrivateKey.generate()
-    kem_pk = kem_sk.public_key()
-    init_sk = X25519PrivateKey.generate()
-    init_pk = init_sk.public_key()
-    sig_sk = Ed25519PrivateKey.generate()
-    sig_pk = sig_sk.public_key()
-    sig_pk_raw = sig_pk.public_bytes_raw()
-
+    sig_sk = secrets.token_bytes(32)
+    sig_pk = crypto.signature_public_from_private(sig_sk)
+    _enc_sk, enc_pk = crypto.generate_key_pair()
+    init_sk, init_pk = crypto.generate_key_pair()
     caps = build_capabilities_data(
         ciphersuite_ids=[crypto.active_ciphersuite.suite_id],
         supported_exts=[],
         include_grease=False,
     )
-    cred = Credential(identity=identity, public_key=sig_pk_raw)
-    leaf = LeafNode(
-        encryption_key=kem_pk.public_bytes_raw(),
-        signature_key=sig_pk_raw,
+    cred = Credential(identity=identity, public_key=sig_pk)
+    unsigned_leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
         credential=cred,
         capabilities=caps,
-        leaf_node_source=LeafNodeSource.KEY_PACKAGE,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
     )
-    kp_tbs = KeyPackage(leaf_node=leaf, init_key=init_pk.public_bytes_raw())
-    kp_sig = Signature(sig_sk.sign(kp_tbs.tbs_serialize()))
-    kp = KeyPackage(leaf_node=leaf, init_key=init_pk.public_bytes_raw(), signature=kp_sig)
-    return kp, init_sk.private_bytes_raw(), sig_sk.private_bytes_raw()
+    leaf_sig = crypto.sign_with_label(sig_sk, b"LeafNodeTBS", unsigned_leaf.tbs_serialize())
+    leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
+        credential=cred,
+        capabilities=caps,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
+        signature=Signature(leaf_sig),
+    )
+    unsigned_kp = KeyPackage(init_key=init_pk, leaf_node=leaf)
+    kp_sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", unsigned_kp.tbs_serialize())
+    kp = KeyPackage(init_key=init_pk, leaf_node=leaf, signature=Signature(kp_sig))
+    return kp, init_sk, sig_sk
 ```
 
 ## Create + Join + Message
@@ -58,10 +64,12 @@ kp_bob, init_bob, sig_bob = make_key_package(b"bob")
 alice.add_member(kp_bob, sig_alice)
 commit_bytes, welcomes = alice.commit(sig_alice)
 
-bob = MLSGroupSession.join_from_welcome_with_config(config, welcomes[0], init_bob)
-ct = alice.protect_application(b"hello")
+bob = MLSGroupSession.join_from_welcome_with_config(
+    config, welcomes[0], init_bob, key_package=kp_bob
+)
+ct = alice.protect_application(b"hello", sig_alice)
 sender, pt = bob.unprotect_application(ct)
-print(sender, pt)
+assert (sender, pt) == (0, b"hello")
 ```
 
 ## Process Commit From Another Member
@@ -76,6 +84,8 @@ some_other_member_session.apply_commit(commit_bytes, sender)
 ## Rotate Own Keys (Update Proposal)
 
 ```python
+from rfc9420.messages.key_packages import LeafNode, LeafNodeSource
+
 new_kp, _new_init, new_sig_sk = make_key_package(b"alice")
 new_leaf = new_kp.leaf_node
 new_leaf = LeafNode(
@@ -87,7 +97,6 @@ new_leaf = LeafNode(
 )
 
 hs = alice.update_self(new_leaf, sig_alice)
-alice.process_proposal(hs, alice.own_leaf_index)
 commit_bytes, _ = alice.commit(sig_alice)
 sig_alice = new_sig_sk
 ```
@@ -96,7 +105,6 @@ sig_alice = new_sig_sk
 
 ```python
 hs = alice.remove_member(removed_index=1, signing_key=sig_alice)
-alice.process_proposal(hs, alice.own_leaf_index)
 commit_bytes, _ = alice.commit(sig_alice)
 ```
 
@@ -110,12 +118,17 @@ alice_restored = MLSGroupSession.deserialize_with_config(config, blob)
 ## SQLite Storage Provider
 
 ```python
+import secrets
+
 from rfc9420.backends.storage import SQLiteStorageProvider
 from rfc9420 import GroupConfig, DefaultCryptoProvider
 
 cfg = GroupConfig(
     crypto_provider=DefaultCryptoProvider(),
-    storage_provider=SQLiteStorageProvider("mls_state.sqlite"),
+    storage_provider=SQLiteStorageProvider(
+        "mls_state.sqlite",
+        at_rest_key=secrets.token_bytes(32),
+    ),
 )
 ```
 
