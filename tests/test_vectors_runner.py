@@ -24,6 +24,7 @@ from rfc9420.messages.data_structures import (
     GroupInfo as GroupInfoStruct,
     PreSharedKeyID,
     PSKType,
+    ResumptionPSKUsage,
     Signature,
     Sender,
 )
@@ -719,6 +720,10 @@ def run_transcript_hashes_vector_spec(vec: Dict[str, Any], crypto: CryptoProvide
     def h(b: str) -> bytes:
         return bytes.fromhex(b)
 
+    suite = vec.get("cipher_suite")
+    if suite is not None and hasattr(crypto, "set_ciphersuite"):
+        crypto.set_ciphersuite(int(suite))
+
     data = h(vec["authenticated_content"])
     # Vector is TLS serialized: optional ProtocolVersion (2 bytes 0x0001) then AuthenticatedContent body
     if len(data) >= 2 and data[:2] == b"\x00\x01":
@@ -1091,15 +1096,30 @@ def run_psk_secret_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -> N
     def h(b: str) -> bytes:
         return bytes.fromhex(b)
 
+    suite = vec.get("cipher_suite")
+    if suite is not None and hasattr(crypto, "set_ciphersuite"):
+        crypto.set_ciphersuite(int(suite))
+
     psks = vec.get("psks") or []
     psk_ids: List[PreSharedKeyID] = []
     psk_values: List[bytes] = []
     for p in psks:
-        psk_id = PreSharedKeyID(
-            psktype=PSKType.EXTERNAL,
-            psk_id=h(p["psk_id"]),
-            psk_nonce=h(p["psk_nonce"]),
-        )
+        psk_type = int(p.get("psk_type", p.get("psktype", int(PSKType.EXTERNAL))))
+        nonce = h(p.get("psk_nonce") or "")
+        if psk_type == int(PSKType.RESUMPTION):
+            psk_id = PreSharedKeyID(
+                psktype=PSKType.RESUMPTION,
+                usage=ResumptionPSKUsage(int(p.get("psk_usage", p.get("usage", 1)))),
+                psk_group_id=h(p.get("psk_group_id", p.get("psk_id", ""))),
+                psk_epoch=int(p.get("psk_epoch", p.get("epoch", 0))),
+                psk_nonce=nonce,
+            )
+        else:
+            psk_id = PreSharedKeyID(
+                psktype=PSKType.EXTERNAL,
+                psk_id=h(p["psk_id"]),
+                psk_nonce=nonce,
+            )
         psk_ids.append(psk_id)
         psk_values.append(h(p["psk"]))
     got = derive_psk_secret(crypto, psk_ids, psk_values)
@@ -1519,13 +1539,71 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
             )
 
 
+def _spec_runners() -> Dict[str, tuple]:
+    """Official mls-implementations filenames -> (runner, needs_crypto)."""
+    return {
+        "tree-math.json": (run_tree_math_vector_spec, False),
+        "deserialization.json": (run_deserialization_vector_spec, False),
+        "crypto-basics.json": (run_crypto_basics_vector_spec, True),
+        "secret-tree.json": (run_secret_tree_vector_spec, True),
+        "key-schedule.json": (run_key_schedule_vector_spec, True),
+        "messages.json": (run_messages_vector_spec, True),
+        "transcript-hashes.json": (run_transcript_hashes_vector_spec, True),
+        "welcome.json": (run_welcome_vector_spec, True),
+        "tree-operations.json": (run_tree_operations_vector_spec, True),
+        "tree-validation.json": (run_tree_validation_vector_spec, True),
+        "treekem.json": (run_treekem_vector_spec, True),
+        "psk_secret.json": (run_psk_secret_vector_spec, True),
+        "message-protection.json": (run_message_protection_vector_spec, True),
+        "passive-client-random.json": (run_passive_client_vector_spec, True),
+        "passive-client-welcome.json": (run_passive_client_vector_spec, True),
+        "passive-client-handling-commit.json": (run_passive_client_vector_spec, True),
+    }
+
+
+def _crypto_for_vector(vec: Dict[str, Any], fallback: CryptoProvider) -> CryptoProvider:
+    """Build a provider for this vector's ciphersuite. Do not reuse another suite."""
+    suite = vec.get("cipher_suite")
+    if suite is None:
+        return fallback
+    from rfc9420.backends.crypto.default_hpke import DefaultCryptoProvider
+
+    provider = DefaultCryptoProvider(int(suite))
+    return provider
+
+
+def _iter_official_cases(data: Any) -> List[Dict[str, Any]]:
+    """Flatten official vectors: a list of per-suite objects, optionally with cases."""
+    entries = data if isinstance(data, list) else [data]
+    cases: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        nested = entry.get("cases")
+        if isinstance(nested, list):
+            suite_id = entry.get("cipher_suite")
+            for item in nested:
+                if isinstance(item, dict):
+                    merged = dict(item)
+                    if suite_id is not None and "cipher_suite" not in merged:
+                        merged["cipher_suite"] = suite_id
+                    cases.append(merged)
+            continue
+        cases.append(entry)
+    return cases
+
+
 def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, int]:
     """
     Load JSON test vectors from a directory and run known types.
-    Returns summary counts.
+
+    Official mlswg files are a list of per-suite objects and are dispatched to
+    the spec runners. The older single-object ``{"type": ...}`` fixtures are
+    still accepted.
     """
     summary = {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
-    for fname in os.listdir(directory):
+    spec = _spec_runners()
+    for fname in sorted(os.listdir(directory)):
         if not fname.endswith(".json"):
             continue
         path = os.path.join(directory, fname)
@@ -1535,9 +1613,28 @@ def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, 
         except Exception:
             summary["skipped"] += 1
             continue
+
+        if fname in spec or isinstance(data, list):
+            runner = spec.get(fname)
+            if runner is None:
+                summary["skipped"] += 1
+                continue
+            fn, need_crypto = runner
+            for vec in _iter_official_cases(data):
+                summary["total"] += 1
+                try:
+                    if need_crypto:
+                        fn(vec, _crypto_for_vector(vec, crypto))
+                    else:
+                        fn(vec)
+                    summary["passed"] += 1
+                except Exception:
+                    summary["failed"] += 1
+            continue
+
         summary["total"] += 1
         try:
-            vtype = data.get("type", "")
+            vtype = data.get("type", "") if isinstance(data, dict) else ""
             if vtype == "key_schedule":
                 _run_key_schedule_vector(data, crypto)
             elif vtype == "tree_math":
@@ -1558,8 +1655,6 @@ def ingest_and_run_vectors(directory: str, crypto: CryptoProvider) -> Dict[str, 
                 summary["skipped"] += 1
                 continue
             summary["passed"] += 1
-        except AssertionError:
-            summary["failed"] += 1
         except Exception:
             summary["failed"] += 1
     return summary

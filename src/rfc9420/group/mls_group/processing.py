@@ -945,17 +945,12 @@ class MLSGroup:
                     raise CommitValidationError(
                         "ratchet tree hash does not match GroupContext.tree_hash"
                     )
-                # RFC 9420 §7.9.2: For each non-empty parent node, verify parent-hash valid
+                # RFC 9420 §12.4.3.1 / §7.9.2: each non-empty parent node must be
+                # parent-hash valid. Do not also recompute every leaf's
+                # parent_hash against the current tree: unmerged leaves keep
+                # the parent hash of the ancestor that existed when they were
+                # committed, and that extra equality check rejects valid trees.
                 group._ratchet_tree.verify_parent_hash_chains()
-                # Parent-hash validity for each leaf that includes a parent_hash
-                for leaf in range(group._ratchet_tree.n_leaves):
-                    node = group._ratchet_tree.get_node(leaf * 2)
-                    if node.leaf_node and node.leaf_node.parent_hash:
-                        expected_ph = group._ratchet_tree._compute_parent_hash_for_leaf(leaf)
-                        if expected_ph != node.leaf_node.parent_hash:
-                            raise CommitValidationError(
-                                "invalid parent_hash for leaf in Welcome tree"
-                            )
                 # Basic leaf validation (credential/signature key consistency)
                 for leaf in range(group._ratchet_tree.n_leaves):
                     node = group._ratchet_tree.get_node(leaf * 2)
@@ -1889,10 +1884,16 @@ class MLSGroup:
                 self._validate_credential_if_set(
                     kp.leaf_node.credential if kp.leaf_node else None, "add_proposal"
                 )
+                pending_removes = {
+                    int(p.removed)
+                    for p in self._pending_proposals
+                    if isinstance(p, RemoveProposal)
+                }
                 validate_leaf_node_unique_against_tree(
                     self._ratchet_tree,
                     kp.leaf_node,
                     replacing_leaf_index=None,
+                    ignored_leaf_indices=pending_removes,
                 )
             elif isinstance(proposal, UpdateProposal):
                 from ...messages.key_packages import LeafNode as _LeafNode
