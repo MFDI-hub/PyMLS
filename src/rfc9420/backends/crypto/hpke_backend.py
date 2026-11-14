@@ -6,7 +6,7 @@ the rfc9180 package. MLS ciphersuite KEM/KDF/AEAD are rfc9180 KEMID/KDFID/AEADID
 from __future__ import annotations
 
 from rfc9180 import AEADID, HPKE, KDFID, KEMID
-from rfc9180.exceptions import OpenError
+from rfc9180.exceptions import HPKEError
 from cryptography.exceptions import InvalidTag
 
 from ...crypto.ciphersuites import AEAD, KDF, KEM
@@ -101,8 +101,8 @@ def hpke_open(
     hpke = HPKE(kem_id, kdf_id, aead_id)
     try:
         return hpke.open_base(kem_output, recipient_private_key, info, aad, ciphertext)
-    except OpenError as e:
-        # Map rfc9180 OpenError to cryptography InvalidTag for compatibility with rfc9420 exceptions
+    except HPKEError as e:
+        # Map rfc9180 failures (open, deserialize, validation) to InvalidTag.
         raise InvalidTag("Decryption failed") from e
 
 

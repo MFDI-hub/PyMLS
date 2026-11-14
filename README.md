@@ -352,7 +352,7 @@ High-level wrapper around `MLSGroup` providing an ergonomic API.
 
 ### `rfc9420.DefaultCryptoProvider`
 
-Concrete `CryptoProvider` implementation using the `cryptography` library.
+Concrete `CryptoProvider` implementation. HPKE comes from `rfc9180` (>= 0.4.0); signatures and AEAD primitives come from `cryptography`.
 
 **Constructor:**
 - `DefaultCryptoProvider(suite_id: int = 0x0001)`
@@ -395,7 +395,7 @@ Core protocol implementation. Most users should use `Group` instead.
 ## Notes
 
 - The library aims for correctness and clarity first. Recent updates removed MVP shortcuts and aligned with RFC 9420 semantics for group creation, commit ordering, parent hash, and Welcome tree encoding.
-- External HPKE backend is provided by `cryptography` (fails fast if unavailable).
+- HPKE is provided by `rfc9180` (>= 0.4.0), which uses `cryptography`. Installs should resolve `rfc9180>=0.4.0`; 0.3.0 is below the floor.
 - Revocation helpers default to fail-closed unless explicitly configured to fail-open.
 - The legacy DAVE protocol and opcodes were removed. This is a pure MLS library now.
 - GroupContextExtensions proposals are accepted and ordered. Their data is merged into GroupInfo extensions for Welcomes; the GroupContext structure in this codebase remains minimal and does not store extensions explicitly.

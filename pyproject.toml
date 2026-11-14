@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rfc9420"
-version = "1.4.3"
+version = "1.4.4"
 description = "Messaging Layer Security (MLS) protocol implementation (RFC 9420) in Python"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
   "cryptography>=42",
   "certifi>=2024.7.4",
-  "rfc9180>=0.3.0",
+  "rfc9180>=0.4.0",
 ]
 
 [project.optional-dependencies]

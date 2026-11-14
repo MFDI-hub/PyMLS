@@ -393,17 +393,16 @@ def test_corrupt_ciphertext_does_not_burn_application_key():
     assert bob.unprotect(good) == (0, b"keep")
 
 
-def test_derive_key_pair_matches_hpke_without_touching_its_cache():
+def test_derive_key_pair_matches_hpke_for_distinct_seeds():
     crypto = DefaultCryptoProvider()
-    seed = b"\x11" * 64
-    sk, pk = crypto.derive_key_pair(seed)
+    sk1, pk1 = crypto.derive_key_pair(b"\x11" * 64)
+    sk2, pk2 = crypto.derive_key_pair(b"\x22" * 64)
+    assert sk1 != sk2
+    assert pk1 != pk2
     hpke = crypto._get_hpke_instance()
-    before = len(getattr(hpke.kem, "_raw_private_bytes", {}))
-    sk_obj, _pk_obj = hpke.derive_key_pair(seed)
-    assert sk == hpke.serialize_private_key(sk_obj)
-    assert pk == hpke.serialize_public_key(_pk_obj)
-    # Our derivation must not have been what filled the dependency cache.
-    assert len(getattr(hpke.kem, "_raw_private_bytes", {})) == before + 1
-    again_sk, again_pk = crypto.derive_key_pair(seed)
-    assert (again_sk, again_pk) == (sk, pk)
-    assert len(getattr(hpke.kem, "_raw_private_bytes", {})) == before + 1
+    obj1, pub1 = hpke.derive_key_pair(b"\x11" * 64)
+    obj2, pub2 = hpke.derive_key_pair(b"\x22" * 64)
+    assert sk1 == hpke.serialize_private_key(obj1)
+    assert pk1 == hpke.serialize_public_key(pub1)
+    assert sk2 == hpke.serialize_private_key(obj2)
+    assert pk2 == hpke.serialize_public_key(pub2)

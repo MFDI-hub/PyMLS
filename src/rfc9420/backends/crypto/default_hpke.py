@@ -357,9 +357,7 @@ class DefaultCryptoProvider:
         MLS node and external secrets are ``KDF.Nh`` bytes. That is shorter
         than ``Nsk`` for P-521, and rfc9180 rejects those inputs. This method
         runs the RFC 9180 derivation itself and returns the serialized key
-        pair. It does not call ``serialize_private_key`` and does not write
-        rfc9180's ``_raw_private_bytes`` map (that map is keyed by ``id(sk)``
-        and grows for the life of the KEM object).
+        pair.
         """
         from cryptography.hazmat.primitives.asymmetric import x25519, x448
         from rfc9180.primitives.kem import DHKEM_NIST
