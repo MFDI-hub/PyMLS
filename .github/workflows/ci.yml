@@ -29,7 +29,11 @@ jobs:
         run: uv run ty check src
       - name: Fetch official MLS test vectors
         run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/mlswg/mls-implementations.git mls-implementations
+          # Pin the suite that this tree was verified against. A floating
+          # main checkout can change the vectors without a change here.
+          git clone --filter=blob:none --sparse https://github.com/mlswg/mls-implementations.git mls-implementations
           git -C mls-implementations sparse-checkout set test-vectors
+          git -C mls-implementations fetch --depth 1 origin bcbb4d4736fb7591ad8390346fb8e45a61a9e53e
+          git -C mls-implementations checkout --detach bcbb4d4736fb7591ad8390346fb8e45a61a9e53e
       - name: Test
         run: uv run pytest -q

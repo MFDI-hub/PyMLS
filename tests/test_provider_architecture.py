@@ -65,27 +65,47 @@ def test_storage_merge_and_retrieve_roundtrip():
     _run(_())
 
 
-@pytest.mark.skip(reason="Requires full KeyPackage signing; run with real key package if needed")
 def test_staged_commit_merge_integration():
     """Full flow: protocol group create_commit -> StagedCommit -> merge(storage) -> state persisted."""
-    from rfc9420.messages.key_packages import LeafNode, KeyPackage
-    from rfc9420.messages.data_structures import Signature
+    import os
+
+    from rfc9420.extensions.extensions import build_capabilities_data
+    from rfc9420.messages.data_structures import Credential, Signature
+    from rfc9420.messages.key_packages import KeyPackage, LeafNode
 
     crypto = DefaultCryptoProvider()
     storage = MemoryStorageProvider()
     config = GroupConfig(crypto_provider=crypto, storage_provider=storage)
-    sig_sk, sig_pk = crypto.generate_key_pair()
-    kem_sk, kem_pk = crypto.generate_key_pair()
-    ln = LeafNode(
-        encryption_key=kem_pk,
-        signature_key=sig_pk,
-        credential=None,
-        capabilities=b"",
-        parent_hash=b"",
+    sig_sk = os.urandom(32)
+    sig_pk = crypto.signature_public_from_private(sig_sk)
+    _enc_sk, enc_pk = crypto.generate_key_pair()
+    _init_sk, init_pk = crypto.generate_key_pair()
+    caps = build_capabilities_data(
+        ciphersuite_ids=[crypto.active_ciphersuite.suite_id],
+        supported_exts=[],
+        include_grease=False,
     )
-    kp = KeyPackage(leaf_node=ln)
-    sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", kp.tbs_serialize())
-    kp = KeyPackage(leaf_node=ln, signature=Signature(sig))
+    unsigned = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
+        credential=Credential(identity=b"arch", public_key=sig_pk),
+        capabilities=caps,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
+    )
+    leaf_sig = crypto.sign_with_label(sig_sk, b"LeafNodeTBS", unsigned.tbs_serialize())
+    leaf = LeafNode(
+        encryption_key=enc_pk,
+        signature_key=sig_pk,
+        credential=Credential(identity=b"arch", public_key=sig_pk),
+        capabilities=caps,
+        lifetime_not_before=0,
+        lifetime_not_after=(1 << 64) - 1,
+        signature=Signature(leaf_sig),
+    )
+    unsigned_kp = KeyPackage(init_key=init_pk, leaf_node=leaf)
+    kp_sig = crypto.sign_with_label(sig_sk, b"KeyPackageTBS", unsigned_kp.tbs_serialize())
+    kp = KeyPackage(init_key=init_pk, leaf_node=leaf, signature=Signature(kp_sig))
     group = MLSGroup.create(config, b"arch_test_group", kp)
     staged = group.create_commit(sig_sk)
 

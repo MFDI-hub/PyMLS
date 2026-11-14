@@ -356,7 +356,12 @@ class SecretTree:
         return b"".join(parts)
 
     def load_replay_state(self, data: bytes) -> None:
-        """Restore state written by export_replay_state. Raises if the blob is truncated."""
+        """Restore state written by export_replay_state.
+
+        Framing is checked (truncation, trailing bytes, leaf indexes,
+        duplicate skipped generations). The blob is not authenticated.
+        Only load bytes from storage whose integrity you already trust.
+        """
         offset = 0
         total, offset = _read_uint(data, offset, 8)
         count, offset = _read_uint(data, offset, 2)

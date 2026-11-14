@@ -864,6 +864,9 @@ class MLSGroup:
         # RFC 9420 §12.4.3.1: verify GroupInfo under signer_leaf_index's signature key.
         # The ratchet tree may be inside GroupInfo or supplied separately.
         ext_tree_bytes: bytes | None = None
+        req_exts: list[int] = []
+        req_props: list[int] = []
+        req_creds: list[int] = []
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
@@ -872,6 +875,15 @@ class MLSGroup:
             for ext in exts:
                 if ext.ext_type == ExtensionType.RATCHET_TREE:
                     ext_tree_bytes = ext.data
+                elif ext.ext_type == ExtensionType.EXTERNAL_PUB:
+                    group._external_public_key = ext.data
+                elif ext.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
+                    try:
+                        req_exts, req_props, req_creds = parse_required_capabilities(ext.data)
+                    except Exception as e:
+                        raise CommitValidationError(
+                            "invalid required_capabilities in Welcome GroupInfo"
+                        ) from e
         if not ext_tree_bytes:
             ext_tree_bytes = external_ratchet_tree
         if not ext_tree_bytes:
@@ -902,37 +914,10 @@ class MLSGroup:
             window_size=group._secret_tree_window_size,
             max_generation_gap=group._secret_tree_max_generation_gap,
             aead_limit_bytes=group._secret_tree_aead_limit_bytes,
-        )  # will be updated if/when ratchet tree extension is loaded
-        # Ratchet tree via GroupInfo extension (if present)
-        req_exts: list[int] = []
-        req_props: list[int] = []
-        req_creds: list[int] = []
-        if gi.extensions:
-            try:
-                exts = deserialize_extensions(gi.extensions)
-                for ext in exts:
-                    if ext.ext_type == ExtensionType.RATCHET_TREE:
-                        # Prefer full-tree loader; fall back to legacy leaves-only
-                        try:
-                            group._ratchet_tree.load_full_tree_from_welcome_bytes(ext.data)
-                        except Exception:
-                            group._ratchet_tree.load_tree_from_welcome_bytes(ext.data)
-                    elif ext.ext_type == ExtensionType.EXTERNAL_PUB:
-                        group._external_public_key = ext.data
-                    elif ext.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
-                        req_exts, req_props, req_creds = parse_required_capabilities(ext.data)
-            except Exception:
-                # If extension parsing fails, proceed without tree
-                pass
-        # Install the tree that was used to verify GroupInfo. It may live in
-        # the ratchet_tree extension or in external_ratchet_tree.
-        try:
-            group._ratchet_tree.load_full_tree_from_welcome_bytes(ext_tree_bytes)
-        except Exception:
-            try:
-                group._ratchet_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
-            except Exception as e:
-                raise CommitValidationError("invalid ratchet tree in Welcome") from e
+        )
+        # This is the tree GroupInfo was verified against, including an
+        # out-of-band external_ratchet_tree. Keep it instead of parsing again.
+        group._ratchet_tree = tmp_tree
         # Enforce GroupContext extension support by the joiner's capabilities.
         try:
             if gi.group_context.extensions:
@@ -3496,7 +3481,12 @@ class MLSGroup:
 
     # --- Persistence (versioned) ---
     def to_bytes(self) -> bytes:
-        """Serialize the group state for resumption (versioned encoding v5)."""
+        """Serialize the group state for resumption (versioned encoding v5).
+
+        The blob holds epoch secrets, per-leaf ratchet secrets, and the
+        skipped-key window. Treat the bytes as secret key material. Memory
+        and SQLite storage keep them as produced; they are not encrypted here.
+        """
         from ...messages.data_structures import serialize_bytes
 
         if not self._group_context or not self._key_schedule:
