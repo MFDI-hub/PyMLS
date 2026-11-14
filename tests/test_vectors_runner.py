@@ -29,7 +29,6 @@ from rfc9420.messages.data_structures import (
     Sender,
 )
 from rfc9420.protocol.ratchet_tree_backend import BACKEND_ARRAY, create_tree_backend
-from rfc9420.mls.exceptions import CommitValidationError
 from rfc9420.messages.key_packages import KeyPackage, LeafNode
 from rfc9420.group.mls_group.processing import MLSGroup
 from rfc9420.codec.tls import read_varint
