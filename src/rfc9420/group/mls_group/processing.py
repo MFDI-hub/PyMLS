@@ -661,8 +661,9 @@ class MLSGroup:
             welcome: Welcome structure received out-of-band.
             hpke_private_key: Private key for HPKE to recover the joiner secret.
             crypto_provider: Active CryptoProvider.
-            key_package: Optional KeyPackage of the joiner; if provided, used to identify
-                the joiner's leaf in the tree and to verify cipher suite match.
+            key_package: Joiner's KeyPackage. Required. It identifies the joiner's
+                leaf. Omitting it used to return a group with own_leaf_index -1,
+                which cannot send.
             existing_group_ids: Optional list of group_id bytes; if provided and the
                 Welcome's group_id is in this list, raises CommitValidationError.
             reinit_proposal: Optional ReInit proposal that led to this Welcome; if provided
@@ -923,6 +924,15 @@ class MLSGroup:
             except Exception:
                 # If extension parsing fails, proceed without tree
                 pass
+        # Install the tree that was used to verify GroupInfo. It may live in
+        # the ratchet_tree extension or in external_ratchet_tree.
+        try:
+            group._ratchet_tree.load_full_tree_from_welcome_bytes(ext_tree_bytes)
+        except Exception:
+            try:
+                group._ratchet_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
+            except Exception as e:
+                raise CommitValidationError("invalid ratchet tree in Welcome") from e
         # Enforce GroupContext extension support by the joiner's capabilities.
         try:
             if gi.group_context.extensions:
@@ -998,24 +1008,31 @@ class MLSGroup:
         except Exception as e:
             # Surface as CommitValidationError
             raise CommitValidationError(str(e)) from e
-        # Identify joiner's leaf when key_package is provided (RFC 9420 §12.4.3.1)
-        if key_package is not None and key_package.leaf_node is not None:
-            joiner_sig_key = key_package.leaf_node.signature_key
-            my_leaf = -1
-            for leaf in range(group._ratchet_tree.n_leaves):
-                node = group._ratchet_tree.get_node(leaf * 2)
-                if node.leaf_node and node.leaf_node.signature_key == joiner_sig_key:
-                    my_leaf = leaf
-                    break
-            if my_leaf >= 0:
-                group._own_leaf_index = my_leaf
-                if encryption_private_key is not None:
-                    group._ratchet_tree.get_node(my_leaf * 2).private_key = encryption_private_key
-                if group_secrets is not None and group_secrets.path_secret is not None:
-                    group._ratchet_tree.apply_joiner_path_secret(
-                        my_leaf, group_secrets.path_secret,
-                        committer_leaf_index=gi.signer_leaf_index,
-                    )
+        # Identify the joiner's leaf (RFC 9420 §12.4.3.1). Without it the
+        # member cannot send, so a missing or unmatched KeyPackage fails closed.
+        if key_package is None or key_package.leaf_node is None:
+            raise CommitValidationError(
+                "key_package is required to identify the joiner's leaf"
+            )
+        joiner_sig_key = key_package.leaf_node.signature_key
+        my_leaf = -1
+        for leaf in range(group._ratchet_tree.n_leaves):
+            node = group._ratchet_tree.get_node(leaf * 2)
+            if node.leaf_node and node.leaf_node.signature_key == joiner_sig_key:
+                my_leaf = leaf
+                break
+        if my_leaf < 0:
+            raise CommitValidationError(
+                "joiner KeyPackage was not found in the Welcome ratchet tree"
+            )
+        group._own_leaf_index = my_leaf
+        if encryption_private_key is not None:
+            group._ratchet_tree.get_node(my_leaf * 2).private_key = encryption_private_key
+        if group_secrets is not None and group_secrets.path_secret is not None:
+            group._ratchet_tree.apply_joiner_path_secret(
+                my_leaf, group_secrets.path_secret,
+                committer_leaf_index=gi.signer_leaf_index,
+            )
         # Confirmation tag MUST be present and MUST verify (RFC 9420 §8.1).
         if gi.confirmation_tag is None or len(gi.confirmation_tag) == 0:
             raise CommitValidationError("GroupInfo confirmation_tag missing in Welcome")
@@ -3479,12 +3496,12 @@ class MLSGroup:
 
     # --- Persistence (versioned) ---
     def to_bytes(self) -> bytes:
-        """Serialize the group state for resumption (versioned encoding v4)."""
+        """Serialize the group state for resumption (versioned encoding v5)."""
         from ...messages.data_structures import serialize_bytes
 
         if not self._group_context or not self._key_schedule:
             raise RFC9420Error("group not initialized")
-        data = b"" + serialize_bytes(b"v4")
+        data = b"" + serialize_bytes(b"v5")
         # Active ciphersuite id (uint16)
         suite_id = self._crypto_provider.active_ciphersuite.suite_id.to_bytes(2, "big")
         data += serialize_bytes(suite_id)
@@ -3519,6 +3536,11 @@ class MLSGroup:
             cache_blob_parts.append(serialize_bytes(prop.serialize()))
         data += serialize_bytes(b"".join(cache_blob_parts))
         data += serialize_bytes(self._state.value.encode("ascii"))
+        # Per-leaf receive/send ratchet, including the skipped-key window.
+        replay_blob = b""
+        if self._secret_tree is not None:
+            replay_blob = self._secret_tree.export_replay_state()
+        data += serialize_bytes(replay_blob)
         return data
 
     @classmethod
@@ -3534,8 +3556,9 @@ class MLSGroup:
 
         # Attempt to read version marker
         first, rest0 = deserialize_bytes(data)
-        if first in (b"v4", b"v3"):
-            # v4 encoding (or v3 fallback without explicit group state)
+        if first in (b"v5", b"v4", b"v3"):
+            # v5 includes secret-tree replay state. v4 is the same group
+            # state without it. v3 has no explicit group-state field.
             suite_id_bytes, rest = deserialize_bytes(rest0)
             gid, rest = deserialize_bytes(rest)
             gc_bytes, rest = deserialize_bytes(rest)
@@ -3559,8 +3582,11 @@ class MLSGroup:
             # Proposal cache blob
             cache_blob, rest = deserialize_bytes(rest)
             state_blob = b""
-            if first == b"v4":
+            replay_blob = b""
+            if first in (b"v5", b"v4"):
                 state_blob, rest = deserialize_bytes(rest)
+            if first == b"v5":
+                replay_blob, rest = deserialize_bytes(rest)
 
             group = cls(
                 gid,
@@ -3597,6 +3623,10 @@ class MLSGroup:
                 )
             except Exception:
                 group._secret_tree = None
+            if replay_blob:
+                if group._secret_tree is None:
+                    raise RFC9420Error("cannot restore secret-tree replay state")
+                group._secret_tree.load_replay_state(replay_blob)
             # Load pending proposals
             try:
                 off = 0

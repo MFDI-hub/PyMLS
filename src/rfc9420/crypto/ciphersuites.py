@@ -1,16 +1,16 @@
-"""MLS ciphersuite registry and helpers (RFC 9420 §16.3).
+"""MLS ciphersuite registry and helpers (RFC 9420 §17.1).
 
 This module provides the ciphersuite registry for MLS, including definitions
-for all RFC 9420 §16.3 ciphersuites. KEM, KDF, and AEAD identifiers are
+for all RFC 9420 §17.1 ciphersuites. KEM, KDF, and AEAD identifiers are
 provided by rfc9180 (RFC 9180 HPKE) and re-exported here for MLS use.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import  Iterable
+from typing import Iterable
 
-# RFC 9420 §16.3 uses the same IANA values as RFC 9180 for KEM, KDF, AEAD.
+# RFC 9420 §17.1 uses the same IANA values as RFC 9180 for KEM, KDF, AEAD.
 # Re-export from rfc9180 as the single source of truth.
 from rfc9180.constants import AEADID, KDFID, KEMID
 
@@ -21,7 +21,7 @@ AEAD = AEADID
 
 class SignatureScheme(Enum):
     """
-    Signature schemes used by MLS ciphersuites (RFC 9420 §16.3).
+    Signature schemes used by MLS ciphersuites (RFC 9420 §17.1).
     Names include the curve and hash when applicable to avoid ambiguity.
     """
 
@@ -33,7 +33,7 @@ class SignatureScheme(Enum):
 
 
 class CipherSuiteId(IntEnum):
-    """RFC 9420 §16.3 MLS ciphersuite identifiers (IANA registry)."""
+    """RFC 9420 §17.1 MLS ciphersuite identifiers (IANA registry)."""
 
     MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 = 0x0001
     MLS_128_DHKEMP256_AES128GCM_SHA256_P256 = 0x0002
@@ -49,7 +49,7 @@ class MlsCiphersuite:
     """MLS ciphersuite definition combining KEM, KDF, AEAD, and signature scheme.
 
     A ciphersuite defines the complete set of cryptographic algorithms used
-    by an MLS group. See RFC 9420 §16.3 for the complete specification.
+    by an MLS group. See RFC 9420 §17.1 for the complete specification.
 
     Attributes:
         suite_id: RFC 9420 ciphersuite identifier (e.g., 0x0001).
@@ -83,11 +83,11 @@ class MlsCiphersuite:
 
     @property
     def is_ae1_secure(self) -> bool:
-        """RFC 9420 §16.3 suites are AE1-secure by construction."""
+        """RFC 9420 §17.1 suites are AE1-secure by construction."""
         return self.aead in (AEAD.AES_128_GCM, AEAD.AES_256_GCM, AEAD.CHACHA20_POLY1305)
 
 
-# RFC 9420 §16.3 ciphersuite registry
+# RFC 9420 §17.1 ciphersuite registry
 # Note: IDs and names follow the RFC. This list is intentionally explicit.
 _REGISTRY_BY_ID: dict[int, MlsCiphersuite] = {
     int(CipherSuiteId.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519): MlsCiphersuite(

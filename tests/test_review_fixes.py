@@ -208,6 +208,46 @@ def test_two_party_join_and_signed_messages_roundtrip():
     to_alice = bob.protect(b"hello alice", bob_sk)
     assert alice.unprotect(to_alice) == (1, b"hello alice")
 
+    with pytest.raises(CommitValidationError, match="key_package is required"):
+        ProtocolMLSGroup.from_welcome(pending.welcomes[0], bob_init, crypto)
+
+
+def test_replay_protection_survives_to_bytes():
+    crypto = DefaultCryptoProvider()
+    alice_kp, alice_sk, _alice_init, _alice_enc = _member(crypto, b"alice")
+    bob_kp, _bob_sk, bob_init, bob_enc = _member(crypto, b"bob")
+    alice = ProtocolMLSGroup.create(b"group-persist-replay", alice_kp, crypto)
+    alice.process_proposal(
+        alice.create_add_proposal(bob_kp, alice_sk),
+        Sender(0, SenderType.MEMBER),
+    )
+    pending = alice.create_commit(alice_sk)
+    alice.apply_own_commit(pending)
+    bob = ProtocolMLSGroup.from_welcome(
+        pending.welcomes[0],
+        bob_init,
+        crypto,
+        key_package=bob_kp,
+        encryption_private_key=bob_enc,
+    )
+
+    first = alice.protect(b"one", alice_sk)
+    second = alice.protect(b"two", alice_sk)
+    assert bob.unprotect(second) == (0, b"two")
+
+    restored = ProtocolMLSGroup.from_bytes(bob.to_bytes(), crypto)
+    assert restored.unprotect(first) == (0, b"one")
+    with pytest.raises(ValueError, match="already consumed"):
+        restored.unprotect(first)
+    with pytest.raises(ValueError, match="already consumed"):
+        restored.unprotect(second)
+
+    alice_restored = ProtocolMLSGroup.from_bytes(alice.to_bytes(), crypto)
+    third = alice_restored.protect(b"three", alice_sk)
+    assert restored.unprotect(third) == (0, b"three")
+    with pytest.raises(ValueError, match="already consumed"):
+        restored.unprotect(third)
+
 
 def test_same_credential_identity_is_allowed_unless_policy_enabled():
     crypto = DefaultCryptoProvider()

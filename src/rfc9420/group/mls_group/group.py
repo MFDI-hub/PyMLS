@@ -119,8 +119,9 @@ class MLSGroup:
             Welcome message from the group.
         hpke_private_key : bytes
             Private key for the key package in the welcome.
-        key_package : Optional[KeyPackage], optional
-            Local key package if not in welcome (default None).
+        key_package : KeyPackage
+            Joiner's KeyPackage. Required so the leaf can be identified.
+            None raises InvalidWelcomeError.
 
         Returns
         -------

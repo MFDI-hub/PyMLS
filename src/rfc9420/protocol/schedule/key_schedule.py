@@ -6,6 +6,8 @@ sender-data, init for next epoch) using ExpandWithLabel/DeriveSecret from
 the CryptoProvider. Supports construction from full commit flow or from
 Welcome (from_epoch_secret, from_joiner_secret).
 """
+from __future__ import annotations
+
 from ...messages.data_structures import GroupContext
 from ...crypto.crypto_provider import CryptoProvider
 

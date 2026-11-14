@@ -6,6 +6,7 @@ then split into handshake/application branch ratchet secrets.
 """
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 from collections import OrderedDict
 
@@ -27,6 +28,59 @@ class _LeafState:
     hs_recv_generation: int = 0
     hs_recv_secret: bytearray | None = None
     hs_skipped: "OrderedDict[int, tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
+
+
+def _pack_secret(buf: bytearray | None) -> bytes:
+    raw = b"" if buf is None else bytes(buf)
+    if len(raw) > 0xFFFF:
+        raise ValueError("secret too long to persist")
+    return struct.pack("!H", len(raw)) + raw
+
+
+def _pack_skipped(skipped: OrderedDict[int, tuple[bytearray, bytearray]]) -> bytes:
+    items = list(skipped.items())
+    if len(items) > 0xFFFF:
+        raise ValueError("skipped-key window too large to persist")
+    parts = [struct.pack("!H", len(items))]
+    for gen, (key, nonce) in items:
+        key_b, nonce_b = bytes(key), bytes(nonce)
+        if len(key_b) > 0xFFFF or len(nonce_b) > 0xFFFF:
+            raise ValueError("skipped key too long to persist")
+        parts.append(struct.pack("!I", gen))
+        parts.append(struct.pack("!H", len(key_b)) + key_b)
+        parts.append(struct.pack("!H", len(nonce_b)) + nonce_b)
+    return b"".join(parts)
+
+
+def _read_uint(buf: bytes, offset: int, nbytes: int) -> tuple[int, int]:
+    end = offset + nbytes
+    if end > len(buf):
+        raise ValueError("secret-tree replay state is truncated")
+    return int.from_bytes(buf[offset:end], "big"), end
+
+
+def _unpack_secret(buf: bytes, offset: int) -> tuple[bytearray | None, int]:
+    length, offset = _read_uint(buf, offset, 2)
+    end = offset + length
+    if end > len(buf):
+        raise ValueError("secret-tree replay state is truncated")
+    raw = buf[offset:end]
+    return (bytearray(raw) if raw else None), end
+
+
+def _unpack_skipped(
+    buf: bytes, offset: int
+) -> tuple[OrderedDict[int, tuple[bytearray, bytearray]], int]:
+    count, offset = _read_uint(buf, offset, 2)
+    skipped: OrderedDict[int, tuple[bytearray, bytearray]] = OrderedDict()
+    for _ in range(count):
+        gen, offset = _read_uint(buf, offset, 4)
+        key, offset = _unpack_secret(buf, offset)
+        nonce, offset = _unpack_secret(buf, offset)
+        if key is None or nonce is None or gen in skipped:
+            raise ValueError("secret-tree replay state has an invalid skipped key")
+        skipped[gen] = (key, nonce)
+    return skipped, offset
 
 
 class SecretTree:
@@ -272,6 +326,71 @@ class SecretTree:
     @property
     def encrypted_bytes_this_epoch(self) -> int:
         return int(self._encrypted_bytes_total)
+
+    def export_replay_state(self) -> bytes:
+        """Serialize per-leaf ratchet positions, secrets, and skipped keys.
+
+        ``to_bytes`` stores this so a restored group does not re-derive a
+        generation that was already consumed (RFC 9420 §9.2).
+        """
+        parts: list[bytes] = [struct.pack("!Q", self._encrypted_bytes_total & 0xFFFFFFFFFFFFFFFF)]
+        leaves = sorted(self._leaves.items())
+        parts.append(struct.pack("!H", len(leaves)))
+        for leaf, st in leaves:
+            parts.append(
+                struct.pack(
+                    "!IIIII",
+                    leaf,
+                    st.app_generation,
+                    st.hs_generation,
+                    st.app_recv_generation,
+                    st.hs_recv_generation,
+                )
+            )
+            parts.append(_pack_secret(st.app_secret))
+            parts.append(_pack_secret(st.hs_secret))
+            parts.append(_pack_secret(st.app_recv_secret))
+            parts.append(_pack_secret(st.hs_recv_secret))
+            parts.append(_pack_skipped(st.app_skipped))
+            parts.append(_pack_skipped(st.hs_skipped))
+        return b"".join(parts)
+
+    def load_replay_state(self, data: bytes) -> None:
+        """Restore state written by export_replay_state. Raises if the blob is truncated."""
+        offset = 0
+        total, offset = _read_uint(data, offset, 8)
+        count, offset = _read_uint(data, offset, 2)
+        leaves: dict[int, _LeafState] = {}
+        for _ in range(count):
+            leaf, offset = _read_uint(data, offset, 4)
+            app_gen, offset = _read_uint(data, offset, 4)
+            hs_gen, offset = _read_uint(data, offset, 4)
+            app_recv, offset = _read_uint(data, offset, 4)
+            hs_recv, offset = _read_uint(data, offset, 4)
+            if leaf in leaves or leaf >= self._n_leaves:
+                raise ValueError("secret-tree replay state has an invalid leaf index")
+            app_secret, offset = _unpack_secret(data, offset)
+            hs_secret, offset = _unpack_secret(data, offset)
+            app_recv_secret, offset = _unpack_secret(data, offset)
+            hs_recv_secret, offset = _unpack_secret(data, offset)
+            app_skipped, offset = _unpack_skipped(data, offset)
+            hs_skipped, offset = _unpack_skipped(data, offset)
+            leaves[leaf] = _LeafState(
+                app_generation=app_gen,
+                hs_generation=hs_gen,
+                app_secret=app_secret,
+                hs_secret=hs_secret,
+                app_recv_generation=app_recv,
+                app_recv_secret=app_recv_secret,
+                app_skipped=app_skipped,
+                hs_recv_generation=hs_recv,
+                hs_recv_secret=hs_recv_secret,
+                hs_skipped=hs_skipped,
+            )
+        if offset != len(data):
+            raise ValueError("secret-tree replay state has trailing bytes")
+        self._encrypted_bytes_total = total
+        self._leaves = leaves
 
     def wipe(self) -> None:
         try:

@@ -1,5 +1,7 @@
 """Core protocol data structures and (de)serialization helpers for MLS."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import IntEnum
 from abc import ABC, abstractmethod

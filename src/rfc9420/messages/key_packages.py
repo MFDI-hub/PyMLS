@@ -5,6 +5,8 @@ signing), KeyPackage (with init key and extensions), and ref-hash computation
 for tree and proposal references.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import IntEnum
 import struct

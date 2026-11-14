@@ -5,6 +5,8 @@ removing, and updating leaves, computing node hashes, and producing/merging
 UpdatePath structures used in commits.
 """
 
+from __future__ import annotations
+
 from typing import Any, cast
 from ...messages.key_packages import KeyPackage, LeafNode, LeafNodeSource
 from ...codec.tls import (
