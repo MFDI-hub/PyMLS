@@ -397,11 +397,10 @@ class KeyPackage:
 
     def serialize(self) -> bytes:
         """
-        Encode as:
-          uint16(version) || uint16(cipher_suite) || opaque(init_key) ||
-          uint32(len(leaf_node)) || leaf_node ||
-          uint32(len(extensions_list)) || extensions... ||
-          raw signature bytes.
+        Encode as RFC 9420 KeyPackage (variable-length vectors, not uint32):
+          uint16(version) || uint16(cipher_suite) || opaque<V>(init_key) ||
+          LeafNode || opaque<V>(extensions) ||
+          opaque<V>(signature).
         """
         if self.leaf_node is None:
             raise ValueError("leaf_node must be set for serialization")
@@ -430,8 +429,7 @@ class KeyPackage:
         out = struct.pack("!H", int(self.version))
         out += self.cipher_suite.serialize()
         out += serialize_bytes(self.init_key)
-        # RFC 9420: LeafNode is embedded, not a vector.
-        # out += struct.pack("!I", len(ln_bytes))
+        # LeafNode is embedded in the KeyPackage, not length-prefixed.
         out += ln_bytes
         out += serialize_bytes(exts_bytes)
         return out

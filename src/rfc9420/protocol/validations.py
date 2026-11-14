@@ -497,9 +497,17 @@ def validate_commit_matches_referenced_proposals(commit: Commit, referenced: Ite
 
 
 def validate_leaf_node_unique_against_tree(
-    ratchet_tree: Any, leaf_node: Any, replacing_leaf_index: int | None = None
+    ratchet_tree: Any,
+    leaf_node: Any,
+    replacing_leaf_index: int | None = None,
+    ignored_leaf_indices: Any = None,
 ) -> None:
-    """Ensure a candidate leaf node's signature/encryption keys are unique in the tree."""
+    """Ensure a candidate leaf node's signature/encryption keys are unique in the tree.
+
+    ``ignored_leaf_indices`` skips leaves that a pending Remove will blank
+    before Adds are applied (RFC 9420 §12.2). Commit application still checks
+    the tree after Removes, so a key that survives the Remove is still rejected.
+    """
     if leaf_node is None:
         return
 
@@ -508,8 +516,11 @@ def validate_leaf_node_unique_against_tree(
     if not cand_sig and not cand_enc:
         return
 
+    ignored = set(ignored_leaf_indices or ())
     for idx in range(getattr(ratchet_tree, "n_leaves", 0)):
         if replacing_leaf_index is not None and idx == replacing_leaf_index:
+            continue
+        if idx in ignored:
             continue
         node = ratchet_tree.get_node(idx * 2)
         if node is None or node.leaf_node is None:

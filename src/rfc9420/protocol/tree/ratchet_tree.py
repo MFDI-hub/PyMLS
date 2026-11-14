@@ -131,12 +131,21 @@ class RatchetTree:
         node.private_key = None
         node.leaf_node = None
 
-        # Blank the direct path (RFC ?12.1.3)
+        # Blank the removed leaf. A blank node has no ParentNode.
+        node.unmerged_leaves = []
+        node.parent_hash = b""
+        node.hash = None
+
+        # Blank the direct path (RFC 9420 §12.1.3). A blanked parent has no
+        # encryption key, parent hash, or unmerged_leaves.
         for p_idx in tree_math.direct_path(node_index, self.n_leaves):
             p_node = self.get_node(p_idx)
             p_node.public_key = None
             p_node.private_key = None
             p_node.parent_hash = b""
+            p_node.unmerged_leaves = []
+            p_node.leaf_node = None
+            p_node.hash = None
 
         self._recalculate_hashes_from(node_index)
 
@@ -175,54 +184,36 @@ class RatchetTree:
         self._recalculate_hashes_from(node_index)
 
     def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes:
-        """Compute parent hash binding of a leaf to current direct-path nodes (RFC 9420 ?7.9)."""
-        if self.n_leaves == 0:
+        """Parent hash of the leaf's next non-blank parent (RFC 9420 §7.9).
+
+        The value stored in a LeafNode is one hop, not a fresh root-to-leaf
+        chain:
+
+            parent_hash(leaf) = Hash(P.encryption_key || P.parent_hash ||
+                                     original_sibling_tree_hash(S))
+
+        P is the lowest non-blank ancestor and S is that ancestor's copath
+        child. P.parent_hash is the value stored on P. Recomputing every
+        ancestor from current keys disagrees once a later commit updates
+        those ancestors and leaves this leaf unmerged.
+        """
+        if self.n_leaves <= 1:
             return b""
-        leaf_node_index = leaf_index * 2
-        # Ensure hashes are current
+        leaf_node_index = int(leaf_index) * 2
         self._recalculate_hashes_from(leaf_node_index)
-
-        path = tree_math.direct_path(leaf_node_index, self.n_leaves)
-        parent_hash = b""
-
-        # Iterate from root down to the parent of the leaf
-        # Path excludes the leaf itself, so we append it for child lookup.
-        reversed_path = list(reversed(path))
-        path_nodes_down = reversed_path + [leaf_node_index]
-
-        # We process each node P in the path (which corresponds to reversed_path elements)
-        # using the next node in path_nodes_down as the child C.
-
-        for i, p_idx in enumerate(reversed_path):
-            node = self.get_node(p_idx)
-            child_idx = path_nodes_down[i + 1]
-
-            if not node.public_key:
-                # If parent is blank, parent_hash passes through?
-                # RFC 9420 ?7.9: "If the node at height h is blank, then the parent hash... is the same as the parent hash of the node at height h+1."
-                # effectively, we don't hash it, just keep the accumulator?
-                # or do we exclude it from the chain?
-                # "The parent hash... is defined as..."
-                # If node is blank, it has no `encryption_key`.
-                # If blank, we just continue with same parent_hash?
-                continue
-
-            # Compute ParentHashInput for this node P
-            # We need sibling of C
-            sibling_idx = tree_math.sibling(child_idx, self.n_leaves)
-            sibling_hash = self._compute_original_sibling_tree_hash(
-                parent_index=p_idx,
-                sibling_index=sibling_idx,
-            )
-
-            # ParentHashInput
-            phi = serialize_bytes(node.public_key)
-            phi += serialize_bytes(parent_hash)
-            phi += serialize_bytes(sibling_hash)
-
-            parent_hash = self._crypto_provider.hash(phi)
-
-        return parent_hash
+        root_idx = tree_math.root(self.n_leaves)
+        current = leaf_node_index
+        while current != root_idx:
+            try:
+                parent_idx = tree_math.parent(current, self.n_leaves)
+            except Exception:
+                return b""
+            parent = self.get_node(parent_idx)
+            if parent.public_key:
+                sibling_idx = tree_math.sibling(current, self.n_leaves)
+                return self._compute_parent_hash_of_parent_node(parent_idx, sibling_idx)
+            current = parent_idx
+        return b""
 
     def _compute_update_path_unmerged_leaves(
         self, child_index: int, excluded_leaf_pubkeys: set[bytes] | None = None
