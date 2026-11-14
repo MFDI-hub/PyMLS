@@ -5,7 +5,6 @@ This module provides functions to serialize and deserialize MLS core structures
 Used by the interop harness and by the API layer for handshake/application framing.
 """
 from __future__ import annotations
-from typing import List, Tuple
 import struct
 
 from ..messages.data_structures import (
@@ -64,14 +63,14 @@ def encode_commit_message(commit: Commit, signature: bytes) -> bytes:
     return updated_commit.serialize() + Signature(signature).serialize()
 
 
-def decode_commit_message(data: bytes) -> Tuple[Commit, bytes]:
+def decode_commit_message(data: bytes) -> tuple[Commit, bytes]:
     """Decode a Commit message from RFC 9420 §12.4 wire format.
 
     Parameters:
         data: Serialized Commit message bytes (Commit content followed by signature).
 
     Returns:
-        Tuple of (parsed Commit structure, signature bytes).
+        tuple of (parsed Commit structure, signature bytes).
     """
     commit = Commit.deserialize(data)
     commit_len = len(commit.serialize())
@@ -80,14 +79,14 @@ def decode_commit_message(data: bytes) -> Tuple[Commit, bytes]:
     return (commit, signature.value)
 
 
-def encode_proposals_message(proposals: List[Proposal], signature: bytes) -> bytes:
+def encode_proposals_message(proposals: list[Proposal], signature: bytes) -> bytes:
     """Encode a list of Proposal messages to RFC 9420 §12.4 wire format.
 
     Serializes proposals as a vector (uint16 count + opaque<V> per proposal).
     The signature parameter is ignored; it is kept for API compatibility.
 
     Parameters:
-        proposals: List of Proposal structures to serialize.
+        proposals: list of Proposal structures to serialize.
         signature: Ignored (kept for API compatibility).
 
     Returns:
@@ -101,21 +100,21 @@ def encode_proposals_message(proposals: List[Proposal], signature: bytes) -> byt
     return data
 
 
-def decode_proposals_message(data: bytes) -> Tuple[List[Proposal], bytes]:
+def decode_proposals_message(data: bytes) -> tuple[list[Proposal], bytes]:
     """Decode a list of Proposal messages from RFC 9420 §12.4 wire format.
 
     Parameters:
         data: Serialized proposals vector bytes (uint16 count + opaque<V> per proposal).
 
     Returns:
-        Tuple of (parsed list of Proposal structures, empty signature bytes).
+        tuple of (parsed list of Proposal structures, empty signature bytes).
     """
     if len(data) < 2:
         return ([], b"")
     
     num_proposals, = struct.unpack("!H", data[:2])
     rest = data[2:]
-    proposals: List[Proposal] = []
+    proposals: list[Proposal] = []
     
     for _ in range(num_proposals):
         proposal_bytes, rest = deserialize_bytes(rest)

@@ -5,9 +5,10 @@ signing), KeyPackage (with init key and extensions), and ref-hash computation
 for tree and proposal references.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional, Union
 import struct
 
 from .data_structures import (
@@ -34,7 +35,7 @@ from ..extensions.extensions import (
 
 
 def _prepare_extensions_for_signing(
-    exts: Optional[list[Extension]],
+    exts: list[Extension] | None,
     capabilities: bytes,
     grease_payload: bytes,
 ) -> list[Extension]:
@@ -81,14 +82,14 @@ class LeafNode:
 
     encryption_key: bytes
     signature_key: bytes
-    credential: Optional[Credential]
     capabilities: bytes
+    credential: Credential | None = None
     leaf_node_source: LeafNodeSource = LeafNodeSource.KEY_PACKAGE
     lifetime_not_before: int = 0  # uint64, only for KEY_PACKAGE
     lifetime_not_after: int = 0  # uint64, only for KEY_PACKAGE
     parent_hash: bytes = b""  # opaque<V>, only for UPDATE/COMMIT
-    extensions: list[Extension] = None  # type: ignore[assignment]
-    signature: Union[Signature, bytes] = b""
+    extensions: list[Extension] | None = None
+    signature: Signature | bytes = b""
 
     # RFC 9420 §7.2:
     # select (LeafNode.leaf_node_source) {
@@ -125,7 +126,7 @@ class LeafNode:
         return data
 
     def tbs_serialize(
-        self, group_id: Optional[bytes] = None, leaf_index: Optional[int] = None
+        self, group_id: bytes | None = None, leaf_index: int | None = None
     ) -> bytes:
         """Encode LeafNodeTBS (everything except signature) for signing."""
         data = serialize_bytes(self.encryption_key)
@@ -225,12 +226,12 @@ class LeafNode:
     def validate(
         self,
         crypto_provider,
-        group_id: Optional[bytes] = None,
-        leaf_index: Optional[int] = None,
-        current_time: Optional[int] = None,
+        group_id: bytes | None = None,
+        leaf_index: int | None = None,
+        current_time: int | None = None,
         group_context=None,
-        expected_source: Optional[LeafNodeSource] = None,
-        replacing_encryption_key: Optional[bytes] = None,
+        expected_source: LeafNodeSource | None = None,
+        replacing_encryption_key: bytes | None = None,
     ) -> None:
         """Verify LeafNode validity according to RFC 9420 §7.3.
 
@@ -390,8 +391,8 @@ class KeyPackage:
         KEM.DHKEM_X25519_HKDF_SHA256, KDF.HKDF_SHA256, AEAD.AES_128_GCM
     )
     init_key: bytes = b""  # HPKE init key (distinct from leaf_node.encryption_key)
-    leaf_node: Optional[LeafNode] = None
-    extensions: list[Extension] = None  # type: ignore[assignment]
+    leaf_node: LeafNode | None = None
+    extensions: list[Extension] | None = None
     signature: Signature = Signature(b"")
 
     def serialize(self) -> bytes:
@@ -436,12 +437,13 @@ class KeyPackage:
         return out
 
     @classmethod
-    def deserialize(cls, data: bytes) -> "KeyPackage":
-        """
-        Parse KeyPackage from bytes.
-        RFC format only:
-          uint16(version) || uint16(suite_id) || opaque(init_key) ||
-          LeafNode || opaque(extensions) || opaque(signature)
+    def deserialize_partial(cls, data: bytes) -> tuple["KeyPackage", int]:
+        """Parse one RFC 9420 KeyPackage and return (KeyPackage, bytes_consumed).
+
+        KeyPackage is self-delimiting: its signature is opaque<V>. Callers that
+        embed a KeyPackage (Add proposal, PublicMessage) must use this so the
+        following FramedContentAuthData.signature is not treated as part of
+        the KeyPackage.
         """
         if len(data) < 4:
             raise ValueError(
@@ -478,24 +480,34 @@ class KeyPackage:
         if not rest:
             raise ValueError("truncated KeyPackage: missing signature")
         sig_bytes, rest = deserialize_bytes(rest)  # opaque signature<V>
-        if rest:
-            raise ValueError("trailing bytes after KeyPackage signature")
         signature = Signature.deserialize(sig_bytes)
-        return cls(
-            version=version,
-            cipher_suite=cipher_suite,
-            init_key=init_key,
-            leaf_node=leaf_node,
-            extensions=extensions,
-            signature=signature,
+        consumed_total = len(data) - len(rest)
+        return (
+            cls(
+                version=version,
+                cipher_suite=cipher_suite,
+                init_key=init_key,
+                leaf_node=leaf_node,
+                extensions=extensions,
+                signature=signature,
+            ),
+            consumed_total,
         )
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> "KeyPackage":
+        """Parse a standalone KeyPackage (entire buffer)."""
+        kp, consumed = cls.deserialize_partial(data)
+        if consumed != len(data):
+            raise ValueError("trailing bytes after KeyPackage signature")
+        return kp
 
     def verify(
         self,
         crypto_provider,
         group_context=None,
-        current_time: Optional[int] = None,
-        seen_init_keys: Optional[set] = None,
+        current_time: int | None = None,
+        seen_init_keys: set | None = None,
     ) -> None:
         """Verify the KeyPackage signature and validity (RFC 9420 §10.1).
 
@@ -618,7 +630,7 @@ class KeyPackage:
                 # Check KeyPackage extensions
                 if self.extensions:
                     for ext in self.extensions:
-                        if (ext.ext_type & 0x0A0A) == 0x0A0A:
+                        if is_grease_value(ext.ext_type):
                             continue
                         if ext.ext_type not in supported_exts:
                             raise InvalidSignatureError(
@@ -628,7 +640,7 @@ class KeyPackage:
                 # Check LeafNode extensions
                 if self.leaf_node.extensions:
                     for ext in self.leaf_node.extensions:
-                        if (ext.ext_type & 0x0A0A) == 0x0A0A:
+                        if is_grease_value(ext.ext_type):
                             continue
                         if ext.ext_type not in supported_exts:
                             raise InvalidSignatureError(

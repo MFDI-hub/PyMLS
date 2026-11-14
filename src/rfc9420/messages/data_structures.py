@@ -1,9 +1,10 @@
 """Core protocol data structures and (de)serialization helpers for MLS."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import IntEnum
 from abc import ABC, abstractmethod
-from typing import Optional
 import struct
 
 from ..codec.tls import (
@@ -360,12 +361,11 @@ class AddProposal(Proposal):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "AddProposal":
-        """Construct from raw KeyPackage bytes."""
+        """Parse an embedded KeyPackage from the front of data (RFC Add)."""
         from .key_packages import KeyPackage
 
-        kp = KeyPackage.deserialize(data)
-        length = len(kp.serialize())
-        return cls(data[:length])
+        _kp, consumed = KeyPackage.deserialize_partial(data)
+        return cls(data[:consumed])
 
 
 @dataclass(frozen=True)
@@ -451,10 +451,10 @@ class PreSharedKeyID:
     """
 
     psktype: PSKType
-    psk_id: Optional[bytes] = None  # for external
-    usage: Optional[ResumptionPSKUsage] = None  # for resumption
-    psk_group_id: Optional[bytes] = None  # for resumption
-    psk_epoch: Optional[int] = None  # for resumption
+    psk_id: bytes | None = None  # for external
+    usage: ResumptionPSKUsage | None = None  # for resumption
+    psk_group_id: bytes | None = None  # for resumption
+    psk_epoch: int | None = None  # for resumption
     psk_nonce: bytes = b""
 
     def serialize(self) -> bytes:
@@ -657,8 +657,8 @@ class ProposalOrRef:
     """Union of a Proposal by-value or a Proposal reference (opaque bytes)."""
 
     typ: ProposalOrRefType
-    proposal: Optional[Proposal] = None
-    reference: Optional[bytes] = None
+    proposal: Proposal | None = None
+    reference: bytes | None = None
 
     def serialize(self) -> bytes:
         """Encode as uint8 typ || payload."""
@@ -837,9 +837,10 @@ class Commit:
         optional<UpdatePath> path;
     } Commit;
     """
-
-    path: Optional[UpdatePath]
+    
     proposals: list[ProposalOrRef]
+    path: UpdatePath | None = None
+
 
     def serialize(self) -> bytes:
         """Encode proposals vector<V> then optional path."""
@@ -899,7 +900,7 @@ class Commit:
         elif present != 0:
             raise RFC9420Error("Invalid path presence byte")
 
-        return cls(path, proposals)
+        return cls(proposals, path)
 
 
 @dataclass(frozen=True)
@@ -1119,9 +1120,9 @@ class GroupSecrets:
     """
 
     joiner_secret: bytes
-    psk_secret: Optional[bytes] = None  # kept for legacy but NOT serialized; use psks
-    path_secret: Optional[bytes] = None  # committer's path_secret for fast-join (RFC §12.4.3.1)
-    psks: "Optional[list[PreSharedKeyID]]" = None
+    psk_secret: bytes | None = None  # kept for legacy but NOT serialized; use psks
+    path_secret: bytes | None = None  # committer's path_secret for fast-join (RFC §12.4.3.1)
+    psks: list[PreSharedKeyID] | None = None
 
     def serialize(self) -> bytes:
         """Encode GroupSecrets per RFC 9420 §12.4.3.1."""
@@ -1150,7 +1151,7 @@ class GroupSecrets:
                 f"Invalid optional value presence octet for path_secret: {present} (RFC 9420 §2.1.1: must be 0 or 1)"
             )
 
-        path_secret: Optional[bytes] = None
+        path_secret: bytes | None = None
         if present == 1:
             if not rest:
                 raise RFC9420Error("GroupSecrets path_secret present but value missing")

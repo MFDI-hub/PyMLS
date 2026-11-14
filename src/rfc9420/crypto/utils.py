@@ -7,20 +7,16 @@ from __future__ import annotations
 
 
 def secure_wipe(buf: bytearray) -> None:
-    """
-    Overwrite the provided bytearray with zeros in-place.
+    """Overwrite this bytearray with zeros in place.
 
-    This function attempts to clear sensitive data from memory. Note that
-    in Python, memory management is handled by the interpreter, so this
-    provides best-effort clearing but cannot guarantee complete erasure.
+    Only the object passed in is modified. ``secure_wipe(bytearray(some_bytes))``
+    clears a temporary copy and leaves ``some_bytes`` unchanged, because
+    ``bytes`` objects cannot be overwritten. Callers that need a secret to
+    become unreadable should drop the reference (assign ``b""``) as well.
+    CPython may still retain the previous allocation until garbage collection.
 
     Args:
         buf: The bytearray to wipe. Modified in-place.
-
-    Example:
-        >>> key = bytearray(b"secret_key_data")
-        >>> secure_wipe(key)
-        >>> # key now contains zeros
     """
     for i in range(len(buf)):
         buf[i] = 0

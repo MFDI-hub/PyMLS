@@ -5,8 +5,6 @@ the rfc9180 package. MLS ciphersuite KEM/KDF/AEAD are rfc9180 KEMID/KDFID/AEADID
 """
 from __future__ import annotations
 
-from typing import Tuple
-
 from rfc9180 import AEADID, HPKE, KDFID, KEMID
 from rfc9180.exceptions import OpenError
 from cryptography.exceptions import InvalidTag
@@ -14,7 +12,7 @@ from cryptography.exceptions import InvalidTag
 from ...crypto.ciphersuites import AEAD, KDF, KEM
 
 
-def map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> Tuple[KEMID, KDFID, AEADID]:
+def map_hpke_enums(kem: KEM, kdf: KDF, aead: AEAD) -> tuple[KEMID, KDFID, AEADID]:
     """Return (KEM, KDF, AEAD) as rfc9180 identifiers.
 
     MLS ciphersuites use rfc9180 KEMID/KDFID/AEADID, so this is a pass-through.
@@ -30,7 +28,7 @@ def hpke_seal(
     info: bytes,
     aad: bytes,
     plaintext: bytes,
-) -> Tuple[bytes, bytes]:
+) -> tuple[bytes, bytes]:
     """HPKE base mode seal (encrypt for recipient).
 
     Parameters:
@@ -58,7 +56,7 @@ def hpke_seal_and_export(
     plaintext: bytes,
     export_label: bytes,
     export_length: int,
-) -> Tuple[bytes, bytes, bytes]:
+) -> tuple[bytes, bytes, bytes]:
     """HPKE base mode seal and export a secret from the sender context (RFC 9420 §8.3).
 
     Used when the sender (e.g. external joiner) must use the exported value as

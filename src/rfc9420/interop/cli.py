@@ -1,6 +1,5 @@
 """Command-line utilities for encoding/decoding MLS messages for interop."""
 from __future__ import annotations
-from typing import Optional
 
 import argparse
 from .harness import (
@@ -41,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Entry point for the CLI; returns process exit code."""
     p = build_parser()
     args = p.parse_args(argv)

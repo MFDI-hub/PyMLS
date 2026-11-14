@@ -1,7 +1,7 @@
 """Backend contract and factory for ratchet tree representations."""
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Protocol, Set, TYPE_CHECKING
+from typing import Any, Callable, Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...crypto.crypto_provider import CryptoProvider
@@ -36,14 +36,16 @@ class RatchetTreeBackend(Protocol):
         committer_index: int,
         new_leaf_node: "LeafNode",
         group_context_bytes: bytes,
-        excluded_leaf_pubkeys: Optional[Set[bytes]] = None,
+        excluded_leaf_pubkeys: set[bytes] | None = None,
+        signing_private_key: bytes | None = None,
+        group_id: bytes | None = None,
     ) -> tuple["UpdatePath", bytes, dict]: ...
     def merge_update_path(
         self,
         update_path: "UpdatePath",
         committer_index: int,
         group_context_bytes: bytes,
-        excluded_leaf_pubkeys: Optional[Set[bytes]] = None,
+        excluded_leaf_pubkeys: set[bytes] | None = None,
     ) -> bytes: ...
     def _compute_parent_hash_for_leaf(self, leaf_index: int) -> bytes: ...
     def verify_parent_hash_chains(self) -> None: ...

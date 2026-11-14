@@ -361,7 +361,10 @@ def _run_messages_vector(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
         op = step.get("op", "").lower()
         if op == "protect":
             data = h(step.get("data", ""))
-            msg = group.protect(data)
+            signing_key = h(step["signing_key"]) if step.get("signing_key") else b""
+            if not signing_key:
+                raise AssertionError("protect step requires signing_key (RFC 9420 §6.1)")
+            msg = group.protect(data, signing_key)
             exp = step.get("expect")
             if exp is not None:
                 _assert_bytes_equal(h(exp), msg.serialize(), "mls_message")
@@ -435,8 +438,19 @@ def run_key_schedule_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) ->
 
     crypto.set_ciphersuite(int(vec["cipher_suite"]))
     init_secret = h(vec["initial_init_secret"])
+    group_id = h(vec["group_id"])
+    suite_id = int(vec["cipher_suite"])
     epochs: List[Dict[str, Any]] = vec["epochs"]
     for epoch_idx, ep in enumerate(epochs):
+        constructed = GroupContext(
+            group_id=group_id,
+            epoch=epoch_idx,
+            tree_hash=h(ep["tree_hash"]),
+            confirmed_transcript_hash=h(ep["confirmed_transcript_hash"]),
+            extensions=b"",
+            cipher_suite_id=suite_id,
+        )
+        _assert_bytes_equal(h(ep["group_context"]), constructed.serialize(), "group_context")
         gc = GroupContext.deserialize(h(ep["group_context"]))
         commit_secret = h(ep["commit_secret"])
         psk_secret = h(ep["psk_secret"]) if ep.get("psk_secret") else None
@@ -456,17 +470,16 @@ def run_key_schedule_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) ->
         _assert_bytes_equal(h(ep["membership_key"]), ks.membership_key, "membership_key")
         _assert_bytes_equal(h(ep["resumption_psk"]), ks.resumption_psk, "resumption_psk")
         _assert_bytes_equal(h(ep["init_secret"]), ks.init_secret, "init_secret")
+        if ep.get("external_pub"):
+            _priv, pub = crypto.derive_key_pair(ks.external_secret)
+            _assert_bytes_equal(h(ep["external_pub"]), pub, "external_pub")
         if "exporter" in ep:
             exp = ep["exporter"]
             label_bytes = (
                 exp["label"].encode("utf-8") if isinstance(exp["label"], str) else h(exp["label"])
             )
             context_bytes = h(exp["context"])
-            context_hash = crypto.hash(context_bytes)
-            derived = crypto.derive_secret(ks.exporter_secret, label_bytes)
-            got_export = crypto.expand_with_label(
-                derived, b"exported", context_hash, int(exp["length"])
-            )
+            got_export = ks.export(label_bytes, context_bytes, int(exp["length"]))
             _assert_bytes_equal(h(exp["secret"]), got_export, "exporter secret")
         init_secret = ks.init_secret
 
@@ -545,112 +558,159 @@ def run_crypto_basics_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -
         ctx = int(r["generation"]).to_bytes(4, "big")
         out = crypto.expand_with_label(h(r["secret"]), _label(r["label"]), ctx, int(r["length"]))
         _assert_bytes_equal(h(r["out"]), out, "derive_tree_secret out")
-    # Only run when our crypto can load the vector's key format (e.g. DER/PEM); skip on raw/unsupported
     if "sign_with_label" in vec:
-        try:
-            r = vec["sign_with_label"]
-            sig = crypto.sign_with_label(h(r["priv"]), _label(r["label"]), h(r["content"]))
-            _assert_bytes_equal(h(r["signature"]), sig, "sign_with_label signature")
-            crypto.verify_with_label(h(r["pub"]), _label(r["label"]), h(r["content"]), sig)
-        except Exception:
-            pass  # skip when key format unsupported or ciphersuite doesn't support (no assertion = no false positive)
+        r = vec["sign_with_label"]
+        crypto.verify_with_label(h(r["pub"]), _label(r["label"]), h(r["content"]), h(r["signature"]))
+        own_sig = crypto.sign_with_label(h(r["priv"]), _label(r["label"]), h(r["content"]))
+        crypto.verify_with_label(h(r["pub"]), _label(r["label"]), h(r["content"]), own_sig)
     if "encrypt_with_label" in vec:
-        try:
-            r = vec["encrypt_with_label"]
-            from rfc9420.crypto.hpke_labels import (
-                encrypt_with_label as ewl,
-                decrypt_with_label as dwl,
-            )
+        from rfc9420.crypto.hpke_labels import (
+            encrypt_with_label as ewl,
+            decrypt_with_label as dwl,
+        )
 
-            kem_out_vec = h(r["kem_output"])
-            ct_vec = h(r["ciphertext"])
-            plaintext_vec = h(r["plaintext"])
-            pt = dwl(
-                crypto, h(r["priv"]), kem_out_vec, _label(r["label"]), h(r["context"]), b"", ct_vec
-            )
-            assert pt == plaintext_vec, "encrypt_with_label decrypt mismatch"
-            kem_out, ct = ewl(
-                crypto, h(r["pub"]), _label(r["label"]), h(r["context"]), b"", plaintext_vec
-            )
-            pt2 = dwl(crypto, h(r["priv"]), kem_out, _label(r["label"]), h(r["context"]), b"", ct)
-            _assert_bytes_equal(plaintext_vec, pt2, "encrypt_with_label round-trip")
-        except Exception:
-            pass  # skip when key/format unsupported (no assertion = no false positive)
+        r = vec["encrypt_with_label"]
+        kem_out_vec = h(r["kem_output"])
+        ct_vec = h(r["ciphertext"])
+        plaintext_vec = h(r["plaintext"])
+        pt = dwl(
+            crypto, h(r["priv"]), kem_out_vec, _label(r["label"]), h(r["context"]), b"", ct_vec
+        )
+        assert pt == plaintext_vec, "encrypt_with_label decrypt mismatch"
+        kem_out, ct = ewl(
+            crypto, h(r["pub"]), _label(r["label"]), h(r["context"]), b"", plaintext_vec
+        )
+        pt2 = dwl(crypto, h(r["priv"]), kem_out, _label(r["label"]), h(r["context"]), b"", ct)
+        _assert_bytes_equal(plaintext_vec, pt2, "encrypt_with_label round-trip")
+
+
+def _roundtrip_mls_inner(data: bytes, expected_wire_format: int, label: str) -> Any:
+    """Decode MLSMessage, parse the inner TLS struct, and re-encode to the vector bytes."""
+    from rfc9420.messages.messages import MLSMessage
+
+    msg = MLSMessage.deserialize(data)
+    assert int(msg.wire_format) == int(expected_wire_format), (
+        f"{label}: wire_format {msg.wire_format} != {expected_wire_format}"
+    )
+    inner = msg.get_parsed_content()
+    rebuilt = MLSMessage(msg.version, msg.wire_format, inner.serialize())
+    _assert_bytes_equal(data, rebuilt.serialize(), f"{label} re-encode")
+    return inner
 
 
 def run_messages_vector_spec(vec: Dict[str, Any], _crypto: CryptoProvider) -> None:
-    """
-    Verify messages: decode each hex field with the appropriate codec and re-encode to same bytes.
-    For ratchet_tree, group_secrets, proposals, commit: on decode failure we skip that key only
-    (no assertion run for that field). Passing does not guarantee those fields; only keys that
-    decode successfully are asserted for re-encode. This avoids false positives from wrong bytes
-    only when we never compare; decode success always leads to assert serialize() == data.
-    """
+    """Decode each messages.json field as the named RFC 9420 struct and re-encode."""
 
     def h(x: str) -> bytes:
         return bytes.fromhex(x)
 
-    from rfc9420.messages.messages import MLSMessage
+    from rfc9420.messages.messages import (
+        WireFormat,
+        ContentType,
+        AuthenticatedContent,
+        MLSCiphertext,
+    )
+    from rfc9420.messages.data_structures import (
+        Welcome,
+        GroupInfo,
+        GroupSecrets,
+        AddProposal,
+        UpdateProposal,
+        RemoveProposal,
+        PreSharedKeyProposal,
+        ReInitProposal,
+        ExternalInitProposal,
+        GroupContextExtensionsProposal,
+        Commit,
+    )
+    from rfc9420.messages.key_packages import KeyPackage
+    from rfc9420.protocol.ratchet_tree import RatchetTree
 
-    mls_message_keys = ("mls_welcome", "mls_group_info", "mls_key_package")
-    for key in mls_message_keys:
-        if key not in vec or not vec[key]:
-            continue
-        data = h(vec[key])
-        _roundtrip_check(data, MLSMessage.deserialize, lambda m: m.serialize(), key)
+    inner = _roundtrip_mls_inner(h(vec["mls_welcome"]), WireFormat.WELCOME, "mls_welcome")
+    assert isinstance(inner, Welcome), f"mls_welcome inner {type(inner)}"
 
-    from rfc9420.messages.data_structures import GroupSecrets, Proposal, Commit
+    inner = _roundtrip_mls_inner(h(vec["mls_group_info"]), WireFormat.GROUP_INFO, "mls_group_info")
+    assert isinstance(inner, GroupInfo), f"mls_group_info inner {type(inner)}"
 
-    if "ratchet_tree" in vec and vec["ratchet_tree"]:
-        try:
-            from rfc9420.protocol.ratchet_tree import RatchetTree
+    inner = _roundtrip_mls_inner(
+        h(vec["mls_key_package"]), WireFormat.KEY_PACKAGE, "mls_key_package"
+    )
+    assert isinstance(inner, KeyPackage), f"mls_key_package inner {type(inner)}"
 
-            data = h(vec["ratchet_tree"])
-            tree = RatchetTree(_crypto)
-            tree.load_tree_from_welcome_bytes(data)
-            _assert_bytes_equal(data, tree.serialize_tree_for_welcome(), "ratchet_tree re-encode")
-        except Exception:
-            pass
-    if "group_secrets" in vec and vec["group_secrets"]:
-        try:
-            data = h(vec["group_secrets"])
-            gs = GroupSecrets.deserialize(data)
-            _assert_bytes_equal(data, gs.serialize(), "group_secrets re-encode")
-        except Exception:
-            pass
-    for key in (
-        "add_proposal",
-        "update_proposal",
-        "remove_proposal",
-        "pre_shared_key_proposal",
-        "re_init_proposal",
-        "external_init_proposal",
-        "group_context_extensions_proposal",
-    ):
-        if key not in vec or not vec[key]:
-            continue
-        try:
-            data = h(vec[key])
-            _roundtrip_check(data, Proposal.deserialize, lambda p: p.serialize(), key)
-        except Exception:
-            pass
-    if "commit" in vec and vec["commit"]:
-        try:
-            data = h(vec["commit"])
-            _roundtrip_check(data, Commit.deserialize, lambda c: c.serialize(), "commit")
-        except Exception:
-            pass
+    if vec.get("ratchet_tree"):
+        data = h(vec["ratchet_tree"])
+        tree = RatchetTree(_crypto)
+        tree.load_full_tree_from_welcome_bytes(data)
+        _assert_bytes_equal(data, tree.serialize_full_tree_for_welcome(), "ratchet_tree re-encode")
 
-    for key in (
+    if vec.get("group_secrets"):
+        data = h(vec["group_secrets"])
+        gs = GroupSecrets.deserialize(data)
+        _assert_bytes_equal(data, gs.serialize(), "group_secrets re-encode")
+
+    # messages.json stores the select-arm structs (Add, Update, ...) without ProposalType.
+    add_data = h(vec["add_proposal"])
+    add = AddProposal.deserialize(add_data)
+    _assert_bytes_equal(add_data, add._serialize_content(), "add_proposal re-encode")
+
+    upd_data = h(vec["update_proposal"])
+    upd = UpdateProposal.deserialize(upd_data)
+    _assert_bytes_equal(upd_data, upd._serialize_content(), "update_proposal re-encode")
+
+    rem_data = h(vec["remove_proposal"])
+    rem = RemoveProposal.deserialize(rem_data)
+    _assert_bytes_equal(rem_data, rem._serialize_content(), "remove_proposal re-encode")
+
+    psk_data = h(vec["pre_shared_key_proposal"])
+    psk = PreSharedKeyProposal.deserialize(psk_data)
+    _assert_bytes_equal(psk_data, psk._serialize_content(), "pre_shared_key_proposal re-encode")
+
+    reinit_data = h(vec["re_init_proposal"])
+    reinit = ReInitProposal.deserialize(reinit_data)
+    _assert_bytes_equal(reinit_data, reinit._serialize_content(), "re_init_proposal re-encode")
+
+    ext_data = h(vec["external_init_proposal"])
+    ext = ExternalInitProposal.deserialize(ext_data)
+    _assert_bytes_equal(ext_data, ext._serialize_content(), "external_init_proposal re-encode")
+
+    gce_data = h(vec["group_context_extensions_proposal"])
+    gce = GroupContextExtensionsProposal.deserialize(gce_data)
+    _assert_bytes_equal(
+        gce_data, gce._serialize_content(), "group_context_extensions_proposal re-encode"
+    )
+
+    commit_data = h(vec["commit"])
+    commit = Commit.deserialize(commit_data)
+    _assert_bytes_equal(commit_data, commit.serialize(), "commit re-encode")
+
+    pub_app = _roundtrip_mls_inner(
+        h(vec["public_message_application"]),
+        WireFormat.PUBLIC_MESSAGE,
         "public_message_application",
+    )
+    assert isinstance(pub_app, AuthenticatedContent)
+    assert pub_app.tbs.framed_content.content_type == ContentType.APPLICATION
+
+    pub_prop = _roundtrip_mls_inner(
+        h(vec["public_message_proposal"]),
+        WireFormat.PUBLIC_MESSAGE,
         "public_message_proposal",
+    )
+    assert isinstance(pub_prop, AuthenticatedContent)
+    assert pub_prop.tbs.framed_content.content_type == ContentType.PROPOSAL
+
+    pub_commit = _roundtrip_mls_inner(
+        h(vec["public_message_commit"]),
+        WireFormat.PUBLIC_MESSAGE,
         "public_message_commit",
-        "private_message",
-    ):
-        if key not in vec or not vec[key]:
-            continue
-        data = h(vec[key])
-        _roundtrip_check(data, MLSMessage.deserialize, lambda m: m.serialize(), key)
+    )
+    assert isinstance(pub_commit, AuthenticatedContent)
+    assert pub_commit.tbs.framed_content.content_type == ContentType.COMMIT
+
+    priv = _roundtrip_mls_inner(
+        h(vec["private_message"]), WireFormat.PRIVATE_MESSAGE, "private_message"
+    )
+    assert isinstance(priv, MLSCiphertext)
 
 
 def run_transcript_hashes_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
@@ -793,6 +853,14 @@ def _run_welcome_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProvider) -
         b"GroupInfoTBS",
         group_info.tbs_serialize(),
         group_info.signature.value,
+    )
+
+    ks = KeySchedule.from_joiner_secret(joiner_secret, psk_secret, group_info.group_context, crypto)
+    validate_confirmation_tag(
+        crypto,
+        ks.confirmation_key,
+        group_info.group_context.confirmed_transcript_hash,
+        group_info.confirmation_tag,
     )
 
 
@@ -991,8 +1059,6 @@ def _run_treekem_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProvider) -
     ratchet_bytes = h(vec["ratchet_tree"])
     tree.load_full_tree_from_welcome_bytes(ratchet_bytes)
 
-    # 1. Verify leaf_private path_secrets are consistent with ratchet_tree where applicable.
-    # Keep strict checks only where RFC-consistent for the provided public state.
     for lp in vec.get("leaves_private", []):
         for ps in lp.get("path_secrets", []):
             node_index = int(ps["node"])
@@ -1000,32 +1066,23 @@ def _run_treekem_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProvider) -
             node_secret = crypto.derive_secret(path_secret, b"node")
             _priv, pub = crypto.derive_key_pair(node_secret)
             node = tree.get_node(node_index)
-            if node.public_key is None:
-                continue
-            if node.public_key != pub:
-                # Some vectors carry private state that does not correspond to this
-                # specific public ratchet_tree snapshot; avoid false negatives.
-                continue
+            assert node.public_key is not None, (
+                f"leaves_private path_secret node {node_index} is blank in ratchet_tree"
+            )
+            _assert_bytes_equal(node.public_key, pub, f"leaves_private node {node_index} public key")
 
-    # 2. Verify UpdatePath public keys drive tree_hash_after with the same merge
-    # semantics used by the implementation. For known divergent vector encodings,
-    # require that at least one update_path matches.
-    matched_update_paths = 0
-    for up_entry in vec.get("update_paths", []):
+    for up_i, up_entry in enumerate(vec.get("update_paths") or []):
         sender = int(up_entry["sender"])
         update_path = UpdatePath.deserialize(h(up_entry["update_path"]))
 
         work_tree = RatchetTree(crypto)
         work_tree.load_full_tree_from_welcome_bytes(ratchet_bytes)
         work_tree.merge_update_path_public_only(update_path, sender)
-
-        exp_tree_hash_after = h(up_entry["tree_hash_after"])
-        got_tree_hash_after = work_tree.calculate_tree_hash()
-        if got_tree_hash_after == exp_tree_hash_after:
-            matched_update_paths += 1
-
-    if vec.get("update_paths"):
-        assert matched_update_paths > 0, "TreeKEM: no update_path produced expected tree_hash_after"
+        _assert_bytes_equal(
+            h(up_entry["tree_hash_after"]),
+            work_tree.calculate_tree_hash(),
+            f"update_paths[{up_i}].tree_hash_after",
+        )
 
 
 def run_psk_secret_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
@@ -1051,12 +1108,42 @@ def run_psk_secret_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -> N
 
 
 def run_message_protection_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
-    """Run message-protection vector: verify we can unprotect PublicMessage and PrivateMessage."""
+    """Verify message-protection.json per mls-implementations/test-vectors.md."""
 
     def h(x: str) -> bytes:
         return bytes.fromhex(x)
 
-    crypto.set_ciphersuite(int(vec["cipher_suite"]))
+    from rfc9420.messages.messages import (
+        MLSMessage,
+        WireFormat,
+        ContentType,
+        unprotect_content_handshake,
+        unprotect_content_application,
+        protect_content_handshake,
+        protect_content_application,
+        sign_authenticated_content,
+        attach_membership_tag,
+        verify_plaintext,
+        MLSPlaintext,
+    )
+    from rfc9420.messages.data_structures import SenderType
+    from rfc9420.backends.crypto.default_rand import DefaultRandProvider
+
+    suite_id = int(vec["cipher_suite"])
+    crypto.set_ciphersuite(suite_id)
+    gc = GroupContext(
+        group_id=h(vec["group_id"]),
+        epoch=int(vec["epoch"]),
+        tree_hash=h(vec["tree_hash"]),
+        confirmed_transcript_hash=h(vec["confirmed_transcript_hash"]),
+        extensions=b"",
+        cipher_suite_id=suite_id,
+    )
+    gc_bytes = gc.serialize()
+    membership_key = h(vec["membership_key"])
+    sig_pub = h(vec["signature_pub"])
+    sig_priv = h(vec["signature_priv"])
+    sender_leaf = 1
 
     class MockKeySchedule:
         def __init__(self, sds: bytes, mk: bytes, cp: CryptoProvider):
@@ -1074,81 +1161,146 @@ def run_message_protection_vector_spec(vec: Dict[str, Any], crypto: CryptoProvid
                 self.sender_data_secret, b"nonce", sample, self.crypto_provider.aead_nonce_size()
             )
 
-    ks = MockKeySchedule(h(vec["sender_data_secret"]), h(vec["membership_key"]), crypto)
-    # Use n_leaves from vector if present; otherwise default 2 for initial SecretTree.
-    vector_n_leaves = vec.get("n_leaves")
-    if vector_n_leaves is not None:
-        n_leaves_candidates = [int(vector_n_leaves)]
-    else:
-        n_leaves_candidates = list(range(1, 33))
-    st = SecretTree(h(vec["encryption_secret"]), crypto, n_leaves=n_leaves_candidates[0])
+    ks = MockKeySchedule(h(vec["sender_data_secret"]), membership_key, crypto)
 
-    from rfc9420.messages.messages import (
-        MLSMessage,
-        WireFormat,
-        unprotect_content_handshake,
-        unprotect_content_application,
-    )
+    def _fresh_tree() -> SecretTree:
+        return SecretTree(h(vec["encryption_secret"]), crypto, n_leaves=2)
 
-    for msg_type in ["proposal", "commit", "application"]:
-        plain_hex = vec.get(msg_type)
-        if not plain_hex:
-            continue
+    def _unprotect_priv(msg_type: str, ciphertext_obj: Any) -> bytes:
+        st = _fresh_tree()
+        if msg_type == "application":
+            _sender, body, _auth = unprotect_content_application(ciphertext_obj, ks, st, crypto)
+        else:
+            _sender, body, _auth = unprotect_content_handshake(ciphertext_obj, ks, st, crypto)
+        return body
 
-        expected_body = h(plain_hex)
+    content_types = {
+        "proposal": ContentType.PROPOSAL,
+        "commit": ContentType.COMMIT,
+        "application": ContentType.APPLICATION,
+    }
 
-        # 1. Test PrivateMessage (unprotect)
-        priv_hex = vec.get(f"{msg_type}_priv")
-        if priv_hex:
-            msg_priv = MLSMessage.deserialize(h(priv_hex))
-            assert msg_priv.wire_format == WireFormat.PRIVATE_MESSAGE
-            ciphertext_obj = msg_priv.get_parsed_content()
+    for msg_type in ("proposal", "commit", "application"):
+        expected_body = h(vec[msg_type])
+        ct = content_types[msg_type]
 
-            # SecretTree derivations depend on n_leaves; try vector n_leaves first, then bruteforce.
-            unprotected_body = None
-            last_err = None
-            for n_leaves in n_leaves_candidates:
-                st = SecretTree(h(vec["encryption_secret"]), crypto, n_leaves=n_leaves)
-                try:
-                    if msg_type == "application":
-                        sender, body, auth = unprotect_content_application(
-                            ciphertext_obj, ks, st, crypto
-                        )
-                    else:
-                        sender, body, auth = unprotect_content_handshake(
-                            ciphertext_obj, ks, st, crypto
-                        )
-                    unprotected_body = body
-                    break
-                except Exception as e:
-                    last_err = e
-
-            if unprotected_body is None:
-                raise last_err or Exception(f"Failed to decrypt {msg_type}_priv for any n_leaves")
-            _assert_bytes_equal(expected_body, unprotected_body, f"{msg_type}_priv unprotect")
-
-        # 2. Test PublicMessage
         pub_hex = vec.get(f"{msg_type}_pub")
-        if pub_hex:
+        if msg_type == "application":
+            raised = False
+            try:
+                sign_authenticated_content(
+                    group_id=gc.group_id,
+                    epoch=gc.epoch,
+                    sender_leaf_index=sender_leaf,
+                    authenticated_data=b"",
+                    content_type=ct,
+                    content=expected_body,
+                    signing_private_key=sig_priv,
+                    crypto=crypto,
+                    group_context=gc_bytes,
+                    wire_format=WireFormat.PUBLIC_MESSAGE,
+                    sender_type=SenderType.MEMBER,
+                )
+            except ValueError:
+                raised = True
+            assert raised, "application must not protect as PublicMessage (RFC 9420 §6.3.1)"
+        elif pub_hex:
             msg_pub = MLSMessage.deserialize(h(pub_hex))
             assert msg_pub.wire_format == WireFormat.PUBLIC_MESSAGE
             auth_content = msg_pub.get_parsed_content()
-
-            tbs = auth_content.tbs
             _assert_bytes_equal(
-                expected_body, tbs.framed_content.content, f"{msg_type}_pub content"
+                expected_body, auth_content.tbs.framed_content.content, f"{msg_type}_pub content"
             )
+            plaintext = MLSPlaintext(auth_content=auth_content)
+            verify_plaintext(plaintext, sig_pub, membership_key, crypto, group_context=gc_bytes)
 
-            try:
-                crypto.verify_with_label(
-                    h(vec["signature_pub"]),
-                    b"PublicMessageSignature",
-                    tbs.serialize(),
-                    auth_content.auth.signature.value,
-                )
-            except Exception:
-                # If verify_with_label is unsupported for the key type, we can skip
-                pass
+            protected = sign_authenticated_content(
+                group_id=gc.group_id,
+                epoch=gc.epoch,
+                sender_leaf_index=sender_leaf,
+                authenticated_data=auth_content.tbs.framed_content.authenticated_data,
+                content_type=ct,
+                content=expected_body,
+                signing_private_key=sig_priv,
+                crypto=crypto,
+                group_context=gc_bytes,
+                wire_format=WireFormat.PUBLIC_MESSAGE,
+                sender_type=SenderType.MEMBER,
+            )
+            protected = attach_membership_tag(protected, membership_key, crypto)
+            verify_plaintext(protected, sig_pub, membership_key, crypto, group_context=gc_bytes)
+
+        priv_hex = vec.get(f"{msg_type}_priv")
+        if not priv_hex:
+            continue
+        msg_priv = MLSMessage.deserialize(h(priv_hex))
+        assert msg_priv.wire_format == WireFormat.PRIVATE_MESSAGE
+        ciphertext_obj = msg_priv.get_parsed_content()
+        unprotected_body = _unprotect_priv(msg_type, ciphertext_obj)
+        _assert_bytes_equal(expected_body, unprotected_body, f"{msg_type}_priv unprotect")
+
+        st_send = _fresh_tree()
+        if msg_type == "application":
+            from rfc9420.codec.tls import write_opaque_varint
+            from rfc9420.messages.messages import sign_application_framed_content
+
+            content_prefixed = write_opaque_varint(expected_body)
+            sig = sign_application_framed_content(
+                gc.group_id,
+                gc.epoch,
+                sender_leaf,
+                ciphertext_obj.authenticated_data,
+                content_prefixed,
+                gc_bytes,
+                sig_priv,
+                crypto,
+            )
+            new_ct = protect_content_application(
+                gc.group_id,
+                gc.epoch,
+                sender_leaf,
+                ciphertext_obj.authenticated_data,
+                expected_body,
+                sig,
+                ks,  # type: ignore[arg-type]
+                st_send,
+                crypto,
+                rand_provider=DefaultRandProvider(),
+                pad_to=0,
+            )
+        else:
+            from rfc9420.messages.messages import sign_authenticated_content as sign_hs
+
+            pt = sign_hs(
+                group_id=gc.group_id,
+                epoch=gc.epoch,
+                sender_leaf_index=sender_leaf,
+                authenticated_data=ciphertext_obj.authenticated_data,
+                content_type=ct,
+                content=expected_body,
+                signing_private_key=sig_priv,
+                crypto=crypto,
+                group_context=gc_bytes,
+                wire_format=WireFormat.PRIVATE_MESSAGE,
+                sender_type=SenderType.MEMBER,
+            )
+            new_ct = protect_content_handshake(
+                gc.group_id,
+                gc.epoch,
+                sender_leaf,
+                ciphertext_obj.authenticated_data,
+                expected_body,
+                pt.auth_content.auth.signature,
+                ks,  # type: ignore[arg-type]
+                st_send,
+                crypto,
+                rand_provider=DefaultRandProvider(),
+                confirmation_tag=pt.auth_content.auth.confirmation_tag,
+                content_type=ct,
+                pad_to=0,
+            )
+        roundtrip = _unprotect_priv(msg_type, new_ct)
+        _assert_bytes_equal(expected_body, roundtrip, f"{msg_type}_priv re-protect")
 
 
 def run_passive_client_vector_spec(vec: Dict[str, Any], crypto: CryptoProvider) -> None:
@@ -1193,6 +1345,22 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
 
     # Decode key package and welcome
     kp = key_package_from_vector_bytes(h(vec["key_package"]))
+    if kp.leaf_node is None:
+        raise AssertionError("passive-client key_package missing leaf_node")
+    _assert_bytes_equal(
+        kp.leaf_node.signature_key,
+        crypto.signature_public_from_private(h(vec["signature_priv"])),
+        "signature_priv public",
+    )
+    for label, priv_hex, expected in (
+        ("encryption_priv", vec["encryption_priv"], kp.leaf_node.encryption_key),
+        ("init_priv", vec["init_priv"], kp.init_key),
+    ):
+        _assert_bytes_equal(
+            expected,
+            crypto.hpke_public_from_private(h(priv_hex)),
+            f"{label} public",
+        )
     welcome_msg = MLSMessage.deserialize(h(vec["welcome"]))
     welcome_obj = welcome_msg.get_parsed_content()
 
@@ -1211,18 +1379,27 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
 
     # Join group using Welcome and HPKE init_priv
     init_priv = h(vec["init_priv"])
+    ratchet_tree_hex = vec.get("ratchet_tree")
     group = MLSGroup.from_welcome(
         welcome=welcome_obj,
         hpke_private_key=init_priv,
         crypto_provider=crypto,
         key_package=kp,
         welcome_psk_resolver=welcome_psk_resolver,
+        encryption_private_key=h(vec["encryption_priv"]),
+        external_ratchet_tree=h(ratchet_tree_hex) if ratchet_tree_hex else None,
     )
 
     # If an explicit ratchet_tree is provided, load it to align with vector state.
-    ratchet_tree_hex = vec.get("ratchet_tree")
     if ratchet_tree_hex:
         from rfc9420.protocol.ratchet_tree_backend import create_tree_backend
+
+        priv_by_pub = {}
+        old_tree = group._ratchet_tree
+        for i in range(old_tree.node_width()):
+            node = old_tree.get_node(i)
+            if node.public_key and node.private_key:
+                priv_by_pub[node.public_key] = node.private_key
 
         rt_bytes = h(ratchet_tree_hex)
         backend = create_tree_backend(crypto, getattr(group, "_tree_backend_id", BACKEND_ARRAY))
@@ -1230,7 +1407,10 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
             backend.load_full_tree_from_welcome_bytes(rt_bytes)
         except Exception:
             backend.load_tree_from_welcome_bytes(rt_bytes)
-        # Replace group's ratchet tree backend with the one reconstructed from the vector.
+        for i in range(backend.node_width()):
+            node = backend.get_node(i)
+            if node.public_key in priv_by_pub:
+                node.private_key = priv_by_pub[node.public_key]
         group._ratchet_tree = backend  # type: ignore[attr-defined]
 
     # Verify initial epoch authenticator
@@ -1301,15 +1481,8 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
                 auth_content = msg.get_parsed_content()
                 plaintext = MLSPlaintext(auth_content=auth_content)
                 sender_index = auth_content.tbs.framed_content.sender.sender
-                try:
-                    group.process_commit(plaintext, sender_index)
-                    commit_processed = True
-                except CommitValidationError as e:
-                    # Keep passive-client vectors robust across tree encoding
-                    # differences that affect copath resolution cardinality.
-                    if "encrypted_path_secret count" in str(e) or "copath resolution" in str(e):
-                        break
-                    raise
+                group.process_commit(plaintext, sender_index)
+                commit_processed = True
             else:
                 ciphertext = msg.get_parsed_content()
                 sender_leaf, body, auth = unprotect_content_handshake(
@@ -1335,13 +1508,8 @@ def _run_passive_client_vector_spec_impl(vec: Dict[str, Any], crypto: CryptoProv
                 )
                 ac = AuthenticatedContent(tbs=tbs, auth=auth, membership_tag=None)
                 plaintext = MLSPlaintext(auth_content=ac)
-                try:
-                    group.process_commit(plaintext, sender_leaf)
-                    commit_processed = True
-                except CommitValidationError as e:
-                    if "encrypted_path_secret count" in str(e) or "copath resolution" in str(e):
-                        break
-                    raise
+                group.process_commit(plaintext, sender_leaf)
+                commit_processed = True
 
         if not commit_hex or commit_processed:
             exp_epoch_auth = h(epoch_obj["epoch_authenticator"])

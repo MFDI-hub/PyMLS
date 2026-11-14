@@ -6,8 +6,8 @@ then split into handshake/application branch ratchet secrets.
 """
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Optional, Union
 from collections import OrderedDict
 
 from ...crypto.crypto_provider import CryptoProvider
@@ -20,14 +20,67 @@ class _LeafState:
     """Mutable per-leaf state for tracking send generations and ratchet secrets."""
     app_generation: int = 0
     hs_generation: int = 0
-    app_secret: Optional[bytearray] = None
-    hs_secret: Optional[bytearray] = None
+    app_secret: bytearray | None = None
+    hs_secret: bytearray | None = None
     app_recv_generation: int = 0
-    app_recv_secret: Optional[bytearray] = None
-    app_skipped: "OrderedDict[int, Tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
+    app_recv_secret: bytearray | None = None
+    app_skipped: "OrderedDict[int, tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
     hs_recv_generation: int = 0
-    hs_recv_secret: Optional[bytearray] = None
-    hs_skipped: "OrderedDict[int, Tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
+    hs_recv_secret: bytearray | None = None
+    hs_skipped: "OrderedDict[int, tuple[bytearray, bytearray]]" = field(default_factory=OrderedDict)
+
+
+def _pack_secret(buf: bytearray | None) -> bytes:
+    raw = b"" if buf is None else bytes(buf)
+    if len(raw) > 0xFFFF:
+        raise ValueError("secret too long to persist")
+    return struct.pack("!H", len(raw)) + raw
+
+
+def _pack_skipped(skipped: OrderedDict[int, tuple[bytearray, bytearray]]) -> bytes:
+    items = list(skipped.items())
+    if len(items) > 0xFFFF:
+        raise ValueError("skipped-key window too large to persist")
+    parts = [struct.pack("!H", len(items))]
+    for gen, (key, nonce) in items:
+        key_b, nonce_b = bytes(key), bytes(nonce)
+        if len(key_b) > 0xFFFF or len(nonce_b) > 0xFFFF:
+            raise ValueError("skipped key too long to persist")
+        parts.append(struct.pack("!I", gen))
+        parts.append(struct.pack("!H", len(key_b)) + key_b)
+        parts.append(struct.pack("!H", len(nonce_b)) + nonce_b)
+    return b"".join(parts)
+
+
+def _read_uint(buf: bytes, offset: int, nbytes: int) -> tuple[int, int]:
+    end = offset + nbytes
+    if end > len(buf):
+        raise ValueError("secret-tree replay state is truncated")
+    return int.from_bytes(buf[offset:end], "big"), end
+
+
+def _unpack_secret(buf: bytes, offset: int) -> tuple[bytearray | None, int]:
+    length, offset = _read_uint(buf, offset, 2)
+    end = offset + length
+    if end > len(buf):
+        raise ValueError("secret-tree replay state is truncated")
+    raw = buf[offset:end]
+    return (bytearray(raw) if raw else None), end
+
+
+def _unpack_skipped(
+    buf: bytes, offset: int
+) -> tuple[OrderedDict[int, tuple[bytearray, bytearray]], int]:
+    count, offset = _read_uint(buf, offset, 2)
+    skipped: OrderedDict[int, tuple[bytearray, bytearray]] = OrderedDict()
+    for _ in range(count):
+        gen, offset = _read_uint(buf, offset, 4)
+        key, offset = _unpack_secret(buf, offset)
+        nonce, offset = _unpack_secret(buf, offset)
+        if key is None or nonce is None or gen in skipped:
+            raise ValueError("secret-tree replay state has an invalid skipped key")
+        skipped[gen] = (key, nonce)
+    return skipped, offset
 
 
 class SecretTree:
@@ -40,7 +93,7 @@ class SecretTree:
         n_leaves: int = 1,
         window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
     ):
         self._root_secret = bytearray(encryption_secret)
         self._crypto = crypto
@@ -49,14 +102,14 @@ class SecretTree:
         self._max_generation_gap = max(1, int(max_generation_gap))
         self._aead_limit_bytes = aead_limit_bytes if aead_limit_bytes is None else max(0, int(aead_limit_bytes))
         self._encrypted_bytes_total = 0
-        self._leaves: Dict[int, _LeafState] = {}
+        self._leaves: dict[int, _LeafState] = {}
 
     def _get_leaf_state(self, leaf: int) -> _LeafState:
         if leaf not in self._leaves:
             self._leaves[leaf] = _LeafState()
         return self._leaves[leaf]
 
-    def _derive_leaf_secret(self, root_secret: Union[bytes, bytearray], leaf: int) -> bytes:
+    def _derive_leaf_secret(self, root_secret: bytes | bytearray, leaf: int) -> bytes:
         n = self._n_leaves
         if leaf < 0 or leaf >= n:
             raise ValueError("leaf index out of range for current tree")
@@ -92,7 +145,7 @@ class SecretTree:
         next_secret = self._crypto.expand_with_label(current_secret, b"secret", ctx, self._crypto.kdf_hash_len())
         return key, nonce, next_secret
 
-    def next_application(self, leaf: int) -> Tuple[bytes, bytes, int]:
+    def next_application(self, leaf: int) -> tuple[bytes, bytes, int]:
         st = self._get_leaf_state(leaf)
         if st.app_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
@@ -118,7 +171,7 @@ class SecretTree:
             pass
         return key_out, nonce_out, gen
 
-    def application_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
+    def application_for(self, leaf: int, generation: int) -> tuple[bytes, bytes, int]:
         if generation < 0:
             raise ValueError("generation must be non-negative")
         st = self._get_leaf_state(leaf)
@@ -142,24 +195,9 @@ class SecretTree:
                 except Exception:
                     pass
                 return key_out, nonce_out, generation
-            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            secret = self._crypto.derive_secret(leaf_secret, b"application")
-            try:
-                secure_wipe(bytearray(leaf_secret))
-            except Exception:
-                pass
-            key, nonce = bytearray(), bytearray()
-            for g in range(generation + 1):
-                k, n, secret = self._ratchet_step(secret, g)
-                key, nonce = bytearray(k), bytearray(n)
-            key_out, nonce_out = bytes(key), bytes(nonce)
-            try:
-                secure_wipe(key)
-                secure_wipe(nonce)
-                secure_wipe(bytearray(secret))
-            except Exception:
-                pass
-            return key_out, nonce_out, generation
+            # RFC 9420 §9.2: a consumed generation is deleted. Re-deriving it
+            # from the epoch root would accept replays.
+            raise ValueError("application generation already consumed or outside the replay window")
         if self._window_size > 0 and generation > st.app_recv_generation:
             temp_secret = st.app_recv_secret
             assert temp_secret is not None
@@ -193,7 +231,7 @@ class SecretTree:
             pass
         return key_out, nonce_out, generation
 
-    def next_handshake(self, leaf: int) -> Tuple[bytes, bytes, int]:
+    def next_handshake(self, leaf: int) -> tuple[bytes, bytes, int]:
         st = self._get_leaf_state(leaf)
         if st.hs_secret is None:
             leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
@@ -219,7 +257,7 @@ class SecretTree:
             pass
         return key_out, nonce_out, gen
 
-    def handshake_for(self, leaf: int, generation: int) -> Tuple[bytes, bytes, int]:
+    def handshake_for(self, leaf: int, generation: int) -> tuple[bytes, bytes, int]:
         if generation < 0:
             raise ValueError("generation must be non-negative")
         st = self._get_leaf_state(leaf)
@@ -243,24 +281,7 @@ class SecretTree:
                 except Exception:
                     pass
                 return key_out, nonce_out, generation
-            leaf_secret = self._derive_leaf_secret(self._root_secret, leaf)
-            secret = self._crypto.derive_secret(leaf_secret, b"handshake")
-            try:
-                secure_wipe(bytearray(leaf_secret))
-            except Exception:
-                pass
-            key, nonce = bytearray(), bytearray()
-            for g in range(generation + 1):
-                k, n, secret = self._ratchet_step(secret, g)
-                key, nonce = bytearray(k), bytearray(n)
-            key_out, nonce_out = bytes(key), bytes(nonce)
-            try:
-                secure_wipe(key)
-                secure_wipe(nonce)
-                secure_wipe(bytearray(secret))
-            except Exception:
-                pass
-            return key_out, nonce_out, generation
+            raise ValueError("handshake generation already consumed or outside the replay window")
         if self._window_size > 0 and generation > st.hs_recv_generation:
             temp_secret = st.hs_recv_secret
             assert temp_secret is not None
@@ -305,6 +326,76 @@ class SecretTree:
     @property
     def encrypted_bytes_this_epoch(self) -> int:
         return int(self._encrypted_bytes_total)
+
+    def export_replay_state(self) -> bytes:
+        """Serialize per-leaf ratchet positions, secrets, and skipped keys.
+
+        ``to_bytes`` stores this so a restored group does not re-derive a
+        generation that was already consumed (RFC 9420 §9.2).
+        """
+        parts: list[bytes] = [struct.pack("!Q", self._encrypted_bytes_total & 0xFFFFFFFFFFFFFFFF)]
+        leaves = sorted(self._leaves.items())
+        parts.append(struct.pack("!H", len(leaves)))
+        for leaf, st in leaves:
+            parts.append(
+                struct.pack(
+                    "!IIIII",
+                    leaf,
+                    st.app_generation,
+                    st.hs_generation,
+                    st.app_recv_generation,
+                    st.hs_recv_generation,
+                )
+            )
+            parts.append(_pack_secret(st.app_secret))
+            parts.append(_pack_secret(st.hs_secret))
+            parts.append(_pack_secret(st.app_recv_secret))
+            parts.append(_pack_secret(st.hs_recv_secret))
+            parts.append(_pack_skipped(st.app_skipped))
+            parts.append(_pack_skipped(st.hs_skipped))
+        return b"".join(parts)
+
+    def load_replay_state(self, data: bytes) -> None:
+        """Restore state written by export_replay_state.
+
+        Framing is checked (truncation, trailing bytes, leaf indexes,
+        duplicate skipped generations). The blob is not authenticated.
+        Only load bytes from storage whose integrity you already trust.
+        """
+        offset = 0
+        total, offset = _read_uint(data, offset, 8)
+        count, offset = _read_uint(data, offset, 2)
+        leaves: dict[int, _LeafState] = {}
+        for _ in range(count):
+            leaf, offset = _read_uint(data, offset, 4)
+            app_gen, offset = _read_uint(data, offset, 4)
+            hs_gen, offset = _read_uint(data, offset, 4)
+            app_recv, offset = _read_uint(data, offset, 4)
+            hs_recv, offset = _read_uint(data, offset, 4)
+            if leaf in leaves or leaf >= self._n_leaves:
+                raise ValueError("secret-tree replay state has an invalid leaf index")
+            app_secret, offset = _unpack_secret(data, offset)
+            hs_secret, offset = _unpack_secret(data, offset)
+            app_recv_secret, offset = _unpack_secret(data, offset)
+            hs_recv_secret, offset = _unpack_secret(data, offset)
+            app_skipped, offset = _unpack_skipped(data, offset)
+            hs_skipped, offset = _unpack_skipped(data, offset)
+            leaves[leaf] = _LeafState(
+                app_generation=app_gen,
+                hs_generation=hs_gen,
+                app_secret=app_secret,
+                hs_secret=hs_secret,
+                app_recv_generation=app_recv,
+                app_recv_secret=app_recv_secret,
+                app_skipped=app_skipped,
+                hs_recv_generation=hs_recv,
+                hs_recv_secret=hs_recv_secret,
+                hs_skipped=hs_skipped,
+            )
+        if offset != len(data):
+            raise ValueError("secret-tree replay state has trailing bytes")
+        self._encrypted_bytes_total = total
+        self._leaves = leaves
 
     def wipe(self) -> None:
         try:

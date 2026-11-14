@@ -96,10 +96,19 @@ class DefaultCryptoProvider:
         try:
             return serialization.load_der_private_key(data, password=None)
         except Exception:
-            try:
-                return serialization.load_pem_private_key(data, password=None)
-            except Exception as e:
-                raise RFC9420Error("Invalid EC private key encoding (expect DER/PEM)") from e
+            pass
+        try:
+            return serialization.load_pem_private_key(data, password=None)
+        except Exception:
+            pass
+        # RFC 9420 test vectors / MLS wire: ECDSA private keys are raw
+        # Field-Element-to-Octet-String (big-endian integer, no DER).
+        try:
+            return ec.derive_private_key(int.from_bytes(data, "big"), curve)
+        except Exception as e:
+            raise RFC9420Error(
+                "Invalid EC private key encoding (expect DER, PEM, or raw field element)"
+            ) from e
 
     def _load_ec_public(self, data: bytes, curve: ec.EllipticCurve):
         if data and data[0] == 0x04:
@@ -265,6 +274,18 @@ class DefaultCryptoProvider:
             return private_key
         return private_key.rjust(nsk, b"\x00")
 
+    def hpke_public_from_private(self, private_key: bytes) -> bytes:
+        """Return the HPKE public key for a serialized private key.
+
+        NIST DHKEM private keys are Field-Element-to-Octet-String of length
+        Nsk. Official MLS vectors sometimes omit a leading zero (P-521 Nsk=66
+        serialized as 65 bytes); those are left-padded before rfc9180 decode.
+        """
+        private_key = self._normalize_hpke_private_key(private_key)
+        hpke = self._get_hpke_instance()
+        sk = hpke._deserialize_private_key(private_key)
+        return hpke.serialize_public_key(sk.public_key())
+
     def hpke_open(
         self, private_key: bytes, kem_output: bytes, info: bytes, aad: bytes, ctxt: bytes
     ) -> bytes:
@@ -331,11 +352,66 @@ class DefaultCryptoProvider:
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
     def derive_key_pair(self, seed: bytes) -> tuple[bytes, bytes]:
-        nsk = self.kem_sk_ikm_min_size()
-        if len(seed) < nsk:
-            seed = self.expand_with_label(seed, b"hpke ikm", b"", nsk)
+        """HPKE DeriveKeyPair(ikm). RFC 9180 allows IKM of any length.
+
+        rfc9180 rejects IKM shorter than Nsk (P-521 Nsk=66, MLS SHA-512
+        secrets are 64 bytes). Reimplement the RFC 9180 §7.1.3 loop without
+        that check so MLS external_pub / TreeKEM match official vectors.
+        """
         hpke = self._get_hpke_instance()
-        sk, pk = hpke.derive_key_pair(seed)
+        kem = hpke.kem
+        if len(seed) >= kem.Nsk:
+            sk, pk = hpke.derive_key_pair(seed)
+            return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
+
+        from rfc9180.primitives.kem import DHKEM_NIST
+        from rfc9180.utils import I2OSP, OS2IP
+        from cryptography.hazmat.primitives.asymmetric import ec, x25519, x448
+
+        dkp_prk = kem.kdf.labeled_extract(
+            salt=b"",
+            label="dkp_prk",
+            ikm=seed,
+            suite_id=kem.suite_id,
+        )
+        if isinstance(kem, DHKEM_NIST):
+            counter = 0
+            while True:
+                if counter > 255:
+                    raise ValueError("DeriveKeyPair rejection sampling exceeded 255 iterations")
+                candidate = kem.kdf.labeled_expand(
+                    prk=dkp_prk,
+                    label="candidate",
+                    info=I2OSP(counter, 1),
+                    L=kem.Nsk,
+                    suite_id=kem.suite_id,
+                )
+                if kem.mask != 0xFF:
+                    b = bytearray(candidate)
+                    b[0] &= kem.mask
+                    candidate = bytes(b)
+                scalar = OS2IP(candidate)
+                if 1 <= scalar < kem.order:
+                    break
+                counter += 1
+            sk = ec.derive_private_key(scalar, kem.curve)
+            pk = sk.public_key()
+        else:
+            sk_bytes = kem.kdf.labeled_expand(
+                prk=dkp_prk,
+                label="sk",
+                info=b"",
+                L=kem.Nsk,
+                suite_id=kem.suite_id,
+            )
+            if kem.Nsk == 32:
+                sk = x25519.X25519PrivateKey.from_private_bytes(sk_bytes)
+            else:
+                sk = x448.X448PrivateKey.from_private_bytes(sk_bytes)
+                raw_map = getattr(kem, "_raw_private_bytes", None)
+                if raw_map is not None:
+                    raw_map[id(sk)] = sk_bytes
+            pk = sk.public_key()
         return hpke.serialize_private_key(sk), hpke.serialize_public_key(pk)
 
     def kem_pk_size(self) -> int:

@@ -19,6 +19,8 @@ Rationale:
 - Provides both high-level (Group) and low-level (MLSGroup) APIs.
 """
 
+from __future__ import annotations
+
 from ...messages.data_structures import (
     Proposal,
     Welcome,
@@ -76,6 +78,7 @@ from ...extensions.extensions import (
     deserialize_extensions,
     parse_capabilities_data,
     parse_required_capabilities,
+    leaf_supports_group_extension,
 )
 from ...protocol.validations import (
     validate_proposals_client_rules,
@@ -103,10 +106,31 @@ from ...mls.exceptions import (
 )
 
 from enum import Enum
-from typing import Callable, Dict, Optional, Union, cast
+from typing import Callable, cast
 import struct
 from ...crypto.hpke_labels import encrypt_with_label, decrypt_with_label
 from ...crypto import labels as mls_labels
+
+
+def _verify_group_info_signature(crypto: CryptoProvider, gi: GroupInfo, tree: RatchetTreeBackend) -> None:
+    """Verify GroupInfo under the leaf named by signer_leaf_index.
+
+    RFC 9420 §12.4.3.1 requires the signature key from that leaf. external_pub
+    is an HPKE public key and is not a substitute. Missing signer material fails
+    closed instead of skipping verification.
+    """
+    signer = int(gi.signer_leaf_index)
+    n_leaves = int(getattr(tree, "n_leaves", 0))
+    if signer < 0 or signer >= n_leaves:
+        raise InvalidSignatureError(
+            "GroupInfo signer_leaf_index does not identify a group member"
+        )
+    node = tree.get_node(signer * 2)
+    leaf = getattr(node, "leaf_node", None) if node is not None else None
+    sig_key = getattr(leaf, "signature_key", b"") if leaf is not None else b""
+    if not sig_key:
+        raise InvalidSignatureError("GroupInfo signer leaf has no signature key")
+    crypto.verify_with_label(sig_key, b"GroupInfoTBS", gi.tbs_serialize(), gi.signature.value)
 
 
 class PendingCommit(tuple):
@@ -251,12 +275,12 @@ class MLSGroup:
         self,
         group_id: bytes,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol],
+        rand_provider: RandProviderProtocol | None,
         own_leaf_index: int,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
-        tree_backend: Optional[Union[str, object]] = None,
+        aead_limit_bytes: int | None = None,
+        tree_backend: str | object | None = None,
     ):
         """Initialize a new MLSGroup wrapper around cryptographic providers.
 
@@ -281,18 +305,18 @@ class MLSGroup:
         else:
             self._ratchet_tree = cast(RatchetTreeBackend, tree_backend)
         self._tree_backend_id = getattr(self._ratchet_tree, "backend_id", DEFAULT_TREE_BACKEND)
-        self._group_context: Optional[GroupContext] = None
-        self._key_schedule: Optional[KeySchedule] = None
-        self._secret_tree: Optional[SecretTree] = None
-        self._interim_transcript_hash: Optional[bytes] = None
-        self._confirmed_transcript_hash: Optional[bytes] = None
+        self._group_context: GroupContext | None = None
+        self._key_schedule: KeySchedule | None = None
+        self._secret_tree: SecretTree | None = None
+        self._interim_transcript_hash: bytes | None = None
+        self._confirmed_transcript_hash: bytes | None = None
         self._pending_proposals: list[Proposal] = []
         # Map proposal reference -> (proposal, sender_leaf_index)
         self._proposal_cache: dict[bytes, tuple[Proposal, int]] = {}
         self._own_leaf_index = own_leaf_index
-        self._external_private_key: Optional[bytes] = None
-        self._external_public_key: Optional[bytes] = None
-        self._external_init_secret_for_commit: Optional[bytes] = (
+        self._external_private_key: bytes | None = None
+        self._external_public_key: bytes | None = None
+        self._external_init_secret_for_commit: bytes | None = (
             None  # RFC 9420 §8.3 joiner HPKE export
         )
         self._trust_roots: list[bytes] = []
@@ -300,7 +324,7 @@ class MLSGroup:
         self._x509_policy = None
         self._secret_tree_window_size: int = int(secret_tree_window_size)
         self._secret_tree_max_generation_gap: int = int(max_generation_gap)
-        self._secret_tree_aead_limit_bytes: Optional[int] = (
+        self._secret_tree_aead_limit_bytes: int | None = (
             None if aead_limit_bytes is None else int(aead_limit_bytes)
         )
         self._state: MlsGroupState = MlsGroupState.OPERATIONAL
@@ -308,10 +332,15 @@ class MLSGroup:
         self._received_commit_unapplied: bool = False
         self._received_commit_for_current_epoch: bool = False  # §14 same-epoch conflict detection
         self._reinit_pending_welcome: bool = False
-        self._resumption_psk_provider: Optional[Callable[[bytes, int], Optional[bytes]]] = None
-        self._external_psk_provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None
+        self._resumption_psk_provider: Callable[[bytes, int], bytes | None] | None = None
+        self._external_psk_provider: Callable[[PreSharedKeyID], bytes | None] | None = None
+        # RFC 9420 §8.4: resumption PSK is the named epoch's secret, not the live one.
+        self._resumption_psks: dict[tuple[bytes, int], bytes] = {}
+        self._max_resumption_psks: int = 256
         # RFC 9420 §5.3.1: optional callback (credential, context_str) -> None; raise on invalid
-        self._credential_validator: Optional[Callable[[object, str], None]] = None
+        self._credential_validator: Callable[[object, str], None] | None = None
+        # Application policy. RFC 9420 requires unique keys, not unique identities.
+        self._enforce_unique_credential_identities: bool = False
 
     def _assert_operational(self, operation: str) -> None:
         if self._state == MlsGroupState.INACTIVE:
@@ -328,7 +357,84 @@ class MLSGroup:
                 f"apply_staged_commit not allowed in state {self._state.value}"
             )
 
-    def set_credential_validator(self, validator: Optional[Callable[[object, str], None]]) -> None:
+    def set_enforce_unique_credential_identities(self, enforce: bool) -> None:
+        """Reject two leaves that share a credential identity when enforce is True.
+
+        Off by default. RFC 9420 allows one identity on several devices as long
+        as signature keys and encryption keys are unique. Protocols such as
+        DAVE can turn this on.
+        """
+        self._enforce_unique_credential_identities = bool(enforce)
+
+    def _snapshot_commit_state(self) -> dict:
+        """Capture fields process_commit mutates, so a failed commit can roll back."""
+        return {
+            "group_id": self._group_id,
+            "tree_state": self._ratchet_tree.serialize_full_state(),
+            "tree_backend_id": self._tree_backend_id,
+            "group_context": self._group_context,
+            "key_schedule": self._key_schedule,
+            "secret_tree": self._secret_tree,
+            "interim": self._interim_transcript_hash,
+            "confirmed": self._confirmed_transcript_hash,
+            "pending_proposals": list(self._pending_proposals),
+            "proposal_cache": dict(self._proposal_cache),
+            "own_leaf_index": self._own_leaf_index,
+            "external_private_key": self._external_private_key,
+            "external_public_key": self._external_public_key,
+            "external_init_secret_for_commit": self._external_init_secret_for_commit,
+            "reinit_pending_welcome": self._reinit_pending_welcome,
+            "received_commit_for_current_epoch": self._received_commit_for_current_epoch,
+            "received_commit_unapplied": self._received_commit_unapplied,
+            "commit_pending": self._commit_pending,
+            "state": self._state,
+            "resumption_psks": dict(self._resumption_psks),
+        }
+
+    def _restore_commit_state(self, snap: dict) -> None:
+        """Put back a snapshot taken by _snapshot_commit_state."""
+        self._group_id = snap["group_id"]
+        self._ratchet_tree = create_tree_backend(
+            self._crypto_provider,
+            snap["tree_backend_id"],
+            rand_provider=self._rand_provider,
+        )
+        self._ratchet_tree.load_full_state(snap["tree_state"])
+        self._tree_backend_id = snap["tree_backend_id"]
+        self._group_context = snap["group_context"]
+        self._key_schedule = snap["key_schedule"]
+        self._secret_tree = snap["secret_tree"]
+        self._interim_transcript_hash = snap["interim"]
+        self._confirmed_transcript_hash = snap["confirmed"]
+        self._pending_proposals = list(snap["pending_proposals"])
+        self._proposal_cache = dict(snap["proposal_cache"])
+        self._own_leaf_index = snap["own_leaf_index"]
+        self._external_private_key = snap["external_private_key"]
+        self._external_public_key = snap["external_public_key"]
+        self._external_init_secret_for_commit = snap["external_init_secret_for_commit"]
+        self._reinit_pending_welcome = snap["reinit_pending_welcome"]
+        self._received_commit_for_current_epoch = snap["received_commit_for_current_epoch"]
+        self._received_commit_unapplied = snap["received_commit_unapplied"]
+        self._commit_pending = snap["commit_pending"]
+        self._state = snap["state"]
+        self._resumption_psks = dict(snap["resumption_psks"])
+
+    def _discard_replaced_epoch_secrets(self, snap: dict) -> None:
+        """Drop the previous epoch's secrets after a commit has been applied."""
+        old_tree = snap["secret_tree"]
+        old_ks = snap["key_schedule"]
+        if old_tree is not None and old_tree is not self._secret_tree:
+            try:
+                old_tree.wipe()
+            except Exception:
+                pass
+        if old_ks is not None and old_ks is not self._key_schedule:
+            try:
+                old_ks.wipe()
+            except Exception:
+                pass
+
+    def set_credential_validator(self, validator: Callable[[object, str], None] | None = None) -> None:
         """Set callback for credential validation at RFC §5.3.1 events.
 
         Called with (credential, context) where context is one of:
@@ -343,7 +449,7 @@ class MLSGroup:
             self._credential_validator(credential, context)
 
     def set_resumption_psk_provider(
-        self, provider: Optional[Callable[[bytes, int], Optional[bytes]]]
+        self, provider: Callable[[bytes, int], bytes | None] | None = None
     ) -> None:
         """Set a callback (group_id, epoch) -> resumption_psk_bytes for APPLICATION resumption PSKs.
         Used when creating or processing commits that include PreSharedKey with usage APPLICATION.
@@ -352,41 +458,62 @@ class MLSGroup:
 
     def set_external_psk_provider(
         self,
-        provider: Optional[Callable[[PreSharedKeyID], Optional[bytes]]],
+        provider: Callable[[PreSharedKeyID], bytes | None] | None = None,
     ) -> None:
         """Set a callback (PreSharedKeyID) -> psk_value_bytes for EXTERNAL PSKs.
 
         When processing commits or creating commits that reference external PSKs,
         the callback is invoked with each PreSharedKeyID; return the raw PSK value
-        or None to use the synthetic fallback (not suitable for production).
+        or None when the PSK value is unknown. A missing value fails closed.
         """
         self._external_psk_provider = provider
 
-    def _get_psk_values(self, psk_ids: list) -> Optional[list[Optional[bytes]]]:
+    def _remember_resumption_psk(self) -> None:
+        """Keep the current epoch's resumption_psk for later PreSharedKey proposals."""
+        if self._group_context is None or self._key_schedule is None:
+            return
+        psk = self._key_schedule.resumption_psk
+        if not psk:
+            return
+        key = (self._group_id, int(self._group_context.epoch))
+        self._resumption_psks[key] = bytes(psk)
+        while len(self._resumption_psks) > self._max_resumption_psks:
+            self._resumption_psks.pop(next(iter(self._resumption_psks)))
+
+    def _get_psk_values(self, psk_ids: list) -> list[bytes | None] | None:
         """Resolve PSK values from resumption and external providers; return list aligned with psk_ids.
         None entries mean use fallback derivation for that slot. Returns None if no provider is set.
         """
         if not psk_ids:
             return None
-        if not self._resumption_psk_provider and not self._external_psk_provider:
-            return None
-        values: list[Optional[bytes]] = []
+        values: list[bytes | None] = []
         for psk in psk_ids:
             psktype = getattr(psk, "psktype", None)
             if psktype == PSKType.EXTERNAL and self._external_psk_provider:
                 val = self._external_psk_provider(psk)
                 values.append(val)
-            elif (
-                psktype == PSKType.RESUMPTION
-                and getattr(psk, "usage", None) == ResumptionPSKUsage.APPLICATION
-                and getattr(psk, "psk_group_id", None) is not None
-                and getattr(psk, "psk_epoch", None) is not None
-                and self._resumption_psk_provider
-            ):
-                val = self._resumption_psk_provider(psk.psk_group_id, psk.psk_epoch)
+            elif psktype == PSKType.RESUMPTION:
+                val = None
+                gid = getattr(psk, "psk_group_id", None)
+                epoch = getattr(psk, "psk_epoch", None)
+                if (
+                    getattr(psk, "usage", None) == ResumptionPSKUsage.APPLICATION
+                    and gid is not None
+                    and epoch is not None
+                    and self._resumption_psk_provider
+                ):
+                    val = self._resumption_psk_provider(gid, epoch)
+                if val is None and gid is not None and epoch is not None:
+                    val = self._resumption_psks.get((gid, int(epoch)))
+                if (
+                    val is None
+                    and self._group_context is not None
+                    and self._key_schedule is not None
+                    and gid == self._group_id
+                    and epoch == self._group_context.epoch
+                ):
+                    val = self._key_schedule.resumption_psk
                 values.append(val)
-            else:
-                values.append(None)
         return values
 
     def _update_external_key_pair(self) -> None:
@@ -415,10 +542,10 @@ class MLSGroup:
         group_id: bytes,
         key_package: KeyPackage,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
         initial_extensions: bytes = b"",
     ) -> "MLSGroup":
@@ -497,6 +624,7 @@ class MLSGroup:
 
         # Derive external key pair from the initial key schedule
         group._update_external_key_pair()
+        group._remember_resumption_psk()
 
         return group
 
@@ -506,18 +634,20 @@ class MLSGroup:
         welcome: Welcome,
         hpke_private_key: bytes,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
-        key_package: Optional[KeyPackage] = None,
-        existing_group_ids: Optional[list[bytes]] = None,
-        credential_validator: Optional[Callable[[object, str], None]] = None,
-        reinit_proposal: Optional["ReInitProposal"] = None,
-        branch_old_version: Optional[int] = None,
-        branch_old_cipher_suite: Optional[int] = None,
-        welcome_psk_resolver: Optional[Callable[[PreSharedKeyID], Optional[bytes]]] = None,
+        key_package: KeyPackage | None = None,
+        existing_group_ids: list[bytes] | None = None,
+        credential_validator: Callable[[object, str], None] | None = None,
+        reinit_proposal: ReInitProposal | None = None,
+        branch_old_version: int | None = None,
+        branch_old_cipher_suite: int | None = None,
+        welcome_psk_resolver: Callable[[PreSharedKeyID], bytes | None] | None = None,
+        encryption_private_key: bytes | None = None,
+        external_ratchet_tree: bytes | None = None,
     ) -> "MLSGroup":
         """Join a group using a Welcome message.
 
@@ -531,8 +661,9 @@ class MLSGroup:
             welcome: Welcome structure received out-of-band.
             hpke_private_key: Private key for HPKE to recover the joiner secret.
             crypto_provider: Active CryptoProvider.
-            key_package: Optional KeyPackage of the joiner; if provided, used to identify
-                the joiner's leaf in the tree and to verify cipher suite match.
+            key_package: Joiner's KeyPackage. Required. It identifies the joiner's
+                leaf. Omitting it used to return a group with own_leaf_index -1,
+                which cannot send.
             existing_group_ids: Optional list of group_id bytes; if provided and the
                 Welcome's group_id is in this list, raises CommitValidationError.
             reinit_proposal: Optional ReInit proposal that led to this Welcome; if provided
@@ -544,8 +675,14 @@ class MLSGroup:
                 of the old group; if provided, verified to match Welcome GroupContext (§11.3).
             welcome_psk_resolver: Optional callback (PreSharedKeyID) -> psk_value bytes. When
                 GroupSecrets contains PSKs, used to resolve values for derive_psk_secret so that
-                encrypted_group_info can be decrypted. If None, synthetic fallback is used (not
-                suitable for test vectors or production when Welcome includes PSKs).
+                encrypted_group_info can be decrypted. A Welcome that carries PSKs and no
+                resolver fails closed.
+            encryption_private_key: Optional HPKE private key matching the joiner's
+                LeafNode.encryption_key. Required to decrypt later UpdatePath ciphertexts
+                that are encrypted to the joiner's leaf.
+            external_ratchet_tree: Optional ratchet tree supplied outside GroupInfo.
+                RFC 9420 allows the tree to be fetched separately. It is used to
+                verify the GroupInfo signature when the ratchet_tree extension is absent.
 
         Returns:
             MLSGroup instance initialized from the Welcome.
@@ -594,7 +731,7 @@ class MLSGroup:
         if group_secrets and group_secrets.psks:
             from ...messages.messages import derive_psk_secret
 
-            psk_values: Optional[list[Optional[bytes]]] = None
+            psk_values: list[bytes | None] | None = None
             if welcome_psk_resolver is not None:
                 psk_values = [welcome_psk_resolver(pid) for pid in group_secrets.psks]
             psk_secret = derive_psk_secret(
@@ -721,53 +858,49 @@ class MLSGroup:
             tree_backend=tree_backend,
         )
         group._reinit_pending_welcome = False
+        if welcome_psk_resolver is not None:
+            group._external_psk_provider = welcome_psk_resolver
 
-        # Verify GroupInfo signature: try EXTERNAL_PUB first; otherwise, try any leaf signature key from ratchet_tree extension
-        verifier_keys: list[bytes] = []
-        ext_external_pub: Optional[bytes] = None
-        ext_tree_bytes: Optional[bytes] = None
+        # RFC 9420 §12.4.3.1: verify GroupInfo under signer_leaf_index's signature key.
+        # The ratchet tree may be inside GroupInfo or supplied separately.
+        ext_tree_bytes: bytes | None = None
+        req_exts: list[int] = []
+        req_props: list[int] = []
+        req_creds: list[int] = []
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
-                for ext in exts:
-                    if ext.ext_type == ExtensionType.EXTERNAL_PUB:
-                        ext_external_pub = ext.data
-                    elif ext.ext_type == ExtensionType.RATCHET_TREE:
-                        ext_tree_bytes = ext.data
-            except Exception:
-                # If extension parsing fails, continue and attempt join optimistically
-                pass
-        if ext_external_pub:
-            verifier_keys.append(ext_external_pub)
-        # If ratchet tree is present, load and collect leaf signature keys
-        if ext_tree_bytes:
+            except Exception as e:
+                raise InvalidSignatureError("invalid GroupInfo extensions") from e
+            for ext in exts:
+                if ext.ext_type == ExtensionType.RATCHET_TREE:
+                    ext_tree_bytes = ext.data
+                elif ext.ext_type == ExtensionType.EXTERNAL_PUB:
+                    group._external_public_key = ext.data
+                elif ext.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
+                    try:
+                        req_exts, req_props, req_creds = parse_required_capabilities(ext.data)
+                    except Exception as e:
+                        raise CommitValidationError(
+                            "invalid required_capabilities in Welcome GroupInfo"
+                        ) from e
+        if not ext_tree_bytes:
+            ext_tree_bytes = external_ratchet_tree
+        if not ext_tree_bytes:
+            raise InvalidSignatureError(
+                "GroupInfo signer cannot be verified without a ratchet tree"
+            )
+        tmp_tree = create_tree_backend(
+            crypto_provider, tree_backend, rand_provider=group._rand_provider
+        )
+        try:
             try:
-                tmp_tree = create_tree_backend(
-                    crypto_provider, tree_backend, rand_provider=group._rand_provider
-                )
-                try:
-                    tmp_tree.load_full_tree_from_welcome_bytes(ext_tree_bytes)
-                except Exception:
-                    tmp_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
-                for leaf in range(tmp_tree.n_leaves):
-                    node = tmp_tree.get_node(leaf * 2)
-                    if node.leaf_node and node.leaf_node.signature_key:
-                        verifier_keys.append(node.leaf_node.signature_key)
+                tmp_tree.load_full_tree_from_welcome_bytes(ext_tree_bytes)
             except Exception:
-                pass
-        # Attempt verification with any candidate key if available
-        if verifier_keys:
-            verified = False
-            tbs = gi.tbs_serialize()
-            for vk in verifier_keys:
-                try:
-                    crypto_provider.verify_with_label(vk, b"GroupInfoTBS", tbs, gi.signature.value)
-                    verified = True
-                    break
-                except Exception:
-                    continue
-            if not verified:
-                raise InvalidSignatureError("invalid GroupInfo signature")
+                tmp_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
+        except Exception as e:
+            raise InvalidSignatureError("invalid ratchet_tree in GroupInfo") from e
+        _verify_group_info_signature(crypto_provider, gi, tmp_tree)
 
         group._group_context = gi.group_context
         # Initialize key schedule using the joiner_secret and PSK from GroupSecrets (RFC 9420 §8, §12.4.3.1)
@@ -781,28 +914,10 @@ class MLSGroup:
             window_size=group._secret_tree_window_size,
             max_generation_gap=group._secret_tree_max_generation_gap,
             aead_limit_bytes=group._secret_tree_aead_limit_bytes,
-        )  # will be updated if/when ratchet tree extension is loaded
-        # Ratchet tree via GroupInfo extension (if present)
-        req_exts: list[int] = []
-        req_props: list[int] = []
-        req_creds: list[int] = []
-        if gi.extensions:
-            try:
-                exts = deserialize_extensions(gi.extensions)
-                for ext in exts:
-                    if ext.ext_type == ExtensionType.RATCHET_TREE:
-                        # Prefer full-tree loader; fall back to legacy leaves-only
-                        try:
-                            group._ratchet_tree.load_full_tree_from_welcome_bytes(ext.data)
-                        except Exception:
-                            group._ratchet_tree.load_tree_from_welcome_bytes(ext.data)
-                    elif ext.ext_type == ExtensionType.EXTERNAL_PUB:
-                        group._external_public_key = ext.data
-                    elif ext.ext_type == ExtensionType.REQUIRED_CAPABILITIES:
-                        req_exts, req_props, req_creds = parse_required_capabilities(ext.data)
-            except Exception:
-                # If extension parsing fails, proceed without tree
-                pass
+        )
+        # This is the tree GroupInfo was verified against, including an
+        # out-of-band external_ratchet_tree. Keep it instead of parsing again.
+        group._ratchet_tree = tmp_tree
         # Enforce GroupContext extension support by the joiner's capabilities.
         try:
             if gi.group_context.extensions:
@@ -813,27 +928,23 @@ class MLSGroup:
                     if own_node and own_node.leaf_node and own_node.leaf_node.capabilities:
                         parsed = parse_capabilities_data(own_node.leaf_node.capabilities)
                         joiner_caps = set(parsed.get("extensions", []))
-                if joiner_caps:
-                    for ext in gc_exts:
-                        if int(ext.ext_type) not in joiner_caps:
-                            raise CommitValidationError(
-                                f"joiner does not support GroupContext extension {int(ext.ext_type)}"
-                            )
+                for ext in gc_exts:
+                    if not leaf_supports_group_extension(joiner_caps, ext.ext_type):
+                        raise CommitValidationError(
+                            f"joiner does not support GroupContext extension {int(ext.ext_type)}"
+                        )
         except CommitValidationError:
             raise
         except Exception as e:
             raise CommitValidationError(f"invalid GroupContext.extensions in Welcome: {e}") from e
         # Validate tree hash equals GroupContext.tree_hash if ratchet tree present (RFC 9420 §12.4.3.1)
-        # When key_package is provided we enforce strictly; otherwise allow for legacy tree encodings.
         try:
             if group._ratchet_tree.n_leaves > 0:
                 computed_th = group._ratchet_tree.calculate_tree_hash()
                 if computed_th != group._group_context.tree_hash:
-                    if key_package is not None:
-                        raise CommitValidationError(
-                            "ratchet tree hash does not match GroupContext.tree_hash"
-                        )
-                    # Legacy: keep GroupContext.tree_hash as source of truth when key_package not provided
+                    raise CommitValidationError(
+                        "ratchet tree hash does not match GroupContext.tree_hash"
+                    )
                 # RFC 9420 §7.9.2: For each non-empty parent node, verify parent-hash valid
                 group._ratchet_tree.verify_parent_hash_chains()
                 # Parent-hash validity for each leaf that includes a parent_hash
@@ -882,38 +993,42 @@ class MLSGroup:
         except Exception as e:
             # Surface as CommitValidationError
             raise CommitValidationError(str(e)) from e
-        # Identify joiner's leaf when key_package is provided (RFC 9420 §12.4.3.1)
-        if key_package is not None and key_package.leaf_node is not None:
-            joiner_sig_key = key_package.leaf_node.signature_key
-            my_leaf = -1
-            for leaf in range(group._ratchet_tree.n_leaves):
-                node = group._ratchet_tree.get_node(leaf * 2)
-                if node.leaf_node and node.leaf_node.signature_key == joiner_sig_key:
-                    my_leaf = leaf
-                    break
-            if my_leaf >= 0:
-                group._own_leaf_index = my_leaf
-                if group_secrets is not None and group_secrets.path_secret is not None:
-                    group._ratchet_tree.apply_joiner_path_secret(
-                        my_leaf, group_secrets.path_secret,
-                        committer_leaf_index=gi.signer_leaf_index,
-                    )
-        # Confirmation tag: MUST be present; MUST verify when key_package provided (RFC 9420 §8.1)
+        # Identify the joiner's leaf (RFC 9420 §12.4.3.1). Without it the
+        # member cannot send, so a missing or unmatched KeyPackage fails closed.
+        if key_package is None or key_package.leaf_node is None:
+            raise CommitValidationError(
+                "key_package is required to identify the joiner's leaf"
+            )
+        joiner_sig_key = key_package.leaf_node.signature_key
+        my_leaf = -1
+        for leaf in range(group._ratchet_tree.n_leaves):
+            node = group._ratchet_tree.get_node(leaf * 2)
+            if node.leaf_node and node.leaf_node.signature_key == joiner_sig_key:
+                my_leaf = leaf
+                break
+        if my_leaf < 0:
+            raise CommitValidationError(
+                "joiner KeyPackage was not found in the Welcome ratchet tree"
+            )
+        group._own_leaf_index = my_leaf
+        if encryption_private_key is not None:
+            group._ratchet_tree.get_node(my_leaf * 2).private_key = encryption_private_key
+        if group_secrets is not None and group_secrets.path_secret is not None:
+            group._ratchet_tree.apply_joiner_path_secret(
+                my_leaf, group_secrets.path_secret,
+                committer_leaf_index=gi.signer_leaf_index,
+            )
+        # Confirmation tag MUST be present and MUST verify (RFC 9420 §8.1).
         if gi.confirmation_tag is None or len(gi.confirmation_tag) == 0:
             raise CommitValidationError("GroupInfo confirmation_tag missing in Welcome")
         from ...protocol.validations import validate_confirmation_tag
 
-        try:
-            validate_confirmation_tag(
-                crypto_provider,
-                group._key_schedule.confirmation_key,
-                gi.group_context.confirmed_transcript_hash,
-                gi.confirmation_tag,
-            )
-        except Exception:
-            if key_package is not None:
-                raise
-            # Legacy: accept when key_package not provided (derivation may differ across implementations)
+        validate_confirmation_tag(
+            crypto_provider,
+            group._key_schedule.confirmation_key,
+            gi.group_context.confirmed_transcript_hash,
+            gi.confirmation_tag,
+        )
         # RFC 9420 §12.4.3.1: Set transcript hashes from GroupInfo (confirmed then interim)
         group._confirmed_transcript_hash = gi.group_context.confirmed_transcript_hash or b""
         from ...protocol.transcripts import serialize_interim_transcript_hash_input
@@ -963,19 +1078,20 @@ class MLSGroup:
             pass
         # Derive external key pair from the initial key schedule
         group._update_external_key_pair()
+        group._remember_resumption_psk()
 
         return group
 
     @classmethod
     def from_group_info(
         cls,
-        group_info: Union[GroupInfo, bytes],
+        group_info: GroupInfo | bytes,
         crypto_provider: CryptoProvider,
         secret_tree_window_size: int = 128,
         max_generation_gap: int = 1000,
-        aead_limit_bytes: Optional[int] = None,
+        aead_limit_bytes: int | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
-        credential_validator: Optional[Callable[[object, str], None]] = None,
+        credential_validator: Callable[[object, str], None] | None = None,
     ) -> "MLSGroup":
         """Build group state from GroupInfo for joiner-initiated external commits (RFC 9420 §12.4.3.2).
 
@@ -1030,46 +1146,29 @@ class MLSGroup:
         group._proposal_cache = {}
         group._pending_proposals = []
 
-        verifier_keys: list[bytes] = []
-        ext_tree_bytes: Optional[bytes] = None
+        ext_tree_bytes: bytes | None = None
         if gi.extensions:
             try:
                 exts = deserialize_extensions(gi.extensions)
-                for e in exts:
-                    if e.ext_type == ExtensionType.EXTERNAL_PUB:
-                        verifier_keys.append(e.data)
-                        group._external_public_key = e.data
-                    elif e.ext_type == ExtensionType.RATCHET_TREE:
-                        ext_tree_bytes = e.data
-            except Exception:
-                pass
-        if ext_tree_bytes:
-            try:
-                try:
-                    group._ratchet_tree.load_full_tree_from_welcome_bytes(ext_tree_bytes)
-                except Exception:
-                    group._ratchet_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
-                for leaf in range(group._ratchet_tree.n_leaves):
-                    node = group._ratchet_tree.get_node(leaf * 2)
-                    if node.leaf_node and node.leaf_node.signature_key:
-                        verifier_keys.append(node.leaf_node.signature_key)
             except Exception as e:
-                raise CommitValidationError(f"invalid ratchet_tree in GroupInfo: {e}") from e
-        if not verifier_keys:
-            raise CommitValidationError(
-                "GroupInfo has no external_pub or ratchet_tree extension for signature verification"
+                raise CommitValidationError(f"invalid GroupInfo extensions: {e}") from e
+            for e in exts:
+                if e.ext_type == ExtensionType.EXTERNAL_PUB:
+                    group._external_public_key = e.data
+                elif e.ext_type == ExtensionType.RATCHET_TREE:
+                    ext_tree_bytes = e.data
+        if not ext_tree_bytes:
+            raise InvalidSignatureError(
+                "GroupInfo ratchet_tree extension required to verify signer_leaf_index"
             )
-        verified = False
-        tbs = gi.tbs_serialize()
-        for vk in verifier_keys:
+        try:
             try:
-                crypto_provider.verify_with_label(vk, b"GroupInfoTBS", tbs, gi.signature.value)
-                verified = True
-                break
+                group._ratchet_tree.load_full_tree_from_welcome_bytes(ext_tree_bytes)
             except Exception:
-                continue
-        if not verified:
-            raise InvalidSignatureError("invalid GroupInfo signature")
+                group._ratchet_tree.load_tree_from_welcome_bytes(ext_tree_bytes)
+        except Exception as e:
+            raise CommitValidationError(f"invalid ratchet_tree in GroupInfo: {e}") from e
+        _verify_group_info_signature(crypto_provider, gi, group._ratchet_tree)
         if group._ratchet_tree.n_leaves > 0:
             computed_th = group._ratchet_tree.calculate_tree_hash()
             if computed_th != group._group_context.tree_hash:
@@ -1101,9 +1200,9 @@ class MLSGroup:
     def configure_runtime_policy(
         self,
         *,
-        secret_tree_window_size: Optional[int] = None,
-        max_generation_gap: Optional[int] = None,
-        aead_limit_bytes: Optional[int] = None,
+        secret_tree_window_size: int | None = None,
+        max_generation_gap: int | None = None,
+        aead_limit_bytes: int | None = None,
     ) -> None:
         """Configure runtime SecretTree limits used for application traffic."""
         if secret_tree_window_size is not None:
@@ -1124,7 +1223,7 @@ class MLSGroup:
                 aead_limit_bytes=self._secret_tree_aead_limit_bytes,
             )
 
-    def get_runtime_policy(self) -> Dict[str, Optional[int]]:
+    def get_runtime_policy(self) -> dict[str, int | None]:
         """Return active runtime policy values backing SecretTree enforcement."""
         return {
             "secret_tree_window_size": int(self._secret_tree_window_size),
@@ -1142,7 +1241,7 @@ class MLSGroup:
         return self._key_schedule.epoch_authenticator
 
     def external_commit(
-        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: Optional[bytes] = None
+        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: bytes | None = None
     ) -> tuple[MLSPlaintext, list[Welcome]]:
         """Create and sign an external commit that adds the joiner to the group (RFC 9420 §12.4.3.2).
 
@@ -1173,7 +1272,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(key_package.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(self._group_context.extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"joiner does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -1195,12 +1294,11 @@ class MLSGroup:
         # RFC §12.4.3.2: only ExternalInit (no Add); joiner is added via UpdatePath
         self._pending_proposals.append(ExternalInitProposal(kem_output))
         # Add joiner's leaf to the tree so create_commit can build UpdatePath for this leaf
-        self._ratchet_tree.add_leaf(key_package)
-        self._own_leaf_index = self._ratchet_tree.n_leaves - 1
+        self._own_leaf_index = self._ratchet_tree.add_leaf(key_package)
         return self.create_commit(signing_key)
 
     def external_join(
-        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: Optional[bytes] = None
+        self, key_package: KeyPackage, signing_key: bytes, kem_public_key: bytes | None = None
     ) -> tuple[MLSPlaintext, list[Welcome]]:
         """Alias for external_commit when acting on behalf of a joiner."""
         return self.external_commit(key_package, signing_key, kem_public_key)
@@ -1296,7 +1394,7 @@ class MLSGroup:
         old_gid, old_epoch = self._group_id, self._group_context.epoch
         rpsk = self._key_schedule.resumption_psk
 
-        def _resumption_psk_provider(gid: bytes, epoch: int) -> Optional[bytes]:
+        def _resumption_psk_provider(gid: bytes, epoch: int) -> bytes | None:
             return rpsk if (gid, epoch) == (old_gid, old_epoch) else None
 
         new_group.set_resumption_psk_provider(_resumption_psk_provider)
@@ -1317,7 +1415,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(key_package.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(self._group_context.extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"added member does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -1665,7 +1763,7 @@ class MLSGroup:
         return self.external_commit(key_package, signing_key, kem_public_key)
 
     def process_proposal(
-        self, message: MLSPlaintext, sender: Sender, wire_format: Optional[int] = None
+        self, message: MLSPlaintext, sender: Sender, wire_format: int | None = None
     ) -> None:
         """Verify and enqueue a Proposal carried in MLSPlaintext.
 
@@ -1845,16 +1943,16 @@ class MLSGroup:
         except Exception as e:
             print(f"Error validating proposal: {e}")
             raise
-        # Compute RFC 9420 ?5.2 ProposalRef using RefHashInput
-        # Per RFC, the value hashed is the full AuthenticatedContent wire encoding.
+        # RFC 9420 §5.2 / §6: ProposalRef hashes AuthenticatedContent
+        # (wire_format || FramedContent || auth), not PublicMessage (no
+        # membership_tag) and not FramedContentTBS (no ProtocolVersion).
         from ...messages.refs import make_proposal_ref
 
-        # Use full AuthenticatedContent bytes for the ref hash input (RFC ?5.2)
         try:
-            prop_ref_input = message.auth_content.serialize()
+            prop_ref_input = message.auth_content.serialize_authenticated_content()
         except Exception:
             try:
-                prop_ref_input = message.serialize()
+                prop_ref_input = message.auth_content.serialize()
             except Exception:
                 prop_ref_input = proposal.serialize()
         prop_ref = make_proposal_ref(self._crypto_provider, prop_ref_input)
@@ -1909,9 +2007,6 @@ class MLSGroup:
         - PendingCommit object containing the commit, welcomes, and the new epoch state.
         """
         self._assert_operational("create_commit")
-        old_group_id = self._group_id
-        old_epoch = self._group_context.epoch if self._group_context else 0
-        
         # Clone ratchet tree to avoid modifying client state
         tree_state_bytes = self._ratchet_tree.serialize_full_state()
         working_tree = create_tree_backend(
@@ -1953,7 +2048,11 @@ class MLSGroup:
                         break
                 update_leaf_indices.append((p, proposer_idx))
         add_for_existing_ok = set(removes)  # Add for a removed leaf is allowed
-        validate_proposals_client_rules(self._pending_proposals, working_tree.n_leaves)
+        validate_proposals_client_rules(
+            self._pending_proposals,
+            working_tree.n_leaves,
+            enforce_unique_identities=self._enforce_unique_credential_identities,
+        )
         try:
             from ...protocol.validations import validate_proposals_server_rules
 
@@ -1969,6 +2068,7 @@ class MLSGroup:
                 allow_external_init=has_ext_init,
                 update_leaf_indices=update_leaf_indices if update_leaf_indices else None,
                 add_for_existing_ok=add_for_existing_ok,
+                enforce_unique_identities=self._enforce_unique_credential_identities,
             )
         except Exception as _e:
             # Surface as CommitValidationError
@@ -2055,7 +2155,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(kp.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(effective_group_extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"added member does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -2065,7 +2165,8 @@ class MLSGroup:
             leaf_idx = working_tree.add_leaf(kp)
             joiner_infos.append((leaf_idx, kp))
         validate_tree_leaf_key_uniqueness(working_tree)
-        validate_credential_identity_uniqueness(working_tree)
+        if self._enforce_unique_credential_identities:
+            validate_credential_identity_uniqueness(working_tree)
 
         # Decide whether to include an UpdatePath
         # RFC ?12.4 path requirement
@@ -2129,6 +2230,8 @@ class MLSGroup:
                 new_leaf_node,
                 gc_bytes,
                 excluded_leaf_pubkeys=new_add_pubkeys if new_add_pubkeys else None,
+                signing_private_key=signing_key,
+                group_id=provisional_group_id,
             )
         else:
             update_path = None
@@ -2210,9 +2313,9 @@ class MLSGroup:
             interim=self._interim_transcript_hash,
             confirmed=self._confirmed_transcript_hash,
         )
-        transcripts.update_with_handshake(pt)
-        # RFC 9420 §8.2: confirmed_transcript_hash = Hash(interim_{i-1} || ConfirmedTranscriptHashInput); stored in transcripts.interim
-        new_confirmed_hash = transcripts.interim or b""
+        # RFC 9420 §8.2: confirmed_transcript_hash_[n] =
+        # Hash(interim_transcript_hash_[n-1] || ConfirmedTranscriptHashInput)
+        new_confirmed_hash = transcripts.update_with_handshake(pt)
 
         # ReInit: reset epoch and switch group_id (creator updates self._group_id per RFC ?11.2)
         if reinit_prop:
@@ -2291,18 +2394,8 @@ class MLSGroup:
             exts = [Extension(ExtensionType.RATCHET_TREE, rt_bytes)]
             if self._external_public_key:
                 exts.append(Extension(ExtensionType.EXTERNAL_PUB, self._external_public_key))
-            # RFC 9420 §13.5: include a GREASE extension in GroupInfo.extensions.
-            try:
-                from ...extensions.extensions import random_grease_values
-
-                used_types = {int(e.ext_type) for e in exts}
-                for grease_type in random_grease_values(2):
-                    if grease_type in used_types:
-                        continue
-                    exts.append(Extension(grease_type, b"groupinfo-grease"))
-                    break
-            except Exception:
-                pass
+            # Do not GREASE GroupInfo.extensions. RFC 9420 §13.5 is a SHOULD;
+            # OpenMLS / Discord DAVE reject unknown GroupInfo extension types.
             # # Include REQUIRED_CAPABILITIES so joiners can enforce support
             # try:
             #     from ...extensions.extensions import build_required_capabilities
@@ -2376,21 +2469,10 @@ class MLSGroup:
                     )
                     path_secret_for_joiner = path_secret_by_node.get(lca_node)
 
-                # Collect ALL PreSharedKeyIDs from commit proposals for GroupSecrets
-                # (RFC 9420 §12.4.3.1: joiners need the PSK IDs to derive psk_secret)
+                # GroupSecrets.psks are exactly the PreSharedKey proposals in the Commit
+                # (RFC 9420 §12.4.3.1). A ReInit resumption PSK that is not one of those
+                # proposals would change only the joiner's psk_secret.
                 psks_for_welcome = list(psk_ids) if psk_ids else []
-                if reinit_prop:
-                    psks_for_welcome.append(
-                        PreSharedKeyID(
-                            PSKType.RESUMPTION,
-                            usage=ResumptionPSKUsage.REINIT,
-                            psk_group_id=old_group_id,
-                            psk_epoch=old_epoch,
-                            psk_nonce=self._rand_provider.random_bytes(
-                                self._crypto_provider.kdf_hash_len()
-                            ),
-                        )
-                    )
 
                 gs = GroupSecrets(
                     joiner_secret=new_key_schedule.joiner_secret,
@@ -2477,8 +2559,23 @@ class MLSGroup:
         self._external_init_secret_for_commit = state["external_init_secret_for_commit"]
         self._commit_pending = False
         self._state = MlsGroupState(state.get("group_state", MlsGroupState.OPERATIONAL))
+        self._remember_resumption_psk()
 
     def process_commit(self, message: MLSPlaintext, sender_index: int) -> None:
+        """Verify a received Commit and advance the local group state.
+
+        State is applied only after the confirmation tag verifies. A failed
+        commit leaves the group as it was.
+        """
+        snap = self._snapshot_commit_state()
+        try:
+            self._process_commit_inner(message, sender_index)
+        except Exception:
+            self._restore_commit_state(snap)
+            raise
+        self._discard_replaced_epoch_secrets(snap)
+
+    def _process_commit_inner(self, message: MLSPlaintext, sender_index: int) -> None:
         """Verify a received Commit and advance the local group state.
 
         Parameters
@@ -2564,6 +2661,8 @@ class MLSGroup:
                 allow_reinit_psk=False,
                 allow_branch_psk=False,
                 current_version=self._group_context.version if self._group_context else None,
+                update_leaf_indices=update_tuples if update_tuples else None,
+                enforce_unique_identities=self._enforce_unique_credential_identities,
             )
             # Enforce path-required logic (RFC ?12.4)
             from ...protocol.validations import commit_path_required
@@ -2621,7 +2720,12 @@ class MLSGroup:
             from ...messages.key_packages import LeafNode as _LeafNode
 
             leaf = _LeafNode.deserialize(up.leaf_node)
-            if leaf.credential is not None and leaf.credential.public_key != leaf.signature_key:
+            pk = (
+                getattr(leaf.credential, "public_key", None)
+                if leaf.credential is not None
+                else None
+            )
+            if pk and pk != leaf.signature_key:
                 raise CommitValidationError(
                     "leaf credential public key does not match signature key"
                 )
@@ -2652,7 +2756,7 @@ class MLSGroup:
                 kp_caps = parse_capabilities_data(kp.leaf_node.capabilities or b"")
                 kp_exts = set(kp_caps.get("extensions", []))
                 for ext in deserialize_extensions(effective_group_extensions):
-                    if int(ext.ext_type) not in kp_exts:
+                    if not leaf_supports_group_extension(kp_exts, ext.ext_type):
                         raise CommitValidationError(
                             f"added member does not support GroupContext extension {int(ext.ext_type)}"
                         )
@@ -2679,7 +2783,8 @@ class MLSGroup:
             self._ratchet_tree.add_leaf(kp)
             joiner_infos.append((joiner_leaf_idx, kp))
         validate_tree_leaf_key_uniqueness(self._ratchet_tree)
-        validate_credential_identity_uniqueness(self._ratchet_tree)
+        if self._enforce_unique_credential_identities:
+            validate_credential_identity_uniqueness(self._ratchet_tree)
         # Clear referenced proposals from cache after applying
         for pref in ref_bytes:
             self._proposal_cache.pop(pref, None)
@@ -2759,9 +2864,9 @@ class MLSGroup:
             interim=self._interim_transcript_hash,
             confirmed=self._confirmed_transcript_hash,
         )
-        transcripts.update_with_handshake(message)
-        # RFC 9420 §8.2: new confirmed_transcript_hash is in transcripts.interim
-        new_confirmed_hash = transcripts.interim or b""
+        # RFC 9420 §8.2: confirmed_transcript_hash_[n] =
+        # Hash(interim_transcript_hash_[n-1] || ConfirmedTranscriptHashInput)
+        new_confirmed_hash = transcripts.update_with_handshake(message)
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         new_group_context = GroupContext(
             new_group_id,
@@ -2796,13 +2901,7 @@ class MLSGroup:
                 raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
         else:
             prev_init_secret = self._key_schedule.init_secret
-        try:
-            if self._secret_tree is not None:
-                self._secret_tree.wipe()
-            if self._key_schedule is not None:
-                self._key_schedule.wipe()
-        except Exception:
-            pass
+        self._remember_resumption_psk()
         # Single key schedule with correct GroupContext (RFC 9420 §12.4.3.2)
         self._key_schedule = KeySchedule(
             prev_init_secret,
@@ -2840,6 +2939,7 @@ class MLSGroup:
             sender_confirm_tag,
         )
         self._update_external_key_pair()
+        self._remember_resumption_psk()
 
         # Clear sending restriction flags after successful apply
         self._received_commit_unapplied = False
@@ -2851,7 +2951,7 @@ class MLSGroup:
             self._state = MlsGroupState.OPERATIONAL
 
     def process_commit_staged(
-        self, message: MLSPlaintext, sender_index: int, tree_backend_id: Optional[str] = None
+        self, message: MLSPlaintext, sender_index: int, tree_backend_id: str | None = None
     ) -> tuple:
         """Verify a received Commit and return staged state without mutating self.
 
@@ -2865,6 +2965,8 @@ class MLSGroup:
             rand_provider=self._rand_provider,
             tree_backend=backend_id,
         )
+        clone._resumption_psks = dict(self._resumption_psks)
+        clone._max_resumption_psks = self._max_resumption_psks
         clone.process_commit(message, sender_index)
         new_epoch_state = _state_to_new_epoch_state(clone)
         return (message, [], new_epoch_state)
@@ -2914,6 +3016,16 @@ class MLSGroup:
         return group_info.serialize()
 
     def process_external_commit(self, message: MLSPlaintext) -> None:
+        """Process an external commit, rolling back if verification fails."""
+        snap = self._snapshot_commit_state()
+        try:
+            self._process_external_commit_inner(message)
+        except Exception:
+            self._restore_commit_state(snap)
+            raise
+        self._discard_replaced_epoch_secrets(snap)
+
+    def _process_external_commit_inner(self, message: MLSPlaintext) -> None:
         """Process a commit authenticated by the group's external signing key.
 
         Processes an external commit received from an external party. Verifies
@@ -3012,7 +3124,10 @@ class MLSGroup:
         if all_psk_ids:
             from ...messages.messages import derive_psk_secret
 
-            psk_secret = derive_psk_secret(self._crypto_provider, all_psk_ids)
+            psk_values = self._get_psk_values(all_psk_ids)
+            psk_secret = derive_psk_secret(
+                self._crypto_provider, all_psk_ids, psk_values=psk_values
+            )
 
         # RFC 9420 §12.3: Apply in order GCE -> Update -> Remove -> Add.
         from ...protocol.validations import derive_ops_from_proposals
@@ -3036,7 +3151,8 @@ class MLSGroup:
             except (ValueError, IndexError):
                 continue
         validate_tree_leaf_key_uniqueness(self._ratchet_tree)
-        validate_credential_identity_uniqueness(self._ratchet_tree)
+        if self._enforce_unique_credential_identities:
+            validate_credential_identity_uniqueness(self._ratchet_tree)
 
         # External commits: commit_secret from path if provided, else zeros
         if commit.path:
@@ -3103,9 +3219,9 @@ class MLSGroup:
             interim=self._interim_transcript_hash,
             confirmed=self._confirmed_transcript_hash,
         )
-        transcripts.update_with_handshake(message)
-        # RFC 9420 §8.2: new confirmed_transcript_hash is in transcripts.interim
-        new_confirmed_hash = transcripts.interim or b""
+        # RFC 9420 §8.2: confirmed_transcript_hash_[n] =
+        # Hash(interim_transcript_hash_[n-1] || ConfirmedTranscriptHashInput)
+        new_confirmed_hash = transcripts.update_with_handshake(message)
         # RFC 9420 §12.1.6: Include extensions when building GroupContext (external commit).
         cs_id = self._crypto_provider.active_ciphersuite.suite_id
         effective_group_extensions = self._group_context.extensions if self._group_context else b""
@@ -3142,13 +3258,7 @@ class MLSGroup:
                 raise CommitValidationError(f"Failed to process ExternalInit: {e}") from e
         else:
             prev_init_secret = self._key_schedule.init_secret
-        try:
-            if self._secret_tree is not None:
-                self._secret_tree.wipe()
-            if self._key_schedule is not None:
-                self._key_schedule.wipe()
-        except Exception:
-            pass
+        self._remember_resumption_psk()
         # Single key schedule with correct GroupContext (RFC 9420 §12.4.3.2)
         self._key_schedule = KeySchedule(
             prev_init_secret,
@@ -3184,6 +3294,7 @@ class MLSGroup:
             sender_confirm_tag,
         )
         self._update_external_key_pair()
+        self._remember_resumption_psk()
 
     def reinit_group_to(
         self, new_group_id: bytes, signing_key: bytes
@@ -3227,18 +3338,16 @@ class MLSGroup:
             raise RFC9420Error("group not initialized")
         return self._key_schedule.resumption_psk
 
-    def protect(self, app_data: bytes, signing_key: Optional[bytes] = None) -> MLSCiphertext:
+    def protect(self, app_data: bytes, signing_key: bytes | None = None) -> MLSCiphertext:
         """Encrypt application data into MLSCiphertext for the current epoch.
 
         Encrypts application data using the current epoch's application secret
-        and the secret tree. Per RFC 9420 §6.1, FramedContentAuthData includes a
-        signature over FramedContentTBS; when signing_key is provided it is used
-        for interoperability. When omitted, no signature is included (legacy behavior).
+        and the secret tree. RFC 9420 §6.1 requires every FramedContent to be
+        signed, so signing_key is required.
 
         Args:
             app_data: Plaintext application data to encrypt.
-            signing_key: Optional private key for signing (member leaf signature key).
-                When provided, the application message carries a valid signature.
+            signing_key: Private key for the member's leaf signature key.
 
         Returns:
             MLSCiphertext containing the encrypted data.
@@ -3258,24 +3367,26 @@ class MLSGroup:
         # RFC 9420 §15.2: Senders MUST NOT exceed AEAD encryption limits per epoch
         if not self._secret_tree.can_encrypt(len(app_data)):
             raise RFC9420Error("AEAD encryption bound reached for this epoch (RFC 9420 §15.2)")
-        signature = b""
-        if signing_key is not None:
-            from ...messages.messages import (
-                sign_application_framed_content,
-                write_opaque_varint,
+        if not signing_key:
+            raise RFC9420Error(
+                "application messages must be signed (RFC 9420 §6.1)"
             )
+        from ...messages.messages import (
+            sign_application_framed_content,
+            write_opaque_varint,
+        )
 
-            content_prefixed = write_opaque_varint(app_data)
-            signature = sign_application_framed_content(
-                group_id=self._group_id,
-                epoch=self._group_context.epoch,
-                sender_leaf_index=self._own_leaf_index,
-                authenticated_data=b"",
-                content_prefixed=content_prefixed,
-                group_context=self._group_context.serialize(),
-                signing_private_key=signing_key,
-                crypto=self._crypto_provider,
-            )
+        content_prefixed = write_opaque_varint(app_data)
+        signature = sign_application_framed_content(
+            group_id=self._group_id,
+            epoch=self._group_context.epoch,
+            sender_leaf_index=self._own_leaf_index,
+            authenticated_data=b"",
+            content_prefixed=content_prefixed,
+            group_context=self._group_context.serialize(),
+            signing_private_key=signing_key,
+            crypto=self._crypto_provider,
+        )
         ct = protect_content_application(
             group_id=self._group_id,
             epoch=self._group_context.epoch,
@@ -3324,37 +3435,38 @@ class MLSGroup:
             raise CannotDecryptOwnMessageError(
                 "cannot decrypt own application message (OpenMLS parity)"
             )
-        if auth.signature:
-            from ...messages.data_structures import Sender, SenderType
+        if not auth.signature:
+            raise InvalidSignatureError("application message missing signature")
+        from ...messages.data_structures import Sender, SenderType
 
-            sender_node = self._ratchet_tree.get_node(sender * 2)
-            if (
-                not sender_node
-                or not sender_node.leaf_node
-                or not sender_node.leaf_node.signature_key
-            ):
-                raise InvalidSignatureError(
-                    "cannot verify application message: sender leaf has no signature key"
-                )
-            framed = FramedContent(
-                group_id=message.group_id,
-                epoch=message.epoch,
-                sender=Sender(sender, SenderType.MEMBER),
-                authenticated_data=message.authenticated_data or b"",
-                content_type=ContentType.APPLICATION,
-                content=body,  # raw app data, NOT length-prefixed
+        sender_node = self._ratchet_tree.get_node(sender * 2)
+        if (
+            not sender_node
+            or not sender_node.leaf_node
+            or not sender_node.leaf_node.signature_key
+        ):
+            raise InvalidSignatureError(
+                "cannot verify application message: sender leaf has no signature key"
             )
-            tbs = AuthenticatedContentTBS(
-                wire_format=WireFormat.PRIVATE_MESSAGE,
-                framed_content=framed,
-                group_context=self._group_context.serialize() if self._group_context else None,
-            )
-            self._crypto_provider.verify_with_label(
-                sender_node.leaf_node.signature_key,
-                b"FramedContentTBS",
-                tbs.serialize(),
-                auth.signature,
-            )
+        framed = FramedContent(
+            group_id=message.group_id,
+            epoch=message.epoch,
+            sender=Sender(sender, SenderType.MEMBER),
+            authenticated_data=message.authenticated_data or b"",
+            content_type=ContentType.APPLICATION,
+            content=body,  # raw app data, NOT length-prefixed
+        )
+        tbs = AuthenticatedContentTBS(
+            wire_format=WireFormat.PRIVATE_MESSAGE,
+            framed_content=framed,
+            group_context=self._group_context.serialize() if self._group_context else None,
+        )
+        self._crypto_provider.verify_with_label(
+            sender_node.leaf_node.signature_key,
+            b"FramedContentTBS",
+            tbs.serialize(),
+            auth.signature,
+        )
         return sender, body
 
     def get_epoch(self) -> int:
@@ -3369,12 +3481,17 @@ class MLSGroup:
 
     # --- Persistence (versioned) ---
     def to_bytes(self) -> bytes:
-        """Serialize the group state for resumption (versioned encoding v4)."""
+        """Serialize the group state for resumption (versioned encoding v5).
+
+        The blob holds epoch secrets, per-leaf ratchet secrets, and the
+        skipped-key window. Treat the bytes as secret key material. Memory
+        and SQLite storage keep them as produced; they are not encrypted here.
+        """
         from ...messages.data_structures import serialize_bytes
 
         if not self._group_context or not self._key_schedule:
             raise RFC9420Error("group not initialized")
-        data = b"" + serialize_bytes(b"v4")
+        data = b"" + serialize_bytes(b"v5")
         # Active ciphersuite id (uint16)
         suite_id = self._crypto_provider.active_ciphersuite.suite_id.to_bytes(2, "big")
         data += serialize_bytes(suite_id)
@@ -3409,6 +3526,11 @@ class MLSGroup:
             cache_blob_parts.append(serialize_bytes(prop.serialize()))
         data += serialize_bytes(b"".join(cache_blob_parts))
         data += serialize_bytes(self._state.value.encode("ascii"))
+        # Per-leaf receive/send ratchet, including the skipped-key window.
+        replay_blob = b""
+        if self._secret_tree is not None:
+            replay_blob = self._secret_tree.export_replay_state()
+        data += serialize_bytes(replay_blob)
         return data
 
     @classmethod
@@ -3416,7 +3538,7 @@ class MLSGroup:
         cls,
         data: bytes,
         crypto_provider: CryptoProvider,
-        rand_provider: Optional[RandProviderProtocol] = None,
+        rand_provider: RandProviderProtocol | None = None,
         tree_backend: str = DEFAULT_TREE_BACKEND,
     ) -> "MLSGroup":
         """Deserialize state created by to_bytes() and recreate schedule."""
@@ -3424,8 +3546,9 @@ class MLSGroup:
 
         # Attempt to read version marker
         first, rest0 = deserialize_bytes(data)
-        if first in (b"v4", b"v3"):
-            # v4 encoding (or v3 fallback without explicit group state)
+        if first in (b"v5", b"v4", b"v3"):
+            # v5 includes secret-tree replay state. v4 is the same group
+            # state without it. v3 has no explicit group-state field.
             suite_id_bytes, rest = deserialize_bytes(rest0)
             gid, rest = deserialize_bytes(rest)
             gc_bytes, rest = deserialize_bytes(rest)
@@ -3449,8 +3572,11 @@ class MLSGroup:
             # Proposal cache blob
             cache_blob, rest = deserialize_bytes(rest)
             state_blob = b""
-            if first == b"v4":
+            replay_blob = b""
+            if first in (b"v5", b"v4"):
                 state_blob, rest = deserialize_bytes(rest)
+            if first == b"v5":
+                replay_blob, rest = deserialize_bytes(rest)
 
             group = cls(
                 gid,
@@ -3487,6 +3613,10 @@ class MLSGroup:
                 )
             except Exception:
                 group._secret_tree = None
+            if replay_blob:
+                if group._secret_tree is None:
+                    raise RFC9420Error("cannot restore secret-tree replay state")
+                group._secret_tree.load_replay_state(replay_blob)
             # Load pending proposals
             try:
                 off = 0
@@ -3708,3 +3838,4 @@ class MLSGroup:
             pass
         self._pending_proposals = []
         self._proposal_cache = {}
+        self._resumption_psks.clear()

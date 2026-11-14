@@ -1,10 +1,7 @@
-"""
-Pytest for MLS test vectors in mls-implementations/test-vectors/.
+"""Pytest for official MLS test vectors in mls-implementations/test-vectors/.
 
-Runs spec-format verification for each JSON file (and each vector in array files).
-Skips the entire module if the test-vectors directory is missing. Individual
-vectors may still be skipped for unsupported ciphersuites or key formats, but
-all vector types have runner functions implemented.
+Each JSON object is checked against mls-implementations/test-vectors.md.
+The vectors directory is required; missing it fails the suite.
 """
 
 from __future__ import annotations
@@ -20,6 +17,13 @@ VECTORS_DIR = os.path.join(ROOT, "mls-implementations", "test-vectors")
 
 def _vectors_dir_exists():
     return os.path.isdir(VECTORS_DIR)
+
+
+def test_official_vectors_directory_exists():
+    assert _vectors_dir_exists(), (
+        "mls-implementations/test-vectors is required; clone the mls-implementations "
+        "repo next to the project (or as a submodule) so official RFC 9420 vectors run."
+    )
 
 
 def _list_vector_files():
@@ -84,8 +88,8 @@ def _collect_vector_ids():
             continue
         try:
             data = _load_vectors_file(fname)
-        except Exception:
-            continue
+        except Exception as e:
+            raise RuntimeError(f"failed to load official vector file {fname}: {e}") from e
         if isinstance(data, list):
             for i in range(len(data)):
                 out.append((fname, i))
@@ -94,14 +98,17 @@ def _collect_vector_ids():
     return out
 
 
-@pytest.mark.skipif(not _vectors_dir_exists(), reason="mls-implementations/test-vectors not found")
 @pytest.mark.parametrize(
     "fname,vec_index",
-    _collect_vector_ids(),
+    _collect_vector_ids() or [("MISSING", 0)],
     ids=lambda x: f"{x[0]}[{x[1]}]" if isinstance(x, tuple) else str(x),
 )
 def test_vector_spec(fname, vec_index):
-    """Run spec-format verification for one test vector."""
+    """Run spec-format verification for one official MLS test vector."""
+    if fname == "MISSING":
+        pytest.fail(
+            "mls-implementations/test-vectors is required; clone the mls-implementations repo"
+        )
     from rfc9420.backends.crypto.default_hpke import DefaultCryptoProvider
     from rfc9420.crypto.ciphersuites import CipherSuiteId, get_ciphersuite_by_id
 
@@ -116,7 +123,7 @@ def test_vector_spec(fname, vec_index):
         cipher_suite = vec.get("cipher_suite")
         if cipher_suite is not None:
             if get_ciphersuite_by_id(int(cipher_suite)) is None:
-                pytest.skip(f"unsupported ciphersuite {cipher_suite}")
+                pytest.fail(f"unsupported ciphersuite {cipher_suite}")
             crypto = DefaultCryptoProvider(int(cipher_suite))
         else:
             crypto = DefaultCryptoProvider(
@@ -125,10 +132,7 @@ def test_vector_spec(fname, vec_index):
     else:
         crypto = None
 
-    try:
-        if need_crypto:
-            runner_fn(vec, crypto)
-        else:
-            runner_fn(vec)
-    except NotImplementedError as e:
-        pytest.skip(str(e))
+    if need_crypto:
+        runner_fn(vec, crypto)
+    else:
+        runner_fn(vec)
